@@ -54,7 +54,7 @@ services:
         - |
           import socket
           with socket.create_connection(("127.0.0.1", 8043), timeout=2) as conn:
-              conn.sendall(b"!maut-num,AS64496\r\n")
+              conn.sendall(b"!gAS64496\r\n")
               with conn.makefile("rb") as response:
                   assert response.readline(32).startswith(b"A")
       interval: 2s
