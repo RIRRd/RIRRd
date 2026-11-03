@@ -1,0 +1,13 @@
+%START Version: 3 TEST 10-15
+
+ADD 11
+
+aut-num: AS64496
+source: TEST
+
+DEL 13
+
+aut-num: AS64497
+source: TEST
+
+%END TEST

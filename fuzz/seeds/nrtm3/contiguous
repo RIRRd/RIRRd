@@ -1,0 +1,8 @@
+%START Version: 3 TEST 10-10
+
+ADD 10
+
+aut-num: AS64496
+source: TEST
+
+%END TEST

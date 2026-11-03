@@ -184,3 +184,26 @@ integrity/count check and activation health checks still run. Runtime files and
 checkpoint payloads remain outside Git. Unit/integration checks simulate failure
 and resume using the normal Rust importer; the expanded live build also exercised
 this path after TC's unsafe member records were detected.
+
+
+## Activate a completed candidate with a verified runtime
+
+A private prepared generation can be activated without redownloading it:
+
+```sh
+python3 /usr/local/lib/rirrd-live/refresh.py --activate GENERATION_NAME
+```
+
+The controller rejects a changed catalog, partial source set, inconsistent build
+fingerprint or runtime integrity/count failure before switching. This path permits
+an independently reviewed compatible runtime upgrade: the original build binary
+fingerprint remains in the source report, and activation records the actual runtime
+fingerprint separately. It validates the installed runtime's configuration and
+complete database before the normal source-loss guard, switch, service health check
+and automatic rollback. `--resume` still requires identical build inputs. Both
+options reject the serving generation and take the same refresh lock.
+
+Private staging may use a larger memory budget to keep verification's file cache
+resident. This is separate from the public daemon's 2-GiB ceiling. RSS, charged
+cgroup memory and whole-host RAM are different scopes; source import can populate
+filesystem cache that is not charged to the query service.

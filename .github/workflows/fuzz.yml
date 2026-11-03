@@ -17,3 +17,5 @@ jobs:
       - run: cargo +stable install cargo-fuzz --locked --version 0.13.2
       - run: cp -r fuzz/seeds/rpsl "$RUNNER_TEMP/rpsl"
       - run: cargo +nightly fuzz run rpsl "$RUNNER_TEMP/rpsl" -- -max_total_time=60 -max_len=65537
+      - run: cp -r fuzz/seeds/nrtm3 "$RUNNER_TEMP/nrtm3"
+      - run: cargo +nightly fuzz run nrtm3 "$RUNNER_TEMP/nrtm3" -- -max_total_time=60 -max_len=65537
