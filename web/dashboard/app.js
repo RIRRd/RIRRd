@@ -74,6 +74,8 @@
       text('sidebar-mode',preview?'Synthetic preview':value.public_service?'Public test registry':'Private HTTP instance');text('version','RIRRd '+value.version);
       text('mode-badge',preview?'Synthetic preview':value.public_service?'Live · Experimental':'Private instance');el('mode-badge').className='badge '+(preview?'amber':'positive');
       if (value.public_service) {
+        el('source-count').previousElementSibling.textContent='Loaded / tracked sources';
+        text('connection-label','WHOIS active / cap');el('connection-cap').nextElementSibling.textContent='Current sockets / global limit';
         text('quick-example','AS3333');el('query-value').placeholder='AS3333 or 193.0.6.0/24';
         const replacements={'AS64496':'AS3333','192.0.2.0/24':'193.0.6.0/24','2001:db8:100::/48':'2001:67c:2e8::/48','AS64496:AS-DOCS':'AS-RIPE'};
         document.querySelectorAll('[data-example]').forEach(button=>{const next=replacements[button.dataset.example];if(next){if(button.textContent===button.dataset.example)button.textContent=next;button.dataset.example=next;}});
@@ -95,6 +97,7 @@
       const live=await json('live.json',{signal:AbortSignal.timeout(12000)});
       el('live-panel').hidden=false;
       const mib=bytes=>Number.isFinite(bytes)?(bytes/1048576).toFixed(1)+' MiB':'—';
+      text('connection-cap',(live.whois_connections ?? '—')+' / '+metadata.max_connections);
       text('live-objects',Number(live.total_objects || 0).toLocaleString());
       text('live-rss',mib(live.process_rss_bytes));text('live-memory',mib(live.cgroup_memory_bytes));text('live-disk',mib(live.database_bytes));
       text('live-cpu',live.cpu_percent_one_core == null?'—':Number(live.cpu_percent_one_core).toFixed(1)+'%');
@@ -115,10 +118,13 @@
         cell(row,source.objects==null?'—':Number(source.objects).toLocaleString());
         const modified=[...new Set((source.downloads || []).map(file=>file.last_modified).filter(Boolean))];
         cell(row,modified.join(' / ') || 'Not fetched');cell(row,source.imported_at || 'Not imported');
-        cell(row,source.state==='loaded'?Object.keys(source.classes || {}).join(', ')+(source.http_access===false?' · TCP WHOIS only; excluded from web queries.':''):source.reason || 'Not loaded');el('source-rows').append(row);
+        cell(row,source.state==='loaded'?Object.keys(source.classes || {}).join(', ')+(source.http_access===false?' · TCP WHOIS only; excluded from web queries.':'')+(source.skipped_lookup_values?' · '+source.skipped_lookup_values+' malformed lookup values not indexed.':'')+(source.duplicate_identities_last_wins?' · '+source.duplicate_identities_last_wins+' duplicate identities collapsed (last record).':''):source.reason || 'Not loaded');
+        if(source.permission?.startsWith('https://')){const policy=document.createElement('a');policy.href=source.permission;policy.textContent='Source policy / access';row.lastElementChild.append(document.createElement('br'),policy);}
+        el('source-rows').append(row);
         const pill=document.createElement('div');pill.className='source-pill';const title=document.createElement('strong');title.textContent=source.source;
         const detail=document.createElement('span');detail.textContent=source.state==='loaded'?Number(source.objects).toLocaleString()+' objects · snapshot':source.reason || source.state;
-        pill.append(title,detail);el('overview-sources').append(pill);
+        pill.append(title,detail);
+        if(source.state==='loaded'){const share=document.createElement('progress');share.max=live.total_objects || 1;share.value=source.objects;share.setAttribute('aria-label',source.source+' share of loaded objects');pill.append(share);el('overview-sources').append(pill);}
       }
       const current=el('query-source').value;
       el('query-source').replaceChildren(new Option('All loaded sources',''));loaded.filter(row=>row.http_access!==false).forEach(row=>el('query-source').add(new Option(row.source,row.source)));

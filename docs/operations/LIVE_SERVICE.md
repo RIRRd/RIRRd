@@ -86,7 +86,7 @@ loopback, established traffic and ICMP; development ports remain private.
 
 The gateway samples every five seconds; the visible dashboard refreshes every
 15 seconds while visible. It reports daemon RSS, service cgroup memory/peak, CPU
-percentage (100% = one core), daemon uptime, apparent database file size and
+percentage (100% = one core), daemon uptime, current established TCP WHOIS sockets, apparent database file size and
 verified snapshot object counts. HTTP attempts/errors reset on gateway restart;
 recent p95 uses the latest 512 gateway attempts, including proxy overhead. TCP
 query counts are not measured and are explicitly excluded. Failed telemetry is

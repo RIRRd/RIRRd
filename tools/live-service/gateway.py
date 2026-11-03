@@ -86,6 +86,13 @@ class State:
                         'database_bytes': report['database_bytes'], 'total_objects': report['total_objects'],
                         'snapshot_verified_at': report['verified_at'], 'refresh_mode': report['refresh_mode'],
                         'classes': report['classes'], 'sources': report['sources']}
+            connections = 0
+            for table in ('tcp', 'tcp6'):
+                for row in Path('/proc/net/' + table).read_text().splitlines()[1:]:
+                    fields = row.split()
+                    if fields[1].split(':')[1] == '002B' and fields[3] == '01':
+                        connections += 1
+            snapshot['whois_connections'] = connections
             refresh_state = self.generation.parent / 'last-refresh.json'
             # generation is the root-owned 'current' symlink, not its resolved target.
             if refresh_state.is_file():
