@@ -25,6 +25,16 @@ oracle results or protocol interop evidence as appropriate. Release
 extensions are tracked separately from upstream behaviour. Each row stays
 open until the stated behaviour and safety checks are demonstrated.
 
+## Expanded source and authoritative checkpoint
+
+The [expanded checkpoint](EXPANDED_SOURCES_CHECKPOINT.md) records twelve real
+routing sources, verified resume after a failed candidate, disclosed record
+quarantine and source transport policy. AS-block/domain writes add maintainer
+and contact/zone-reference checks: 15 bounded profiles, 71 pinned HTTP decisions,
+45 cases per WHOIS transport and 16 additional schema cases. Native Linux and
+ARM64 QEMU pass 139 unit/17 integration/two client tests. The remaining four
+class profiles, cryptographic/account workflows and other parity gates stay open.
+
 ## Live public test registry
 
 The [live checkpoint](LIVE_IRR_CHECKPOINT.md) records read-only WHOIS/HTTPS queries

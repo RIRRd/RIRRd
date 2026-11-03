@@ -1,3 +1,21 @@
+## Expanded sources and write classes — 3 November 2026
+
+The public service now serves 2,610,758 routing objects across twelve sources.
+RADB, ALTDB, BELL, REACH, BBOI, TC and CANARIE were added to the initial five.
+A failed TC import preserved the live generation; the resumed candidate verified
+its completed imports and activated only after complete integrity/count checks.
+Forty-six unsafe member records are withheld and disclosed, rather than repaired
+into invented names. Five feeds retain explicit access/connectivity blockers.
+
+Authoritative AS-block and domain updates increase the bounded write profile to
+15 classes. Same-source maintainer/contact checks, zone-contact delete protection,
+rollback and redaction pass normal CLI/HTTP/TCP tests. Pinned comparison passes
+71 HTTP decisions, 45 TCP and 45 HTTP WHOIS cases, and 16 new schema cases.
+Native Linux and ARM64 QEMU release tests pass 139 unit/17 integration/two client
+tests. The latest fuzz smoke completed 177,454 executions in 31 seconds.
+See [the expanded checkpoint](docs/compatibility/EXPANDED_SOURCES_CHECKPOINT.md).
+Full parity remains incomplete; current release/CI/access limits still apply.
+
 ## Live public read-only continuation — 3 November 2026
 
 The owner authorized a live experimental registry after the static-site checkpoint.
