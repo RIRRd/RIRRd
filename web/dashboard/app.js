@@ -77,7 +77,7 @@
         el('source-count').previousElementSibling.textContent='Loaded / tracked sources';
         text('connection-label','WHOIS active / cap');el('connection-cap').nextElementSibling.textContent='Current sockets / global limit';
         text('quick-example','AS3333');el('query-value').placeholder='AS3333 or 193.0.0.0/21';
-        const replacements={'AS64496':'AS3333','192.0.2.0/24':'193.0.0.0/21','2001:db8:100::/48':'2001:67c:2e8::/48','AS64496:AS-DOCS':'AS-RIPE'};
+        const replacements={'AS64496':'AS3333','192.0.2.0/24':'193.0.0.0/21','2001:db8:100::/48':'2001:67c:2e8::/48','AS64496:AS-DOCS':'AS-RIPENCC'};
         document.querySelectorAll('[data-example]').forEach(button=>{const next=replacements[button.dataset.example];if(next){if(button.textContent===button.dataset.example)button.textContent=next;button.dataset.example=next;}});
         text('connect-command','bgpq4 -4 -b -h rirrd.co.uk:43 -S RIPE -l RIPE_TEST AS3333');
         text('whois-address','rirrd.co.uk:43');
