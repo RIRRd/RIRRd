@@ -1,3 +1,26 @@
+## Current live portal — 3 November 2026
+
+The live site at https://rirrd.co.uk/ serves the UK/HYEHOST LLC node portal.
+Nineteen public IRR sources are loaded (4,993,140 verified RPSL objects), with
+seven NRTMv3 feeds and twelve scheduled snapshots. ARIN is included in public
+WHOIS, GraphQL and browsing. Live class counts, AS-set/key browsing, API commands,
+and embedded RPKI status/origin checks are available. The same Rust process
+validated 1,029,414 VRPs in the deployed check; 101 rejected publication points
+and RRDP-only coverage are disclosed. RTR remains loopback-only.
+
+Runtime source is d792930; site content is ca8735b. Chromium portal and dashboard
+checks pass at 320/390/1440 px. HTTP redirects, trusted TLS and real queries pass
+from external IPv4 (Helsinki) and IPv6 (Amsterdam/London) probes. One initial
+Falkenstein IPv6 handshake timed out; later IPv6 probes succeeded. Caddy validates
+and automatic renewal remains enabled. Current reusable files and full evidence
+are in [the checkpoint](../../docs/compatibility/UK_NODE_PUBLIC_SOURCES_RPKI.md).
+
+The benchmark page is now `/project/`; the primary URL is the operational portal.
+No new throughput comparison is claimed for the integrated validator: the existing
+100k table is explicitly scoped to its recorded IRR-only commits and dataset.
+
+The earlier verification notes below are historical checkpoints.
+
 ## Continuous mirror console — 3 November 2026, 16:12 UTC
 
 The published dashboard uses core UI revision

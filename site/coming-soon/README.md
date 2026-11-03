@@ -1,3 +1,10 @@
+The current public deployment serves the operational portal at `/`, historical
+measured comparisons at `/project/`, the full dashboard at `/dashboard/`, and
+commands at `/guides/api/` and `/guides/routers/`. Use the clean core checkout
+with `sync_dashboard.py --live` to regenerate the live assets. Source coverage,
+embedded RPKI status and deployment evidence are recorded in the
+[UK node checkpoint](../../docs/compatibility/UK_NODE_PUBLIC_SOURCES_RPKI.md).
+
 # Coming-soon website
 
 Static project page and local dashboard assets. Only an explicit read-only query/status allowlist is proxied to the local gateway. No remote assets or third-party scripts.
