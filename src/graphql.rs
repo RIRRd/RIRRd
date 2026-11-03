@@ -25,7 +25,11 @@ use axum::{
 };
 use tokio::{net::TcpListener, sync::Semaphore, task::spawn_blocking};
 
-use crate::{rpsl::Object, sets::routes_for_as_set, storage::Store};
+use crate::{
+    rpsl::Object,
+    sets::{self, recursive_members_at_root, routes_for_as_set},
+    storage::Store,
+};
 
 const MAX_HTTP_BYTES: usize = 16 * 1024;
 const MAX_HTTP_REQUESTS: usize = 8;
@@ -33,6 +37,9 @@ const MAX_LOOKUPS: usize = 8;
 const MAX_RECORDS: usize = 8;
 const MAX_SET_NAMES: usize = 8;
 const MAX_PREFIXES: usize = 4096;
+const MAX_SET_ROOTS: usize = 32;
+const MAX_SET_MEMBERS: usize = 4096;
+const MAX_SET_MEMBER_BYTES: usize = 256 * 1024;
 const MAX_FILTER_VALUES: usize = 32;
 const MAX_FILTER_BYTES: usize = 512;
 const MAX_COMPLEXITY: usize = 24;
@@ -457,12 +464,8 @@ async fn asn_prefixes(ctx: ResolverContext<'_>) -> async_graphql::Result<Option<
     prefix_values(rows)
 }
 
-async fn as_set_prefixes(
-    ctx: ResolverContext<'_>,
-) -> async_graphql::Result<Option<FieldValue<'_>>> {
-    let lookup = ctx.data::<Lookup>()?;
-    let mut names =
-        list_filter(&ctx, "setNames")?.ok_or_else(|| Error::new("Missing setNames."))?;
+fn set_names(ctx: &ResolverContext<'_>) -> async_graphql::Result<Vec<String>> {
+    let mut names = list_filter(ctx, "setNames")?.ok_or_else(|| Error::new("Missing setNames."))?;
     if names.len() > MAX_SET_NAMES {
         return Err(Error::new("Too many values for setNames."));
     }
@@ -481,6 +484,14 @@ async fn as_set_prefixes(
         name.make_ascii_uppercase();
         seen.insert(name.clone())
     });
+    Ok(names)
+}
+
+async fn as_set_prefixes(
+    ctx: ResolverContext<'_>,
+) -> async_graphql::Result<Option<FieldValue<'_>>> {
+    let lookup = ctx.data::<Lookup>()?;
+    let names = set_names(&ctx)?;
     let sources = source_filter(&ctx, &lookup.sources)?;
     let family = ip_family(&ctx)?;
     let excluded = list_filter(&ctx, "excludeSets")?.unwrap_or_default();
@@ -503,6 +514,123 @@ async fn as_set_prefixes(
         })
         .await?;
     prefix_values(rows)
+}
+
+struct SetMembers {
+    rpsl_pk: String,
+    root_source: String,
+    members: Vec<String>,
+}
+
+fn set_members_type() -> GraphqlObject {
+    GraphqlObject::new("SetMembers")
+        .field(Field::new(
+            "rpslPk",
+            TypeRef::named_nn(TypeRef::STRING),
+            |ctx| {
+                FieldFuture::new(async move {
+                    let row = ctx.parent_value.try_downcast_ref::<SetMembers>()?;
+                    Ok(Some(FieldValue::value(row.rpsl_pk.clone())))
+                })
+            },
+        ))
+        .field(Field::new(
+            "rootSource",
+            TypeRef::named_nn(TypeRef::STRING),
+            |ctx| {
+                FieldFuture::new(async move {
+                    let row = ctx.parent_value.try_downcast_ref::<SetMembers>()?;
+                    Ok(Some(FieldValue::value(row.root_source.clone())))
+                })
+            },
+        ))
+        .field(Field::new(
+            "members",
+            TypeRef::named_nn_list(TypeRef::STRING),
+            |ctx| {
+                FieldFuture::new(async move {
+                    let row = ctx.parent_value.try_downcast_ref::<SetMembers>()?;
+                    Ok(Some(FieldValue::list(
+                        row.members.iter().map(FieldValue::value),
+                    )))
+                })
+            },
+        ))
+}
+
+async fn recursive_set_members(
+    ctx: ResolverContext<'_>,
+) -> async_graphql::Result<Option<FieldValue<'_>>> {
+    let lookup = ctx.data::<Lookup>()?;
+    let names = set_names(&ctx)?;
+    let mut sources = source_filter(&ctx, &lookup.sources)?;
+    let mut seen = HashSet::new();
+    sources.retain(|source| seen.insert(source.clone()));
+    let root_source = ctx
+        .args
+        .get("rootSource")
+        .filter(|value| !value.is_null())
+        .map(|value| value.string().map(|name| name.trim().to_ascii_uppercase()))
+        .transpose()?;
+    if root_source
+        .as_ref()
+        .is_some_and(|source| !lookup.sources.contains(source))
+    {
+        return Err(Error::new("Unknown rootSource."));
+    }
+    let depth = ctx
+        .args
+        .get("depth")
+        .filter(|value| !value.is_null())
+        .map(|value| value.i64())
+        .transpose()?
+        .unwrap_or(0);
+    let depth = usize::try_from(depth)
+        .ok()
+        .filter(|&depth| depth <= sets::MAX_DEPTH)
+        .ok_or_else(|| Error::new(format!("depth must be between 0 and {}.", sets::MAX_DEPTH)))?;
+    let depth = (depth != 0).then_some(depth);
+    let excluded = list_filter(&ctx, "excludeSets")?.unwrap_or_default();
+    let rows = lookup
+        .run(move |store| {
+            let root_sources = root_source
+                .as_ref()
+                .map_or(sources.as_slice(), std::slice::from_ref);
+            let mut rows = Vec::new();
+            let mut members_remaining = MAX_SET_MEMBERS;
+            let mut bytes_remaining = MAX_SET_MEMBER_BYTES;
+            for name in names {
+                for source in root_sources {
+                    let members = recursive_members_at_root(
+                        store, &sources, source, &name, depth, &excluded,
+                    )?;
+                    if members.is_none() && root_source.is_none() {
+                        continue;
+                    }
+                    let members = members.unwrap_or_default();
+                    let bytes = members.iter().map(|member| member.len() + 1).sum::<usize>();
+                    if rows.len() == MAX_SET_ROOTS
+                        || members.len() > members_remaining
+                        || bytes > bytes_remaining
+                    {
+                        return Ok(None);
+                    }
+                    members_remaining -= members.len();
+                    bytes_remaining -= bytes;
+                    rows.push(SetMembers {
+                        rpsl_pk: name.clone(),
+                        root_source: source.clone(),
+                        members,
+                    });
+                }
+            }
+            Ok(Some(rows))
+        })
+        .await?
+        .ok_or_else(|| Error::new("Set expansion result exceeds GraphQL limits."))?;
+    Ok(Some(FieldValue::list(
+        rows.into_iter().map(FieldValue::owned_any),
+    )))
 }
 
 fn make_schema(store: Arc<Store>, sources: Vec<String>) -> Result<Schema> {
@@ -542,6 +670,28 @@ fn make_schema(store: Arc<Store>, sources: Vec<String>) -> Result<Schema> {
             ))
             .argument(InputValue::new("ipVersion", ip_version))
             .argument(InputValue::new("sources", list.clone()))
+            .argument(InputValue::new("excludeSets", list.clone()))
+            .argument(InputValue::new(
+                "sqlTrace",
+                TypeRef::named(TypeRef::BOOLEAN),
+            )),
+        )
+        .field(
+            Field::new(
+                "recursiveSetMembers",
+                TypeRef::named_nn_list("SetMembers"),
+                |ctx| FieldFuture::new(recursive_set_members(ctx)),
+            )
+            .argument(InputValue::new(
+                "setNames",
+                TypeRef::named_nn_list_nn(TypeRef::STRING),
+            ))
+            .argument(InputValue::new("depth", TypeRef::named(TypeRef::INT)))
+            .argument(InputValue::new(
+                "rootSource",
+                TypeRef::named(TypeRef::STRING),
+            ))
+            .argument(InputValue::new("sources", list.clone()))
             .argument(InputValue::new("excludeSets", list))
             .argument(InputValue::new(
                 "sqlTrace",
@@ -568,7 +718,8 @@ fn make_schema(store: Arc<Store>, sources: Vec<String>) -> Result<Schema> {
         .register(Scalar::new("ASN").validator(|value| asn_value(value).is_some()))
         .register(Scalar::new("IP").validator(|value| matches!(value, Value::String(_))))
         .register(prefix_type("ASNPrefixes", "asn", "ASN"))
-        .register(prefix_type("AsSetPrefixes", "rpslPk", TypeRef::STRING));
+        .register(prefix_type("AsSetPrefixes", "rpslPk", TypeRef::STRING))
+        .register(set_members_type());
 
     for &(class, name) in OBJECT_TYPES {
         let mut object = GraphqlObject::new(name).implement(OBJECT_INTERFACE);
@@ -669,6 +820,8 @@ mod tests {
                 record("route: 198.51.100.0/24\norigin: AS4200000000\nsource: TEST"),
                 record("as-set: AS-EXAMPLE\nmembers: AS64496, AS-NESTED\nsource: TEST"),
                 record("as-set: AS-NESTED\nmembers: AS4200000000\nsource: TEST"),
+                record("as-set: AS-DUPLICATE\nmembers: AS64496,AS-CROSS\nsource: TEST"),
+                record("as-set: AS-CROSS\nmembers: AS64500\nsource: TEST"),
             ],
         )?;
         store.replace_source(
@@ -677,10 +830,77 @@ mod tests {
                 record("aut-num: AS64496\nas-name: OTHER\nsource: OTHER"),
                 record("route: 192.0.2.0/24\norigin: AS64496\nsource: OTHER"),
                 record("route: 203.0.113.0/24\norigin: AS64496\nsource: OTHER"),
+                record("as-set: AS-DUPLICATE\nmembers: AS64497,AS-CROSS\nsource: OTHER"),
+                record("as-set: AS-CROSS\nmembers: AS64501\nsource: OTHER"),
             ],
         )?;
         let schema = make_schema(store, vec!["TEST".into(), "OTHER".into()])?;
         Ok((directory, schema))
+    }
+
+    #[tokio::test]
+    async fn recursive_set_members_separates_root_and_nested_source_order() -> Result<()> {
+        let (_directory, schema) = test_schema()?;
+        let response = schema
+            .execute(r#"{
+                recursiveSetMembers(setNames:["as-duplicate","AS-DUPLICATE","AS-MISSING"], sources:["OTHER","TEST"]) {
+                    rpslPk rootSource members
+                }
+            }"#)
+            .await;
+        assert!(response.errors.is_empty(), "{:?}", response.errors);
+        assert_eq!(
+            response.data.into_json()?,
+            json!({"recursiveSetMembers":[
+                {"rpslPk":"AS-DUPLICATE","rootSource":"OTHER","members":["AS64497","AS64501"]},
+                {"rpslPk":"AS-DUPLICATE","rootSource":"TEST","members":["AS64496","AS64501"]}
+            ]})
+        );
+
+        let response = schema
+            .execute(r#"{
+                recursiveSetMembers(setNames:["AS-DUPLICATE","AS-MISSING"], rootSource:"test", sources:["OTHER"]) {
+                    rpslPk rootSource members
+                }
+            }"#)
+            .await;
+        assert!(response.errors.is_empty(), "{:?}", response.errors);
+        assert_eq!(
+            response.data.into_json()?,
+            json!({"recursiveSetMembers":[
+                {"rpslPk":"AS-DUPLICATE","rootSource":"TEST","members":["AS64496","AS64501"]},
+                {"rpslPk":"AS-MISSING","rootSource":"TEST","members":[]}
+            ]})
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn recursive_set_members_supports_depth_and_excludes_with_input_limits() -> Result<()> {
+        let (_directory, schema) = test_schema()?;
+        let response = schema
+            .execute(r#"{
+                limited: recursiveSetMembers(setNames:["AS-DUPLICATE"], rootSource:"TEST", depth:1) { members }
+                excluded: recursiveSetMembers(setNames:["AS-DUPLICATE"], rootSource:"TEST", excludeSets:["as-cross"]) { members }
+            }"#)
+            .await;
+        assert!(response.errors.is_empty(), "{:?}", response.errors);
+        assert_eq!(
+            response.data.into_json()?,
+            json!({
+                "limited":[{"members":["AS-CROSS","AS64496"]}],
+                "excluded":[{"members":["AS64496"]}]
+            })
+        );
+        for query in [
+            r#"{ recursiveSetMembers(setNames:["AS-DUPLICATE"], rootSource:"UNKNOWN") { members } }"#,
+            r#"{ recursiveSetMembers(setNames:["AS-DUPLICATE"], depth:-1) { members } }"#,
+            r#"{ recursiveSetMembers(setNames:["AS-DUPLICATE"], depth:65) { members } }"#,
+            r#"{ recursiveSetMembers(setNames:["AS-DUPLICATE"], sqlTrace:true) { members } }"#,
+        ] {
+            assert!(!schema.execute(query).await.errors.is_empty(), "{query}");
+        }
+        Ok(())
     }
 
     #[tokio::test]

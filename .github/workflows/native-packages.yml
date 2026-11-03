@@ -1,0 +1,94 @@
+name: Native Linux packages
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, 'codex/**']
+    paths:
+      - '.github/workflows/native-packages.yml'
+      - 'deploy/packages/**'
+      - 'deploy/rust-irrd.service'
+      - 'deploy/irrd.toml'
+      - 'examples/example.rpsl'
+      - 'Cargo.*'
+      - 'src/**'
+
+permissions:
+  contents: read
+
+jobs:
+  packages:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            deb: amd64
+            rpm: x86_64
+          - runner: ubuntu-24.04-arm
+            deb: arm64
+            rpm: aarch64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Build a native release binary on the Debian 12 baseline
+        run: |
+          work="$RUNNER_TEMP/native-packages"
+          mkdir -p "$work"
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            --env HOME=/tmp --env CARGO_HOME=/tmp/cargo --env CARGO_TARGET_DIR=/build/target \
+            --mount "type=bind,source=$GITHUB_WORKSPACE,target=/source,readonly" \
+            --mount "type=bind,source=$work,target=/build" \
+            --workdir /source \
+            docker.io/library/rust:1.99.1-bookworm@sha256:9181b56c2a21ab1d5e73cffe04fc762426d30aa7fac3c91141dd033f49a7fc8b \
+            cargo build --locked --release
+      - name: Build and inspect both native archives
+        env:
+          DEB_ARCH: ${{ matrix.deb }}
+          RPM_ARCH: ${{ matrix.rpm }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends rpm binutils
+          work="$RUNNER_TEMP/native-packages"
+          export SOURCE_DATE_EPOCH
+          SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)
+          bash deploy/packages/build.sh "$work/target/release/rust-irrd" "$work/dist"
+          cd "$work/dist"
+          debs=( ./*.deb )
+          rpms=( ./*.rpm )
+          test "${#debs[@]}" = 1
+          test "${#rpms[@]}" = 1
+          test "$(dpkg-deb --field "${debs[0]}" Architecture)" = "$DEB_ARCH"
+          test "$(rpm -qp --queryformat '%{ARCH}' "${rpms[0]}")" = "$RPM_ARCH"
+          dpkg-deb --info "${debs[0]}"
+          dpkg-deb --contents "${debs[0]}"
+          rpm -qip "${rpms[0]}"
+          rpm -qlp "${rpms[0]}"
+          sha256sum -- "${debs[0]}" "${rpms[0]}" > SHA256SUMS
+      - name: Install and bootstrap the Debian package
+        run: |
+          docker run --rm \
+            --env DEBIAN_FRONTEND=noninteractive \
+            --mount "type=bind,source=$GITHUB_WORKSPACE,target=/source,readonly" \
+            --mount "type=bind,source=$RUNNER_TEMP/native-packages/dist,target=/packages,readonly" \
+            docker.io/library/debian:12.15-slim@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3 \
+            bash -euc 'apt-get update
+              apt-get install -y --no-install-recommends /packages/*.deb util-linux
+              bash /source/deploy/packages/test-install.sh /source/examples/example.rpsl'
+      - name: Install and bootstrap the RPM package
+        run: |
+          docker run --rm \
+            --mount "type=bind,source=$GITHUB_WORKSPACE,target=/source,readonly" \
+            --mount "type=bind,source=$RUNNER_TEMP/native-packages/dist,target=/packages,readonly" \
+            registry.fedoraproject.org/fedora:43@sha256:d3a43e7fcc63b7098ddcaa3356baabe5fd5f3001b1d84fafef9545d352871970 \
+            bash -euc 'dnf -y install /packages/*.rpm util-linux
+              bash /source/deploy/packages/test-install.sh /source/examples/example.rpsl'
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: native-linux-${{ matrix.rpm }}
+          path: ${{ runner.temp }}/native-packages/dist/
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0

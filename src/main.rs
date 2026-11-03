@@ -6,6 +6,7 @@ mod config;
 mod graphql;
 mod import;
 mod maintainer_auth;
+mod mirror_worker;
 mod nrtm3;
 mod nrtm4;
 mod nrtm4_apply;
@@ -574,6 +575,16 @@ async fn serve(config: Config, store: Arc<Store>) -> Result<()> {
     };
     let (stop, stopped) = watch::channel(false);
     let mut services = JoinSet::new();
+    for (source, mirror) in &config.nrtm3_sync {
+        services.spawn(mirror_worker::run(
+            store.clone(),
+            source.clone(),
+            mirror.clone(),
+            config.max_snapshot_bytes,
+            Duration::from_secs(config.io_timeout_seconds),
+            stopped.clone(),
+        ));
+    }
     if let Some(http) = http {
         let store = store.clone();
         let sources = config.sources.clone();

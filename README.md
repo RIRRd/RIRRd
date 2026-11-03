@@ -29,6 +29,7 @@ printf '!mroute,192.0.2.0/24AS64496\n' | nc 127.0.0.1 4343
 | `!i<set>[,1]`, `!a[4|6]<as-set>` | Direct or recursive members, or originating routes for an AS-set. |
 | `!!`, `-k`, `!q` | Start a persistent connection or close it. Each session has an idle deadline and a 1,024-line budget. |
 | `!s<source-list>`, `!s-lc`, `!e<set-list>`, `!e-lc` | Select and inspect query sources or recursive set exclusions for the current connection. |
+| `-s <source-list>`, `-a`, `-V <client>` | RIPE-style source selection, source reset and client identification. |
 | `!v`, `!n<client>` | Report version or acknowledge client identification. |
 
 Bare, route and inverse lookups return at most 16 objects. A single-AS origin lookup returns at most 4,096 distinct prefixes. Set expansion has separate traversal limits. Requests exceeding a limit fail as a whole. The mirror parser validates record structure and identity. Indexing retains valid optional lookup values and reports malformed values that it skipped.
@@ -59,7 +60,7 @@ Use the example on a trusted local machine. Keep database and snapshot files pri
 
 ## GraphQL
 
-Set `http_listen = "127.0.0.1:8080"` in TOML. Send JSON by POST to `/graphql/` with a `query` field. The implemented subset accepts bounded exact-key queries through `rpslObjects`, with optional object classes and sources, and prefix queries through `asnPrefixes` and `asSetPrefixes`. For example:
+Set `http_listen = "127.0.0.1:8080"` in TOML. Send JSON by POST to `/graphql/` with a `query` field. The implemented subset accepts bounded exact-key queries through `rpslObjects`, prefix queries through `asnPrefixes` and `asSetPrefixes`, and set expansion through `recursiveSetMembers`. The optional `rootSource` argument selects the root independently of the source order used for nested set lookups. For example:
 
 ```graphql
 {
@@ -102,6 +103,17 @@ EXAMPLE = ["127.0.0.1", "::1"]
 ```
 
 Peers can request `-g EXAMPLE:3:42-LAST` or give an explicit end serial. Responses allow at most 1,024 operations and 4 MiB of raw object text per request. Use an explicit range when catching up in chunks. The server checks the source-specific peer list independently of the connection's WHOIS source selection. Journal text uses the same credential redaction as public WHOIS. Snapshot replacement and source purge clear retained journal history.
+
+Enable scheduled NRTMv3 for an already imported non-authoritative source:
+
+```toml
+[nrtm3_sync.EXAMPLE]
+endpoint = "127.0.0.1:8043"
+interval_seconds = 300
+base_serial = 41
+```
+
+The first update uses the snapshot's base serial. Subsequent attempts read the committed serial. The worker stages each response privately before acquiring the write gate, retries on the configured interval, and publishes only complete, valid transcripts. Each scheduled response is capped at 64 MiB and the peer deadline is capped at 15 seconds.
 
 ## Offline NRTMv4 verification
 
@@ -149,7 +161,7 @@ For local HTTP submission, set `http_authoritative_updates = true` alongside a l
 
 ## Development checks
 
-See the [deployment examples](deploy/README.md) for Docker Compose and native systemd setup. A separate Linux CI job defines container bootstrap, WHOIS and shutdown verification.
+See the [deployment examples](deploy/README.md) for Docker Compose and native systemd setup and the [native packaging guide](deploy/packages/README.md) for Debian and RPM builds on Linux x86-64 and ARM64. Linux CI defines container and package bootstrap, WHOIS and shutdown verification.
 
 ```sh
 cargo fmt --all -- --check

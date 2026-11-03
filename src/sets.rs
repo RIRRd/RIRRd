@@ -9,7 +9,7 @@ use crate::{
     storage::Store,
 };
 
-const MAX_DEPTH: usize = 64;
+pub(crate) const MAX_DEPTH: usize = 64;
 const MAX_SET_LOOKUPS: usize = 1024;
 const MAX_INDIRECT_ROWS: usize = 128;
 const MAX_ORIGIN_LOOKUPS: usize = 4096;
@@ -31,12 +31,8 @@ pub fn members(
     };
     let mut expansion = Expansion::new(store, sources, excluded);
     if recursive {
-        let mode = if root.class == "route-set" {
-            RecursiveMode::RouteMembers
-        } else {
-            RecursiveMode::AsMembers
-        };
-        expansion.expand(root, mode)?;
+        let mode = RecursiveMode::for_members(&root);
+        expansion.expand(root, mode, None)?;
     } else {
         for member in direct_members(store, &root)? {
             let member = member.to_string();
@@ -46,6 +42,27 @@ pub fn members(
         }
     }
     Ok(expansion.output.into_iter().collect())
+}
+
+/// Resolve a set in one specific registry, following nested references using
+/// the independently selected source order.
+pub(crate) fn recursive_members_at_root(
+    store: &Store,
+    sources: &[String],
+    root_source: &str,
+    name: &str,
+    depth: Option<usize>,
+    excluded: &[String],
+) -> Result<Option<Vec<String>>> {
+    let Some(root) = find_set(store, &[root_source.to_owned()], name, false)? else {
+        return Ok(None);
+    };
+    let key = root.key.clone();
+    let mode = RecursiveMode::for_members(&root);
+    let mut expansion = Expansion::new(store, sources, excluded);
+    expansion.expand(root, mode, depth)?;
+    expansion.output.remove(&key);
+    Ok(Some(expansion.output.into_iter().collect()))
 }
 
 /// Expand origins of AS-set members. Family is None for both, false for IPv4,
@@ -62,7 +79,7 @@ pub fn routes_for_as_set(
         return Ok(Vec::new());
     };
     let mut expansion = Expansion::new(store, sources, excluded);
-    expansion.expand(root, RecursiveMode::OriginPrefixes(family))?;
+    expansion.expand(root, RecursiveMode::OriginPrefixes(family), None)?;
     Ok(expansion.output.into_iter().collect())
 }
 
@@ -135,6 +152,16 @@ enum RecursiveMode {
     OriginPrefixes(Option<bool>),
 }
 
+impl RecursiveMode {
+    fn for_members(root: &Object) -> Self {
+        if root.class == "route-set" {
+            Self::RouteMembers
+        } else {
+            Self::AsMembers
+        }
+    }
+}
+
 struct Expansion<'a> {
     store: &'a Store,
     sources: &'a [String],
@@ -162,10 +189,10 @@ impl<'a> Expansion<'a> {
         }
     }
 
-    fn expand(&mut self, root: Object, mode: RecursiveMode) -> Result<()> {
+    fn expand(&mut self, root: Object, mode: RecursiveMode, limit: Option<usize>) -> Result<()> {
         let mut pending = VecDeque::new();
         self.seen_sets.insert(root.key.clone());
-        self.expand_members(&root, mode, 0, &mut pending)?;
+        self.expand_members(&root, mode, 0, limit == Some(1), &mut pending)?;
         while let Some((key, depth)) = pending.pop_front() {
             if !self.seen_sets.insert(key.clone()) {
                 continue;
@@ -175,8 +202,11 @@ impl<'a> Expansion<'a> {
                 "set exceeds traversal limit"
             );
             let as_only = !matches!(mode, RecursiveMode::RouteMembers);
+            let cutoff = limit == Some(depth + 1);
             if let Some(object) = find_set(self.store, self.sources, &key, as_only)? {
-                self.expand_members(&object, mode, depth, &mut pending)?;
+                self.expand_members(&object, mode, depth, cutoff, &mut pending)?;
+            } else if cutoff {
+                self.insert(key)?;
             }
         }
         Ok(())
@@ -187,13 +217,17 @@ impl<'a> Expansion<'a> {
         object: &Object,
         mode: RecursiveMode,
         depth: usize,
+        cutoff: bool,
         pending: &mut VecDeque<(String, usize)>,
     ) -> Result<()> {
         for member in direct_members(self.store, object)? {
             let wire = member.to_string();
             self.charge(wire.len())?;
+            if cutoff {
+                self.insert(wire.clone())?;
+            }
             match member {
-                SetMember::Set(name, None) if !self.excluded.contains(&name) => {
+                SetMember::Set(name, None) if !cutoff && !self.excluded.contains(&name) => {
                     pending.push_back((name, depth + 1));
                 }
                 SetMember::Asn(number, None) => match mode {

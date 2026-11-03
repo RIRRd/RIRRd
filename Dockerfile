@@ -12,6 +12,7 @@ RUN groupadd --gid 65532 rust-irrd \
     && install -d -m 0700 -o rust-irrd -g rust-irrd /var/lib/rust-irrd/state
 COPY --from=build /build/target/release/rust-irrd /usr/local/bin/rust-irrd
 WORKDIR /var/lib/rust-irrd/state
+ENV TMPDIR=/var/lib/rust-irrd/state
 USER 65532:65532
 EXPOSE 4343/tcp
 STOPSIGNAL SIGTERM

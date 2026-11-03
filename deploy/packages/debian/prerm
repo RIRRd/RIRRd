@@ -1,0 +1,9 @@
+#!/bin/sh
+set -eu
+
+if [ "$1" = remove ]; then
+    if [ -d /run/systemd/system ]; then
+        deb-systemd-invoke stop rust-irrd.service
+    fi
+    systemctl --root=/ --no-reload disable rust-irrd.service >/dev/null 2>&1 || true
+fi

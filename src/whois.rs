@@ -171,15 +171,15 @@ async fn handle(
         if !matches!(read, Ok(Ok(n)) if n > 0) {
             return;
         }
-        let response = match session_command(&line) {
+        let text = query_line(&line);
+        let prepared = text.and_then(|query| {
+            ripe_modifiers(query, &access.sources, &mut selected, &mut persistent)
+        });
+        let response = match prepared.and_then(session_command) {
             Some(SessionCommand::Quit) => return,
             Some(SessionCommand::Persistent) => {
                 persistent = true;
                 continue;
-            }
-            Some(SessionCommand::RipePersistent) => {
-                persistent = true;
-                "%  No entries found for the selected source(s).\n\n\n".to_owned()
             }
             Some(SessionCommand::ListSources) => frame_irrd(selected.join(",")),
             Some(SessionCommand::ListExclusions) => frame_irrd(excluded.join(",")),
@@ -201,7 +201,9 @@ async fn handle(
                 }
             }
             None => {
-                if let Some(query) = parse_query(&line) {
+                if prepared == Some("") && text.is_some_and(|query| query.starts_with('-')) {
+                    "%  No entries found for the selected source(s).\n\n\n".to_owned()
+                } else if let Some(query) = prepared.and_then(parse_query_text) {
                     if matches!(&query, Query::Nrtm3 { source, .. }
                         if !access.nrtm3.get(source).is_some_and(|peers| peers.contains(&peer)))
                     {
@@ -223,7 +225,9 @@ async fn handle(
                         response
                     }
                 } else {
-                    if line.trim_ascii_start().starts_with(b"!") {
+                    if prepared.is_some_and(|query| query.starts_with('!'))
+                        || line.trim_ascii_start().starts_with(b"!")
+                    {
                         "F Invalid or unsupported query\n".to_owned()
                     } else {
                         "% Invalid or unsupported query\r\n".to_owned()
@@ -245,7 +249,6 @@ async fn handle(
 enum SessionCommand<'a> {
     Quit,
     Persistent,
-    RipePersistent,
     ListSources,
     SelectSources(&'a str),
     ListExclusions,
@@ -254,12 +257,10 @@ enum SessionCommand<'a> {
     Noop,
 }
 
-fn session_command(line: &[u8]) -> Option<SessionCommand<'_>> {
-    let command = query_line(line)?;
+fn session_command(command: &str) -> Option<SessionCommand<'_>> {
     match command {
         "!!" => Some(SessionCommand::Persistent),
         "!q" | "!Q" => Some(SessionCommand::Quit),
-        "-k" => Some(SessionCommand::RipePersistent),
         "!s-lc" => Some(SessionCommand::ListSources),
         "!s-*" => Some(SessionCommand::Noop),
         "!e-lc" => Some(SessionCommand::ListExclusions),
@@ -269,6 +270,62 @@ fn session_command(line: &[u8]) -> Option<SessionCommand<'_>> {
             .strip_prefix("!s")
             .map(SessionCommand::SelectSources),
     }
+}
+
+fn ripe_modifiers<'a>(
+    mut query: &'a str,
+    allowed: &Arc<[String]>,
+    selected: &mut Arc<[String]>,
+    persistent: &mut bool,
+) -> Option<&'a str> {
+    if !query.starts_with('-') {
+        return Some(query);
+    }
+    let mut next_sources = None;
+    let mut keep_alive = false;
+    let mut ripe_only = false;
+    loop {
+        let (flag, argument) = word(query);
+        match flag {
+            "-s" => {
+                let (names, rest) = word(argument);
+                next_sources = Some(select_sources(names, allowed)?.into());
+                query = rest;
+            }
+            "-a" => {
+                next_sources = Some(allowed.clone());
+                query = argument;
+            }
+            "-k" => {
+                keep_alive = true;
+                query = argument;
+            }
+            "-F" | "-r" => query = argument,
+            "-V" => {
+                let (agent, rest) = word(argument);
+                if agent.is_empty() {
+                    return None;
+                }
+                query = rest;
+                continue;
+            }
+            _ => break,
+        }
+        ripe_only = true;
+    }
+    if ripe_only && query.starts_with('!') {
+        return None;
+    }
+    if let Some(next_sources) = next_sources {
+        *selected = next_sources;
+    }
+    *persistent |= keep_alive;
+    Some(query)
+}
+
+fn word(line: &str) -> (&str, &str) {
+    line.split_once(' ')
+        .map_or((line, ""), |(head, rest)| (head, rest.trim_start()))
 }
 
 fn select_sources(requested: &str, allowed: &[String]) -> Option<Vec<String>> {
@@ -478,8 +535,12 @@ fn frame_objects(objects: &[crate::rpsl::Object], irrd: bool) -> String {
     }
 }
 
+#[cfg(test)]
 fn parse_query(line: &[u8]) -> Option<Query> {
-    let line = query_line(line)?;
+    parse_query_text(query_line(line)?)
+}
+
+fn parse_query_text(line: &str) -> Option<Query> {
     if line == "!v" {
         return Some(Query::Version);
     }

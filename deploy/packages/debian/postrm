@@ -1,0 +1,6 @@
+#!/bin/sh
+set -eu
+
+if [ -d /run/systemd/system ] && command -v systemctl >/dev/null; then
+    systemctl daemon-reload
+fi

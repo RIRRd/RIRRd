@@ -18,6 +18,7 @@ IRRd v4.5.4, commit `8e8080dab744a348b7d0e6efcb53f403301dd075`, is the pinned co
 
 ## Verification
 
+- Scheduled NRTMv3 sync, additional RIPE modifiers and GraphQL root-source pinning passed 101 unit tests and eight end-to-end tests on Windows. The real TCP mirror test retries a malformed response and publishes the next valid update. Debian/RPM packaging definitions were linted and are queued for native Linux runtime checks.
 - The NRTMv4 apply checkpoint passed 96 unit tests and seven end-to-end tests on Windows. A signed but malformed delta rolled back data and version, and a later valid delta advanced both. Signed-fixture tests cover key rotation and session rollover. The Linux oracle passed 13 exact-key WHOIS cases against pinned upstream 4.5.4. The 25-case expanded corpus has a local self-check and is queued for live comparison.
 - The authoritative route checkpoint passed 89 unit tests and seven end-to-end tests on Windows, plus strict Clippy. Linux x86-64 and ARM64 passed the earlier CLI authoritative checkpoint. Foundation Docker Compose runtime passed in GitHub Actions.
 

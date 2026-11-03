@@ -27,7 +27,7 @@ jobs:
       - run: cargo +stable build --locked --release
       - name: Start pinned upstream
         run: docker compose -p irrd-454-oracle -f tools/oracle/compose.yaml up --build -d --wait --wait-timeout 120
-      - name: Compare exact WHOIS transcripts
+      - name: Compare WHOIS transcripts
         shell: bash
         run: |
           config="$RUNNER_TEMP/irrd-oracle-candidate.toml"

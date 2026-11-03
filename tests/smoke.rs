@@ -5,7 +5,7 @@ use std::path::Path;
 use std::process::{Child, Command, Output, Stdio};
 use std::sync::mpsc;
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use flate2::Compression;
 use flate2::write::GzEncoder;
@@ -532,6 +532,20 @@ max_snapshot_bytes = 4096
         whois(address, b"!maut-num,AS64496\n"),
         format!("A{}\n{test}C\n", test.len())
     );
+    assert_eq!(
+        whois(
+            address,
+            b"-k -s OTHER\n!s-lc\n!maut-num,AS64496\n-a\n!s-lc\n!q\n"
+        ),
+        format!(
+            "%  No entries found for the selected source(s).\n\n\nA6\nOTHER\nC\nA{}\n{other}C\n%  No entries found for the selected source(s).\n\n\nA11\nTEST,OTHER\nC\n",
+            other.len()
+        )
+    );
+    assert_eq!(
+        whois(address, b"-V fixture !maut-num,AS64496\n"),
+        format!("A{}\n{test}C\n", test.len())
+    );
     for (query, body) in [
         ("!iAS-ROOT", "AS-CHILD AS64496"),
         ("!iAS-ROOT,1", "AS64496 AS64497"),
@@ -810,6 +824,92 @@ TEST = ["127.0.0.1"]
     let unchanged: Value = serde_json::from_slice(&unchanged).unwrap();
     assert_eq!(unchanged["serial"], 44);
     assert_eq!(unchanged["up_to_date"], true);
+}
+
+#[test]
+fn scheduled_mirror_retries_a_bad_transcript_and_publishes_a_valid_update() {
+    let workspace = tempfile::tempdir().unwrap();
+    let upstream = TcpListener::bind("127.0.0.1:0").unwrap();
+    upstream.set_nonblocking(true).unwrap();
+    let endpoint = upstream.local_addr().unwrap();
+    let config = workspace.path().join("irrd.toml");
+    fs::write(
+        &config,
+        format!(
+            r#"database = "test.redb"
+sources = ["TEST"]
+listen = "127.0.0.1:0"
+max_connections = 4
+io_timeout_seconds = 2
+max_snapshot_bytes = 4096
+
+[nrtm3_sync.TEST]
+endpoint = "{endpoint}"
+interval_seconds = 1
+base_serial = 41
+"#
+        ),
+    )
+    .unwrap();
+    let snapshot = workspace.path().join("snapshot.rpsl");
+    fs::write(&snapshot, "aut-num: AS64496\nsource: TEST\n").unwrap();
+    successful(
+        cli(&config)
+            .args(["import", "snapshot", "--source", "TEST", "--file"])
+            .arg(snapshot)
+            .output()
+            .unwrap(),
+    );
+    let fixture = thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        for trailer in ["OTHER", "TEST"] {
+            let mut stream = loop {
+                match upstream.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(
+                            Instant::now() < deadline,
+                            "scheduled peer was not contacted"
+                        );
+                        thread::sleep(Duration::from_millis(25));
+                    }
+                    Err(error) => panic!("accepting scheduled peer: {error}"),
+                }
+            };
+            stream.set_nonblocking(false).unwrap();
+            stream.set_read_timeout(Some(IO_DEADLINE)).unwrap();
+            let mut request = String::new();
+            BufReader::new(&mut stream).read_line(&mut request).unwrap();
+            assert_eq!(request, "-g TEST:3:42-LAST\n");
+            write!(stream, "%START Version: 3 TEST 42-42\n\nADD 42\n\naut-num: AS64497\nsource: TEST\n\n%END {trailer}\n").unwrap();
+        }
+    });
+    let (server, address) = Server::start(&config);
+    let deadline = Instant::now() + Duration::from_secs(12);
+    loop {
+        let response = whois(address, b"!maut-num,AS64497\n");
+        if response.contains("aut-num: AS64497") {
+            break;
+        }
+        assert_eq!(response, "D\n");
+        assert!(
+            Instant::now() < deadline,
+            "scheduled update was not published"
+        );
+        thread::sleep(Duration::from_millis(50));
+    }
+    fixture.join().unwrap();
+    drop(server);
+    let status = successful(
+        cli(&config)
+            .args(["source", "status", "--source", "TEST"])
+            .output()
+            .unwrap(),
+    );
+    assert_eq!(
+        serde_json::from_slice::<Value>(&status).unwrap()["serial"],
+        42
+    );
 }
 
 #[test]

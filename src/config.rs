@@ -25,8 +25,18 @@ pub struct Config {
     pub connection_limit_exempt_ips: HashSet<IpAddr>,
     #[serde(default)]
     pub nrtm3_serve: HashMap<String, HashSet<IpAddr>>,
+    #[serde(default)]
+    pub nrtm3_sync: HashMap<String, MirrorConfig>,
     pub io_timeout_seconds: u64,
     pub max_snapshot_bytes: u64,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MirrorConfig {
+    pub endpoint: SocketAddr,
+    pub interval_seconds: u64,
+    pub base_serial: Option<u64>,
 }
 
 impl Config {
@@ -87,6 +97,24 @@ impl Config {
                 .into_iter()
                 .map(|address| address.to_canonical())
                 .collect();
+        }
+        ensure!(
+            config.nrtm3_sync.len() <= 16,
+            "at most 16 scheduled mirrors are supported"
+        );
+        for (source, mirror) in &config.nrtm3_sync {
+            ensure!(
+                seen.contains(source) && !config.authoritative_sources.contains(source),
+                "scheduled NRTMv3 source must be configured and non-authoritative"
+            );
+            ensure!(
+                !mirror.endpoint.ip().is_unspecified() && mirror.endpoint.port() != 0,
+                "NRTMv3 mirror endpoint must specify a peer IP and port"
+            );
+            ensure!(
+                (1..=86_400).contains(&mirror.interval_seconds),
+                "NRTMv3 mirror interval must be between 1 and 86400 seconds"
+            );
         }
         ensure!(
             (1..=4096).contains(&config.max_connections),

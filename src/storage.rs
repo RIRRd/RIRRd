@@ -254,9 +254,23 @@ impl Store {
         initial_base: Option<u64>,
         operations: impl IntoIterator<Item = Result<Operation, String>>,
     ) -> Result<u64> {
+        self.apply_nrtm3_if(source, declared, initial_base, operations, || true)
+    }
+
+    /// Check cancellation after waiting for active queries and before opening the transaction.
+    pub(crate) fn apply_nrtm3_if(
+        &self,
+        source: &str,
+        declared: (u64, u64),
+        initial_base: Option<u64>,
+        operations: impl IntoIterator<Item = Result<Operation, String>>,
+        should_start: impl FnOnce() -> bool,
+    ) -> Result<u64> {
         let source = canonical_source(source)?;
         let (start, end) = declared;
         ensure!(start > 0 && end >= start, "invalid NRTMv3 serial range");
+        let _gate = self.query_gate.blocking_write();
+        ensure!(should_start(), "NRTMv3 apply cancelled before write");
         let mut write = self.db.begin_write()?;
         write.set_durability(Durability::Immediate);
         let expire_through = end.saturating_sub(NRTM3_RETAINED_OPERATIONS);
