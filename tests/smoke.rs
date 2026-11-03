@@ -14,6 +14,115 @@ use serde_json::Value;
 const IO_DEADLINE: Duration = Duration::from_secs(5);
 
 #[test]
+fn authoritative_nrtm3_publishes_changes_and_rejects_ranges_across_rebases() {
+    let workspace = tempfile::tempdir().unwrap();
+    let config = workspace.path().join("irrd.toml");
+    fs::write(
+        &config,
+        r#"database = "registry.redb"
+sources = ["TEST"]
+authoritative_sources = ["TEST"]
+listen = "127.0.0.1:0"
+max_connections = 4
+io_timeout_seconds = 2
+max_snapshot_bytes = 4096
+
+[nrtm3_serve]
+TEST = ["127.0.0.1"]
+"#,
+    )
+    .unwrap();
+    let snapshot = workspace.path().join("bootstrap.rpsl");
+    let hash = bcrypt::hash_with_salt("journal test secret", 4, [9; 16]).unwrap();
+    fs::write(
+        &snapshot,
+        format!("mntner: TEST-MNT\nauth: BCRYPT-PW {hash}\nmnt-by: TEST-MNT\nsource: TEST\n"),
+    )
+    .unwrap();
+    let restore = || {
+        let mut command = cli(&config);
+        command
+            .args([
+                "import",
+                "snapshot",
+                "--source",
+                "TEST",
+                "--authoritative-restore",
+                "--file",
+            ])
+            .arg(&snapshot);
+        command
+    };
+    successful(restore().output().unwrap());
+    let exported = workspace.path().join("public.rpsl");
+    let report = successful(
+        cli(&config)
+            .args([
+                "export", "snapshot", "--source", "TEST", "--public", "--file",
+            ])
+            .arg(&exported)
+            .output()
+            .unwrap(),
+    );
+    let report: Value = serde_json::from_slice(&report).unwrap();
+    assert_eq!(report["serial"], 0);
+    assert_eq!(report["objects"], 1);
+    assert!(!fs::read_to_string(&exported).unwrap().contains("BCRYPT-PW"));
+
+    let submission = workspace.path().join("submission.rpsl");
+    let change = |body: &str, delete: bool| {
+        fs::write(&submission, body).unwrap();
+        let mut command = cli(&config);
+        command
+            .args(["update", "--source", "TEST", "--file"])
+            .arg(&submission)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        if delete {
+            command.arg("--delete");
+        }
+        let mut child = command.spawn().unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(b"journal test secret\n")
+            .unwrap();
+        successful(child.wait_with_output().unwrap());
+    };
+    change(
+        "person: Example Operator\naddress: Example Road\nphone: +1 202 555 0100\ne-mail: noc@example.net\nnic-hdl: OPER-TEST\nmnt-by: TEST-MNT\nsource: TEST\n",
+        false,
+    );
+    change(
+        "person: Delete Request\nnic-hdl: OPER-TEST\nsource: TEST\n",
+        true,
+    );
+    let (server, address) = Server::start(&config);
+    let transcript = whois(address, b"-g TEST:3:1-LAST\n");
+    assert!(transcript.starts_with("%START Version: 3 TEST 1-2\n"));
+    assert!(transcript.contains("DEL 2\n\nperson: Example Operator\n"));
+    assert!(!transcript.contains("Delete Request"));
+    drop(server);
+
+    successful(restore().args(["--serial-floor", "50"]).output().unwrap());
+    let status = successful(
+        cli(&config)
+            .args(["source", "status", "--source", "TEST"])
+            .output()
+            .unwrap(),
+    );
+    assert_eq!(
+        serde_json::from_slice::<Value>(&status).unwrap()["local_serial"],
+        51
+    );
+    let (_server, address) = Server::start(&config);
+    assert!(whois(address, b"-g TEST:3:3-LAST\n").contains("range is unavailable"));
+    assert!(whois(address, b"-g TEST:3:52-LAST\n").contains("no newer updates"));
+}
+
+#[test]
 fn authoritative_cli_checks_maintainers_and_rolls_back_a_mixed_batch() {
     let workspace = tempfile::tempdir().unwrap();
     let config = workspace.path().join("irrd.toml");

@@ -183,8 +183,11 @@ enum ExportCommand {
         #[arg(long)]
         file: PathBuf,
         /// Acknowledge that the raw snapshot may contain maintainer credentials.
-        #[arg(long, required = true)]
+        #[arg(long, required_unless_present = "public", conflicts_with = "public")]
         include_sensitive: bool,
+        /// Export redacted objects and report the matching NRTMv3 base serial.
+        #[arg(long)]
+        public: bool,
     },
 }
 
@@ -223,6 +226,9 @@ enum ImportCommand {
         /// Acknowledge replacement of an authoritative source by a trusted operator.
         #[arg(long)]
         authoritative_restore: bool,
+        /// Last serial published elsewhere, for rebuilding an older authoritative copy.
+        #[arg(long, requires = "authoritative_restore")]
+        serial_floor: Option<u64>,
     },
 }
 
@@ -341,6 +347,7 @@ fn main() -> Result<()> {
                     source,
                     file,
                     authoritative_restore,
+                    serial_floor,
                 },
         } => {
             ensure!(config.sources.contains(&source), "source is not configured");
@@ -351,7 +358,11 @@ fn main() -> Result<()> {
             let start = Instant::now();
             let records = import::snapshot(&file, config.max_snapshot_bytes)?;
             let store = Store::open(&config.database)?;
-            let objects = store.replace_source(&source, records)?;
+            let objects = if authoritative_restore {
+                store.replace_authoritative_source(&source, records, serial_floor)?
+            } else {
+                store.replace_source(&source, records)?
+            };
             println!(
                 "{}",
                 serde_json::json!({
@@ -376,24 +387,32 @@ fn main() -> Result<()> {
                 ExportCommand::Snapshot {
                     source,
                     file,
-                    include_sensitive,
+                    include_sensitive: _,
+                    public,
                 },
         } => {
-            ensure!(include_sensitive, "export requires --include-sensitive");
             ensure!(config.sources.contains(&source), "source is not configured");
             let store = Store::open_existing(&config.database)?;
-            let objects = export(&store, &source, &file)?;
-            println!(
-                "{}",
+            let report = if public {
+                let (objects, serial) =
+                    export(&file, |output| store.export_public_source(&source, output))?;
+                serde_json::json!({ "source": source, "objects": objects, "serial": serial })
+            } else {
+                let objects = export(&file, |output| store.export_source(&source, output))?;
                 serde_json::json!({ "source": source, "objects": objects })
-            );
+            };
+            println!("{report}");
         }
         Command::Source {
             command: SourceCommand::Purge { source, yes },
         } => {
             ensure!(yes, "source purge requires --yes");
             let store = open_source(&config, &source)?;
-            store.replace_source(&source, std::iter::empty())?;
+            if config.authoritative_sources.contains(&source) {
+                store.replace_authoritative_source(&source, std::iter::empty(), None)?;
+            } else {
+                store.replace_source(&source, std::iter::empty())?;
+            }
             println!(
                 "{}",
                 serde_json::json!({ "source": source, "purged": true })
@@ -404,6 +423,7 @@ fn main() -> Result<()> {
         } => {
             let store = open_source(&config, &source)?;
             let serial = store.source_serial(&source)?;
+            let local_serial = store.source_local_serial(&source)?;
             let nrtm4 = store.nrtm4_state(&source)?.map(|state| {
                 serde_json::json!({
                     "session_id": state.session_id, "version": state.version,
@@ -411,7 +431,7 @@ fn main() -> Result<()> {
             });
             println!(
                 "{}",
-                serde_json::json!({ "source": source, "serial": serial, "nrtm4": nrtm4 })
+                serde_json::json!({ "source": source, "serial": serial, "local_serial": local_serial, "nrtm4": nrtm4 })
             );
         }
         Command::Source {
@@ -671,7 +691,7 @@ async fn shutdown_signal() -> std::io::Result<()> {
     tokio::signal::ctrl_c().await
 }
 
-fn export(store: &Store, source: &str, path: &Path) -> Result<u64> {
+fn export<T>(path: &Path, write_snapshot: impl FnOnce(&mut dyn Write) -> Result<T>) -> Result<T> {
     let directory = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -680,7 +700,7 @@ fn export(store: &Store, source: &str, path: &Path) -> Result<u64> {
         tempfile::NamedTempFile::new_in(directory).context("creating export temporary file")?;
     let objects = {
         let mut output = BufWriter::new(file.as_file_mut());
-        let objects = store.export_source(source, &mut output)?;
+        let objects = write_snapshot(&mut output)?;
         output.flush().context("flushing snapshot")?;
         objects
     };

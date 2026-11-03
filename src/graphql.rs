@@ -638,6 +638,7 @@ struct DatabaseStatus {
     source: String,
     authoritative: bool,
     serial: Option<u64>,
+    local_serial: Option<u64>,
     journal: Option<(u64, u64)>,
     nrtm4: Option<(String, u64)>,
 }
@@ -672,7 +673,9 @@ fn database_status_type() -> GraphqlObject {
             Some(Value::from(false))
         }),
         ("localJournalKept", boolean.clone(), |status| {
-            Some(Value::from(status.journal.is_some()))
+            Some(Value::from(
+                status.local_serial.is_some() || status.journal.is_some(),
+            ))
         }),
         ("synchronisedSerials", boolean, |status| {
             let newest = status.journal.map(|(_, newest)| newest);
@@ -755,6 +758,7 @@ async fn database_status(
                 .map(|source| {
                     let authoritative = authoritative_sources.contains(&source);
                     let serial = store.source_serial(&source)?;
+                    let local_serial = store.source_local_serial(&source)?;
                     let journal = store.nrtm3_journal_bounds(&source)?;
                     let nrtm4 = store
                         .nrtm4_state(&source)?
@@ -763,6 +767,7 @@ async fn database_status(
                         source,
                         authoritative,
                         serial,
+                        local_serial,
                         journal,
                         nrtm4,
                     })

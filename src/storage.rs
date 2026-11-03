@@ -1,6 +1,7 @@
 //! Durable, indexed storage for locally imported source snapshots.
 
 use std::{
+    borrow::Cow,
     cmp::Ordering,
     collections::HashSet,
     io::Write,
@@ -59,6 +60,8 @@ const AS_BLOCK_COVER: TableDefinition<RangeCoverKey<'static>, ()> =
 // A row is (source, field, normalized value, class, object key).
 const INVERSE: TableDefinition<InverseKey, ()> = TableDefinition::new("inverse_v1");
 const SERIALS: TableDefinition<&str, u64> = TableDefinition::new("source_serials_v1");
+const AUTH_NRTM3_SERIALS: TableDefinition<&str, u64> =
+    TableDefinition::new("authoritative_nrtm3_serials_v1");
 const NRTM4_STATE: TableDefinition<&str, &str> = TableDefinition::new("nrtm4_state_v1");
 const MAX_NRTM4_STATE_BYTES: usize = 16 * 1024 * 1024;
 // The journal value is (is_add, object class, object key, raw object text).
@@ -69,6 +72,11 @@ const AUTH_AUDIT: TableDefinition<JournalKey, AuditValue> =
 const PROTECTED_NAMES: TableDefinition<Identity<'static>, ()> =
     TableDefinition::new("authoritative_protected_names_v1");
 const NRTM3_RETAINED_OPERATIONS: u64 = 4096;
+
+enum SourceReplacement {
+    Mirror,
+    Authoritative { serial_floor: Option<u64> },
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PrefixMatch {
@@ -137,6 +145,7 @@ impl Store {
             let mut inetnum_cover = write.open_table(INETNUM_COVER)?;
             let mut as_block_cover = write.open_table(AS_BLOCK_COVER)?;
             write.open_table(SERIALS)?;
+            write.open_table(AUTH_NRTM3_SERIALS)?;
             write.open_table(NRTM4_STATE)?;
             write.open_table(JOURNAL)?;
             let audit = write.open_table(AUTH_AUDIT)?;
@@ -250,6 +259,31 @@ impl Store {
         source: &str,
         objects: impl IntoIterator<Item = Result<Object>>,
     ) -> Result<u64> {
+        self.replace_source_mode(source, objects, SourceReplacement::Mirror)
+    }
+
+    /// Provision or rebase an authoritative publication, using an empty input
+    /// to purge. A serial floor can recover from an older backup without
+    /// reusing serials that clients may have seen.
+    pub fn replace_authoritative_source(
+        &self,
+        source: &str,
+        objects: impl IntoIterator<Item = Result<Object>>,
+        serial_floor: Option<u64>,
+    ) -> Result<u64> {
+        self.replace_source_mode(
+            source,
+            objects,
+            SourceReplacement::Authoritative { serial_floor },
+        )
+    }
+
+    fn replace_source_mode(
+        &self,
+        source: &str,
+        objects: impl IntoIterator<Item = Result<Object>>,
+        mode: SourceReplacement,
+    ) -> Result<u64> {
         let source = canonical_source(source)?;
         let mut write = self.db.begin_write()?;
         write.set_durability(Durability::Immediate);
@@ -257,9 +291,32 @@ impl Store {
         let mut skipped_lookup_values = 0;
         {
             reject_nrtm4_source(&write, &source)?;
+            match mode {
+                SourceReplacement::Mirror => {
+                    reject_authoritative_source(&write, &source)?;
+                    write.open_table(SERIALS)?.remove(source.as_str())?;
+                }
+                SourceReplacement::Authoritative { serial_floor } => {
+                    ensure!(
+                        write.open_table(SERIALS)?.get(source.as_str())?.is_none(),
+                        "cannot rebase an authoritative source with a committed mirror serial"
+                    );
+                    let mut serials = write.open_table(AUTH_NRTM3_SERIALS)?;
+                    let previous = serials.get(source.as_str())?.map(|serial| serial.value());
+                    let serial =
+                        previous
+                            .into_iter()
+                            .chain(serial_floor)
+                            .max()
+                            .map_or(Ok(0), |last| {
+                                last.checked_add(1)
+                                    .context("authoritative serial exhausted")
+                            })?;
+                    serials.insert(source.as_str(), serial)?;
+                }
+            }
             let mut records = write.open_table(OBJECTS)?;
             let mut indexes = WriteIndexes::open(&write)?;
-            write.open_table(SERIALS)?.remove(source.as_str())?;
             write.open_table(JOURNAL)?.retain_in(
                 (source.as_str(), 0)..=(source.as_str(), u64::MAX),
                 |_, _| false,
@@ -308,6 +365,7 @@ impl Store {
         let mut skipped_lookup_values = 0;
         {
             reject_nrtm4_source(&write, &source)?;
+            reject_authoritative_source(&write, &source)?;
             let mut serials = write.open_table(SERIALS)?;
             let mut journal = write.open_table(JOURNAL)?;
             let mut records = write.open_table(OBJECTS)?;
@@ -394,12 +452,17 @@ impl Store {
         let read = self.db.begin_read()?;
         read.open_table(OBJECTS)
             .context("missing or invalid registry objects table")?;
-        let serials = match read.open_table(SERIALS) {
-            Ok(table) => table,
-            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(None),
-            Err(error) => return Err(error.into()),
-        };
-        Ok(serials.get(source.as_str())?.map(|serial| serial.value()))
+        read_serial(&read, SERIALS, &source)
+    }
+
+    /// Return the authoritative publication serial, separately from the
+    /// upstream serial used to resume mirrored sources.
+    pub fn source_local_serial(&self, source: &str) -> Result<Option<u64>> {
+        let source = canonical_source(source)?;
+        let read = self.db.begin_read()?;
+        read.open_table(OBJECTS)
+            .context("missing or invalid registry objects table")?;
+        read_serial(&read, AUTH_NRTM3_SERIALS, &source)
     }
 
     /// Read the committed NRTMv4 trust and session state for a source.
@@ -458,15 +521,7 @@ impl Store {
                 serials.get(source.as_str())?.is_none(),
                 "cannot apply NRTMv4 to a source with a committed NRTM serial"
             );
-            let audit = write.open_table(AUTH_AUDIT)?;
-            ensure!(
-                audit
-                    .range((source.as_str(), 0)..=(source.as_str(), u64::MAX))?
-                    .next()
-                    .transpose()?
-                    .is_none(),
-                "cannot apply NRTMv4 to a source with authoritative history"
-            );
+            reject_authoritative_source(&write, &source)?;
 
             let mut metadata_only = false;
             if let Some(current) = current {
@@ -590,6 +645,11 @@ impl Store {
             }
 
             let mut audit = write.open_table(AUTH_AUDIT)?;
+            let mut journal = write.open_table(JOURNAL)?;
+            let mut local_serials = write.open_table(AUTH_NRTM3_SERIALS)?;
+            let mut local_serial = local_serials
+                .get(source.as_str())?
+                .map_or(0, |serial| serial.value());
             let mut protected = write.open_table(PROTECTED_NAMES)?;
             let pending_deletions: HashSet<_> = changes
                 .iter()
@@ -610,7 +670,10 @@ impl Store {
                 .context("system time before Unix epoch")?
                 .as_secs();
             for change in &changes {
-                let (identity, audit_action, report_action) = match change {
+                local_serial = local_serial
+                    .checked_add(1)
+                    .context("authoritative serial exhausted")?;
+                let (identity, audit_action, report_action, journal_text) = match change {
                     Change::Upsert(object) => {
                         let identity = validate_identity(&source, object)?;
                         if let Some(name) = protected_name(identity)
@@ -627,14 +690,18 @@ impl Store {
                             skipped == 0,
                             "invalid lookup attributes in authoritative object"
                         );
-                        if updated {
-                            (identity, "update", "modify")
+                        let (audit_action, report_action) = if updated {
+                            ("update", "modify")
                         } else {
-                            (identity, "create", "create")
-                        }
+                            ("create", "create")
+                        };
+                        (identity, audit_action, report_action, object.public_text())
                     }
                     Change::Delete(object) => {
                         let identity = validate_identity(&source, object)?;
+                        let previous = read_object(&records, identity.0, identity.1, identity.2)?
+                            .context("object to delete does not exist")?;
+                        let journal_text = Cow::Owned(previous.public_text().into_owned());
                         ensure!(
                             delete_object(&mut records, &mut indexes, identity)?,
                             "object to delete does not exist"
@@ -642,7 +709,7 @@ impl Store {
                         if let Some(name) = protected_name(identity) {
                             protected.insert(name, ())?;
                         }
-                        (identity, "delete", "delete")
+                        (identity, "delete", "delete", journal_text)
                     }
                 };
                 let (source, class, key) = identity;
@@ -650,8 +717,26 @@ impl Store {
                     .checked_add(1)
                     .context("authoritative audit sequence exhausted")?;
                 audit.insert((source, sequence), (timestamp, class, key, audit_action))?;
+                ensure!(
+                    journal
+                        .insert(
+                            (source, local_serial),
+                            (audit_action != "delete", class, key, journal_text.as_ref()),
+                        )?
+                        .is_none(),
+                    "duplicate authoritative NRTMv3 serial {local_serial}"
+                );
                 actions.push(report_action);
             }
+            journal.retain_in(
+                (source.as_str(), 0)
+                    ..=(
+                        source.as_str(),
+                        local_serial.saturating_sub(NRTM3_RETAINED_OPERATIONS),
+                    ),
+                |_, _| false,
+            )?;
+            local_serials.insert(source.as_str(), local_serial)?;
         }
         write.commit()?;
         Ok(actions)
@@ -708,6 +793,10 @@ impl Store {
             .next_back()
             .transpose()?
             .map_or(first, |(key, _)| key.value().1);
+        ensure!(
+            publication_serial(&read, &source)? == Some(last),
+            "NRTMv3 journal does not end at the publication serial"
+        );
         Ok(Some((first, last)))
     }
 
@@ -724,13 +813,8 @@ impl Store {
         let source = canonical_source(source)?;
         ensure!(start > 0, "invalid NRTMv3 journal range");
         let read = self.db.begin_read()?;
-        let serials = read
-            .open_table(SERIALS)
-            .context("NRTMv3 journal unavailable")?;
-        let committed = serials
-            .get(source.as_str())?
-            .context("NRTMv3 journal unavailable for source")?
-            .value();
+        let committed =
+            publication_serial(&read, &source)?.context("NRTMv3 journal unavailable for source")?;
         if end.is_none() && committed.checked_add(1) == Some(start) {
             return Ok(None);
         }
@@ -1063,24 +1147,24 @@ impl Store {
     }
 
     /// Write raw RPSL from one committed source snapshot, including any sensitive attributes.
-    pub fn export_source(&self, source: &str, mut output: impl Write) -> Result<u64> {
-        let source = source.to_ascii_uppercase();
-        let next_source = format!("{source}\0");
+    pub fn export_source(&self, source: &str, output: impl Write) -> Result<u64> {
+        let source = canonical_source(source)?;
         let read = self.db.begin_read()?;
-        let records = read.open_table(OBJECTS)?;
-        let mut count = 0;
-        for entry in records.range((source.as_str(), "", "")..(next_source.as_str(), "", ""))? {
-            let (_, text) = entry?;
-            let text = text.value();
-            output.write_all(text.as_bytes())?;
-            if !text.ends_with('\n') {
-                output.write_all(b"\n")?;
-            }
-            output.write_all(b"\n")?;
-            count += 1;
-        }
-        ensure!(count > 0, "source {source} has no objects to export");
-        Ok(count)
+        write_source_records(&read, &source, output, false)
+    }
+
+    /// Write public RPSL and return the publication serial observed by the
+    /// same redb read snapshot.
+    pub fn export_public_source(
+        &self,
+        source: &str,
+        output: impl Write,
+    ) -> Result<(u64, Option<u64>)> {
+        let source = canonical_source(source)?;
+        let read = self.db.begin_read()?;
+        let serial = publication_serial(&read, &source)?;
+        let count = write_source_records(&read, &source, output, true)?;
+        Ok((count, serial))
     }
 
     /// Check index coverage and retained journal metadata.
@@ -1216,20 +1300,78 @@ impl Store {
     }
 }
 
+fn write_source_records(
+    read: &ReadTransaction,
+    source: &str,
+    mut output: impl Write,
+    public: bool,
+) -> Result<u64> {
+    let next_source = format!("{source}\0");
+    let records = read.open_table(OBJECTS)?;
+    let mut count = 0;
+    for entry in records.range((source, "", "")..(next_source.as_str(), "", ""))? {
+        let (identity, text) = entry?;
+        let raw = text.value();
+        let object;
+        let text = if public {
+            let (_, class, key) = identity.value();
+            object = Object {
+                source: source.to_owned(),
+                class: class.to_owned(),
+                key: key.to_owned(),
+                text: raw.to_owned(),
+            };
+            object.public_text()
+        } else {
+            Cow::Borrowed(raw)
+        };
+        output.write_all(text.as_bytes())?;
+        if !text.ends_with('\n') {
+            output.write_all(b"\n")?;
+        }
+        output.write_all(b"\n")?;
+        count += 1;
+    }
+    ensure!(count > 0, "source {source} has no objects to export");
+    Ok(count)
+}
+
+fn read_serial(
+    read: &ReadTransaction,
+    definition: TableDefinition<&str, u64>,
+    source: &str,
+) -> Result<Option<u64>> {
+    let table = match read.open_table(definition) {
+        Ok(table) => table,
+        Err(redb::TableError::TableDoesNotExist(_)) => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    Ok(table.get(source)?.map(|serial| serial.value()))
+}
+
+fn publication_serial(read: &ReadTransaction, source: &str) -> Result<Option<u64>> {
+    let mirror = read_serial(read, SERIALS, source)?;
+    let local = read_serial(read, AUTH_NRTM3_SERIALS, source)?;
+    ensure!(
+        mirror.is_none() || local.is_none(),
+        "source has both local and mirror NRTMv3 serials"
+    );
+    Ok(local.or(mirror))
+}
+
 fn verify_nrtm4_state(read: &ReadTransaction) -> Result<()> {
     let states = match read.open_table(NRTM4_STATE) {
         Ok(table) => table,
         Err(redb::TableError::TableDoesNotExist(_)) => return Ok(()),
         Err(error) => return Err(error.into()),
     };
-    let serials = read.open_table(SERIALS)?;
     let audit = read.open_table(AUTH_AUDIT)?;
     for entry in states.iter()? {
         let (source, state) = entry?;
         let source = source.value();
         decode_nrtm4_state(source, state.value())?;
         ensure!(
-            serials.get(source)?.is_none(),
+            publication_serial(read, source)?.is_none(),
             "NRTMv4 source also has a committed NRTM serial"
         );
         ensure!(
@@ -1270,13 +1412,54 @@ fn reject_nrtm4_source(write: &WriteTransaction, source: &str) -> Result<()> {
     Ok(())
 }
 
+fn reject_authoritative_source(write: &WriteTransaction, source: &str) -> Result<()> {
+    let local = write.open_table(AUTH_NRTM3_SERIALS)?;
+    let audit = write.open_table(AUTH_AUDIT)?;
+    ensure!(
+        local.get(source)?.is_none()
+            && audit
+                .range((source, 0)..=(source, u64::MAX))?
+                .next()
+                .transpose()?
+                .is_none(),
+        "source has authoritative history or local publication state"
+    );
+    Ok(())
+}
+
 fn verify_journal(read: &ReadTransaction) -> Result<()> {
-    let journal = match read.open_table(JOURNAL) {
-        Ok(table) => table,
-        Err(redb::TableError::TableDoesNotExist(_)) => return Ok(()),
+    let local = match read.open_table(AUTH_NRTM3_SERIALS) {
+        Ok(table) => Some(table),
+        Err(redb::TableError::TableDoesNotExist(_)) => None,
         Err(error) => return Err(error.into()),
     };
-    let serials = read.open_table(SERIALS)?;
+    if let Some(local) = &local {
+        for entry in local.iter()? {
+            let (source, _) = entry?;
+            let source = source.value();
+            ensure!(
+                canonical_source(source)? == source,
+                "invalid authoritative serial source"
+            );
+            ensure!(
+                read_serial(read, SERIALS, source)?.is_none(),
+                "source has both local and mirror NRTMv3 serials"
+            );
+        }
+    }
+    let journal = match read.open_table(JOURNAL) {
+        Ok(table) => table,
+        Err(redb::TableError::TableDoesNotExist(_)) => {
+            if let Some(local) = &local {
+                ensure!(
+                    local.is_empty()?,
+                    "authoritative NRTMv3 journal table is missing"
+                );
+            }
+            return Ok(());
+        }
+        Err(error) => return Err(error.into()),
+    };
     let mut previous: Option<(String, u64, u64)> = None;
     for entry in journal.iter()? {
         let (key, _) = entry?;
@@ -1297,10 +1480,8 @@ fn verify_journal(read: &ReadTransaction) -> Result<()> {
                 "NRTMv3 journal does not end at the committed serial for {previous_source}"
             );
         }
-        let committed = serials
-            .get(source)?
-            .context("NRTMv3 journal has no corresponding source serial")?
-            .value();
+        let committed = publication_serial(read, source)?
+            .context("NRTMv3 journal has no corresponding source serial")?;
         ensure!(
             serial > committed.saturating_sub(NRTM3_RETAINED_OPERATIONS),
             "NRTMv3 journal exceeds retention for {source}"
@@ -1853,7 +2034,11 @@ mod tests {
             "mntner: TEST-MNT\nauth: BCRYPT-PW {hash}\nmnt-by: TEST-MNT\nsource: TEST\n"
         ))
         .map_err(anyhow::Error::msg)?;
-        store.replace_source("TEST", [Ok(maintainer)])?;
+        if store.source_local_serial("TEST")?.is_some() {
+            store.replace_authoritative_source("TEST", [Ok(maintainer)], None)?;
+        } else {
+            store.replace_source("TEST", [Ok(maintainer)])?;
+        }
         Ok(())
     }
 
@@ -1896,7 +2081,14 @@ mod tests {
             std::slice::from_ref(&updated)
         );
         assert_eq!(
-            store.apply_authoritative("TEST", vec![Change::Delete(updated)], &passwords)?,
+            store.apply_authoritative(
+                "TEST",
+                vec![Change::Delete(authoritative_contact(
+                    "Untrusted Delete Text",
+                    "EO1-TEST"
+                )?)],
+                &passwords,
+            )?,
             1
         );
         drop(store);
@@ -1904,6 +2096,15 @@ mod tests {
         let store = Store::open_existing(&path)?;
         assert!(store.exact("EO1-TEST", &sources, 1)?.is_empty());
         assert_eq!(store.verify()?, 1);
+        assert_eq!(store.source_serial("TEST")?, None);
+        assert_eq!(store.source_local_serial("TEST")?, Some(3));
+        assert_eq!(store.nrtm3_journal_bounds("TEST")?, Some((1, 3)));
+        let (_, journal) = store.nrtm3_journal("TEST", 1, None, 3, 65536)?.unwrap();
+        assert_eq!(
+            journal.iter().map(|entry| entry.kind).collect::<Vec<_>>(),
+            [Kind::Add, Kind::Add, Kind::Delete]
+        );
+        assert_eq!(journal[2].object.text, updated.text);
         let audit = store.source_history("TEST", 10)?;
         assert_eq!(audit.len(), 3);
         for (offset, (entry, action)) in
@@ -1956,6 +2157,8 @@ mod tests {
         );
         assert!(store.exact("FO1-TEST", &sources, 1)?.is_empty());
         assert!(store.db.begin_read()?.open_table(AUTH_AUDIT)?.is_empty()?);
+        assert_eq!(store.source_local_serial("TEST")?, None);
+        assert_eq!(store.nrtm3_journal_bounds("TEST")?, None);
 
         // The NRTM guard runs within the same write transaction as the update.
         store.apply_nrtm3(
@@ -2063,7 +2266,7 @@ mod tests {
         drop(store);
 
         let store = Store::open_for_service(&path)?;
-        store.replace_source("TEST", [])?;
+        store.replace_authoritative_source("TEST", [], None)?;
         seed_authoritative_maintainer(&store, &passwords[0])?;
         let error = store
             .apply_authoritative_report("TEST", vec![Change::Upsert(role)], &passwords)
@@ -2075,11 +2278,120 @@ mod tests {
         let maintainer = store
             .first("mntner", "TEST-MNT", &sources)?
             .context("test maintainer missing")?;
-        store.replace_source("TEST", [Ok(maintainer), Ok(person.clone())])?;
+        store.replace_authoritative_source("TEST", [Ok(maintainer), Ok(person.clone())], None)?;
         assert_eq!(
             store.apply_authoritative_report("TEST", vec![Change::Upsert(person)], &passwords)?,
             ["modify"]
         );
+        Ok(())
+    }
+
+    #[test]
+    fn authoritative_rebases_preserve_serial_floors_and_invalidate_old_history() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("registry.redb");
+        let store = Store::open(&path)?;
+        let passwords = ["fixture password".to_owned()];
+        let sources = ["TEST".to_owned()];
+        seed_authoritative_maintainer(&store, &passwords[0])?;
+        let maintainer = store.first("mntner", "TEST-MNT", &sources)?.unwrap();
+        store.replace_authoritative_source("TEST", [Ok(maintainer.clone())], None)?;
+        assert_eq!(store.source_local_serial("TEST")?, Some(0));
+        assert_eq!(store.nrtm3_journal_bounds("TEST")?, None);
+        let mut public = Vec::new();
+        assert_eq!(
+            store.export_public_source("TEST", &mut public)?,
+            (1, Some(0))
+        );
+        assert!(!String::from_utf8(public)?.contains("BCRYPT-PW"));
+        assert!(store.replace_source("TEST", []).is_err());
+        assert!(store.apply_nrtm3("TEST", (1, 1), Some(0), []).is_err());
+
+        let person = authoritative_contact("Example Operator", "EO1-TEST")?;
+        store.apply_authoritative("TEST", vec![Change::Upsert(person.clone())], &passwords)?;
+        assert!(
+            store
+                .replace_authoritative_source(
+                    "TEST",
+                    [Err(anyhow::anyhow!("interrupted snapshot"))],
+                    Some(10),
+                )
+                .is_err()
+        );
+        assert_eq!(store.source_local_serial("TEST")?, Some(1));
+        assert_eq!(store.nrtm3_journal_bounds("TEST")?, Some((1, 1)));
+        assert!(
+            store
+                .replace_authoritative_source("TEST", [], Some(u64::MAX))
+                .is_err()
+        );
+        assert_eq!(store.source_local_serial("TEST")?, Some(1));
+
+        store.replace_authoritative_source("TEST", [], Some(10))?;
+        assert_eq!(store.verify()?, 0);
+        assert!(store.export_public_source("TEST", std::io::sink()).is_err());
+        assert_eq!(store.source_local_serial("TEST")?, Some(11));
+        assert_eq!(store.nrtm3_journal_bounds("TEST")?, None);
+        assert!(store.nrtm3_journal("TEST", 2, None, 16, 65536).is_err());
+        assert!(store.nrtm3_journal("TEST", 12, None, 16, 65536)?.is_none());
+        drop(store);
+
+        let store = Store::open_for_service(&path)?;
+        store.replace_authoritative_source("TEST", [Ok(maintainer)], None)?;
+        assert_eq!(store.source_local_serial("TEST")?, Some(12));
+        store.apply_authoritative("TEST", vec![Change::Upsert(person)], &passwords)?;
+        assert_eq!(store.nrtm3_journal_bounds("TEST")?, Some((13, 13)));
+        assert!(store.nrtm3_journal("TEST", 12, None, 16, 65536).is_err());
+        assert_eq!(store.verify()?, 2);
+        assert_eq!(store.source_history("TEST", 10)?.len(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn authoritative_journal_retains_a_bounded_suffix_and_omits_credential_hashes() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = Store::open(&dir.path().join("registry.redb"))?;
+        let passwords = ["fixture password".to_owned()];
+        seed_authoritative_maintainer(&store, &passwords[0])?;
+        let person = authoritative_contact("Example Operator", "EO1-TEST")?;
+        store.apply_authoritative("TEST", vec![Change::Upsert(person.clone())], &passwords)?;
+        let write = store.db.begin_write()?;
+        {
+            write
+                .open_table(AUTH_NRTM3_SERIALS)?
+                .insert("TEST", NRTM3_RETAINED_OPERATIONS)?;
+            let mut journal = write.open_table(JOURNAL)?;
+            for serial in 2..=NRTM3_RETAINED_OPERATIONS {
+                journal.insert(
+                    ("TEST", serial),
+                    (true, "person", person.key.as_str(), person.text.as_str()),
+                )?;
+            }
+        }
+        write.commit()?;
+        assert_eq!(store.verify()?, 2);
+
+        let hash = bcrypt::hash(&passwords[0], 4)?;
+        let updated = crate::rpsl::parse(&format!(
+            "mntner: TEST-MNT\nadmin-c: EO1-TEST\nupd-to: noc@example.net\n\
+             auth: BCRYPT-PW {hash}\nmnt-by: TEST-MNT\nsource: TEST\n"
+        ))
+        .map_err(anyhow::Error::msg)?;
+        store.apply_authoritative("TEST", vec![Change::Upsert(updated)], &passwords)?;
+        let newest = NRTM3_RETAINED_OPERATIONS + 1;
+        assert_eq!(store.nrtm3_journal_bounds("TEST")?, Some((2, newest)));
+        assert!(
+            store
+                .nrtm3_journal("TEST", 1, None, 5000, 16 * 1024 * 1024)
+                .is_err()
+        );
+        let (_, records) = store
+            .nrtm3_journal("TEST", newest, None, 1, 65536)?
+            .unwrap();
+        assert_eq!(records[0].object.class, "mntner");
+        assert!(!records[0].object.text.contains("auth:"));
+        assert!(!records[0].object.text.contains(&hash));
+        assert_eq!(store.verify()?, 2);
         Ok(())
     }
 

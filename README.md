@@ -121,6 +121,10 @@ EXAMPLE = ["127.0.0.1", "::1"]
 
 Peers can request `-g EXAMPLE:3:42-LAST` or give an explicit end serial. Responses allow at most 1,024 operations and 4 MiB of raw object text per request. Use an explicit range when catching up in chunks. The server checks the source-specific peer list independently of the connection's WHOIS source selection. Journal text uses the same credential redaction as public WHOIS. Snapshot replacement and source purge clear retained journal history.
 
+Authoritative submissions add local operations in the same transaction as the registry change. `source status` reports their cursor as `local_serial`. A trusted snapshot replacement or purge creates a gap in the serial history so peers requesting across it must reload a snapshot. To bootstrap a peer, use `export snapshot --source EXAMPLE --public --file example.rpsl` and give the peer the `serial` reported by the command along with that file.
+
+After restoring an older whole database backup, keep mirroring disabled while rebuilding a previously published source. Reimport a trusted raw snapshot with `--authoritative-restore --serial-floor` set to the last serial published before recovery. The next snapshot carries a serial above that floor.
+
 Enable scheduled NRTMv3 for an already imported non-authoritative source:
 
 ```toml

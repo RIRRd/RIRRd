@@ -16,9 +16,15 @@ package metadata and files, and installs in disposable Debian 12 and
 Fedora 43 containers. It retains archives and SHA-256 checksums as short-lived
 workflow artifacts. The containers verify the systemd unit, configuration and
 state ownership, import a fixture as the service account, query the installed
-binary and verify the database after SIGTERM. Systemd is not PID 1 in these
-tests, so service-manager startup requires a native host test.
-[Workflow](../../.github/workflows/native-packages.yml)
+binary and verify the database after SIGTERM. The RPM uses this direct-process
+test in Fedora 43.
+
+The workflow also installs the Debian archive on native Ubuntu 24.04 amd64
+and ARM64 runners. On each host, it imports a fixture as the service account,
+starts the packaged unit through systemd, queries the running daemon over
+WHOIS, stops it through systemd and verifies the database. Both supervised
+checks passed in the linked run.
+[Workflow](../../.github/workflows/native-packages.yml) · [Passing run](https://github.com/Peravix/Rirrd/actions/runs/41615975939)
 
 ## Install and bootstrap
 
