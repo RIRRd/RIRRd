@@ -232,6 +232,85 @@ max_snapshot_bytes = 4096
     );
 }
 
+#[test]
+fn legacy_md5_auth_is_source_opt_in_and_can_rotate_to_bcrypt() {
+    let workspace = tempfile::tempdir().unwrap();
+    let config = workspace.path().join("irrd.toml");
+    let settings = r#"database = "test.redb"
+sources = ["TEST"]
+authoritative_sources = ["TEST"]
+listen = "127.0.0.1:0"
+max_connections = 4
+io_timeout_seconds = 2
+max_snapshot_bytes = 4096
+"#;
+    fs::write(&config, settings).unwrap();
+    let snapshot = workspace.path().join("snapshot.rpsl");
+    let maintainer = |auth: &str| {
+        format!(
+            "mntner: LEGACY-MNT\nadmin-c: ADMIN-TEST\nupd-to: noc@example.net\nauth: {auth}\nmnt-by: LEGACY-MNT\nsource: TEST\n"
+        )
+    };
+    let legacy = maintainer("MD5-PW $1$salt$qJH7.N4xYta3aEG/dfqo/0");
+    fs::write(
+        &snapshot,
+        format!(
+            "{legacy}\nperson: Admin Test\nnic-hdl: ADMIN-TEST\nmnt-by: LEGACY-MNT\nsource: TEST\n"
+        ),
+    )
+    .unwrap();
+    successful(
+        cli(&config)
+            .args([
+                "import",
+                "snapshot",
+                "--source",
+                "TEST",
+                "--authoritative-restore",
+                "--file",
+            ])
+            .arg(snapshot)
+            .output()
+            .unwrap(),
+    );
+    let submission = workspace.path().join("update.rpsl");
+    let modern = maintainer(&format!(
+        "BCRYPT-PW {}",
+        bcrypt::hash_with_salt("replacement test secret", 4, [9; 16]).unwrap()
+    ));
+    let submit = |body: &str, passwords: &[u8]| {
+        fs::write(&submission, body).unwrap();
+        let mut child = cli(&config)
+            .args(["update", "--source", "TEST", "--file"])
+            .arg(&submission)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(passwords).unwrap();
+        child.wait_with_output().unwrap()
+    };
+    let both = b"password\nreplacement test secret\n";
+    assert!(!submit(&modern, both).status.success());
+    fs::write(
+        &config,
+        format!("{settings}legacy_md5_sources = [\"TEST\"]\n"),
+    )
+    .unwrap();
+    successful(submit(&modern, both));
+    assert!(!submit(&legacy, both).status.success());
+    let history = successful(
+        cli(&config)
+            .args(["source", "history", "--source", "TEST"])
+            .output()
+            .unwrap(),
+    );
+    let history: Vec<Value> = serde_json::from_slice(&history).unwrap();
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0]["key"], "LEGACY-MNT");
+}
+
 fn cli(config: &Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_rust-irrd"));
     command.arg("--config").arg(config).env("RUST_LOG", "info");

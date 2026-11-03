@@ -5,6 +5,7 @@ mod authoritative_validation;
 mod config;
 mod graphql;
 mod import;
+mod legacy_md5;
 mod maintainer_auth;
 mod mirror_worker;
 mod nrtm3;
@@ -331,7 +332,10 @@ fn main() -> Result<()> {
             );
         }
         Command::Server => {
-            let store = Arc::new(Store::open_for_service(&config.database)?);
+            let store = Arc::new(
+                Store::open_for_service(&config.database)?
+                    .with_legacy_md5_sources(config.legacy_md5_sources.clone()),
+            );
             tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()?
@@ -540,7 +544,8 @@ fn open_source(config: &Config, source: &str) -> Result<Store> {
         config.sources.iter().any(|configured| configured == source),
         "source is not configured"
     );
-    Store::open_for_service(&config.database)
+    Ok(Store::open_for_service(&config.database)?
+        .with_legacy_md5_sources(config.legacy_md5_sources.clone()))
 }
 
 fn apply_nrtm3(

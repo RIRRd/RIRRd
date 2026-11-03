@@ -6,7 +6,7 @@ use anyhow::{Context, Result, ensure};
 
 use crate::{
     authoritative_validation::{contacts, maintainers, validate},
-    maintainer_auth::{AuthBudget, authenticates, validate_new},
+    maintainer_auth::{AuthBudget, authenticates, authenticates_existing, validate_new},
     rpsl::Object,
 };
 
@@ -32,6 +32,7 @@ pub fn authorize(
     existing: impl Fn(&str, &str) -> Result<Option<Object>>,
     referenced: impl Fn(&str, &str) -> Result<bool>,
     route_parent: impl Fn(&Object) -> Result<Option<Object>>,
+    legacy_md5: bool,
 ) -> Result<()> {
     ensure!(
         (1..=MAX_CHANGES).contains(&changes.len()),
@@ -83,7 +84,8 @@ pub fn authorize(
                     &existing,
                     passwords,
                     &mut budget,
-                    &mut authenticated
+                    &mut authenticated,
+                    legacy_md5,
                 )?,
                 "maintainer authentication failed"
             );
@@ -113,7 +115,8 @@ pub fn authorize(
                 &existing,
                 passwords,
                 &mut budget,
-                &mut authenticated
+                &mut authenticated,
+                legacy_md5,
             )?,
             "maintainer authentication failed"
         );
@@ -131,7 +134,8 @@ pub fn authorize(
                     &existing,
                     passwords,
                     &mut budget,
-                    &mut authenticated
+                    &mut authenticated,
+                    legacy_md5,
                 )?,
                 "route parent authentication failed"
             );
@@ -158,6 +162,7 @@ fn any_maintainer(
     passwords: &[String],
     budget: &mut AuthBudget,
     authenticated: &mut HashMap<String, bool>,
+    legacy_md5: bool,
 ) -> Result<bool> {
     for key in maintainers(object).context("invalid maintainer references")? {
         let Some(maintainer) = lookup("mntner", &key)? else {
@@ -166,7 +171,7 @@ fn any_maintainer(
         let passed = match authenticated.get(&key) {
             Some(passed) => *passed,
             None => {
-                let passed = authenticates(&maintainer, passwords, budget)?;
+                let passed = authenticates_existing(&maintainer, passwords, budget, legacy_md5)?;
                 authenticated.insert(key, passed);
                 passed
             }

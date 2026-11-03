@@ -15,6 +15,8 @@ pub struct Config {
     pub sources: Vec<String>,
     #[serde(default)]
     pub authoritative_sources: HashSet<String>,
+    #[serde(default)]
+    pub legacy_md5_sources: HashSet<String>,
     pub listen: SocketAddr,
     pub http_listen: Option<SocketAddr>,
     #[serde(default)]
@@ -83,6 +85,12 @@ impl Config {
             !config.http_authoritative_updates
                 || (config.http_listen.is_some() && !config.authoritative_sources.is_empty()),
             "HTTP updates require http_listen and at least one authoritative source"
+        );
+        ensure!(
+            config
+                .legacy_md5_sources
+                .is_subset(&config.authoritative_sources),
+            "legacy_md5_sources must be authoritative"
         );
         for (source, peers) in &mut config.nrtm3_serve {
             ensure!(

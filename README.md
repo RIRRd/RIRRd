@@ -157,6 +157,8 @@ Route creation also checks the same-source parent when one exists. Exact or smal
 
 The submission applies atomically. Run `source history --source EXAMPLE` offline to read recent committed identities and actions. The history omits passwords, hashes and object bodies.
 
+To migrate stored `MD5-PW` credentials, temporarily list the authoritative source in `legacy_md5_sources`. Existing MD5-Crypt hashes can then authenticate, but proposed maintainer records must use bcrypt. To rotate a self-maintained record, supply the current password and the password matching the proposed bcrypt hash. Remove the source from this list once migration is complete.
+
 For local HTTP submission, set `http_authoritative_updates = true` alongside a loopback `http_listen`. Send JSON to `/v1/submit/` using POST to create or modify, or DELETE to remove. Use an `objects` list with one `object_text` per entry and a top-level `passwords` list. Each submission covers a single authoritative source. The server commits the batch and its audit records together. HTTP reports omit object text and secrets. Deleted contact and maintainer names are protected from reuse in their source.
 
 ## Development checks

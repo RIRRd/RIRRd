@@ -88,6 +88,7 @@ pub struct AuditEntry {
 pub struct Store {
     db: Database,
     query_gate: RwLock<()>,
+    legacy_md5_sources: HashSet<String>,
 }
 
 impl Store {
@@ -178,6 +179,7 @@ impl Store {
         Ok(Self {
             db,
             query_gate: RwLock::new(()),
+            legacy_md5_sources: HashSet::new(),
         })
     }
 
@@ -187,12 +189,18 @@ impl Store {
         Ok(Self {
             db,
             query_gate: RwLock::new(()),
+            legacy_md5_sources: HashSet::new(),
         })
     }
 
     /// Hold a read guard across a service query that performs multiple reads.
     pub fn query_gate(&self) -> &RwLock<()> {
         &self.query_gate
+    }
+
+    pub fn with_legacy_md5_sources(mut self, sources: HashSet<String>) -> Self {
+        self.legacy_md5_sources = sources;
+        self
     }
 
     /// Compact an offline registry after validating its application indexes and metadata.
@@ -544,6 +552,7 @@ impl Store {
                 |class, key| read_object(&records, &source, class, key),
                 |class, key| indexes.has_strong_reference(&source, class, key),
                 |route| indexes.route_parent(&records, route),
+                self.legacy_md5_sources.contains(&source),
             )?;
 
             let mut audit = write.open_table(AUTH_AUDIT)?;
