@@ -7,6 +7,8 @@ rirrd.co.uk {
 	root * /var/www/rirrd-coming-soon
 	encode gzip
 	@dashboard path /dashboard/*
+	@dashboardAssets path /dashboard/ /dashboard/index.html /dashboard/app.js /dashboard/style.css
+	header @dashboardAssets Cache-Control "no-cache"
 	@page not path /dashboard/*
 	header {
 		X-Content-Type-Options nosniff
