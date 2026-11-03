@@ -25,6 +25,15 @@ oracle results or protocol interop evidence as appropriate. Release
 extensions are tracked separately from upstream behaviour. Each row stays
 open until the stated behaviour and safety checks are demonstrated.
 
+## Beta 0.1.0-beta.1
+
+The [beta launch checkpoint](BETA_LAUNCH_CHECKPOINT.md) records the two-domain
+products, measured SVG graphs, RPKI covering/batch/status additions, native and
+ARM64 QEMU tests, 45+45 WHOIS / 71 authorization oracle matches and RPKI fuzzing.
+These additions do not establish live filtering, full mirroring/authentication
+parity or release qualification. Public GitHub release/CI evidence remains
+pending authenticated repository access.
+
 ## Community website and independent console
 
 The [community UX checkpoint](COMMUNITY_UX_CHECKPOINT.md) records separate

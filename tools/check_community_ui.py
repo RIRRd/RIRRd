@@ -59,6 +59,10 @@ with tempfile.TemporaryDirectory(prefix='rirrd-community-browser-') as profile:
         browser.js('location.hash="rpki"');browser.wait('!document.getElementById("rpki-submit").disabled')
         browser.js('document.getElementById("rpki-form").requestSubmit()');browser.wait('document.getElementById("rpki-verdict").textContent==="VALID"')
         assert not browser.js('document.body.innerText.includes("127.0.0.1")')
+        assert browser.js('document.getElementById("rpki-covering").textContent.includes("AS3333")')
+        browser.js('document.getElementById("rpki-batch-form").requestSubmit()')
+        browser.wait('document.getElementById("rpki-batch-results").querySelectorAll("tr").length===3')
+        assert browser.js('document.getElementById("rpki-batch-results").textContent.includes("VALID")')
         for width in [320,390,1440]:
             browser.call('Emulation.setDeviceMetricsOverride',{'width':width,'height':1100,'deviceScaleFactor':1,'mobile':width<650},True)
             for page in ['overview','query','sources','rpki','api','connect','system']:

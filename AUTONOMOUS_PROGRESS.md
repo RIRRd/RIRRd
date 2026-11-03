@@ -1,3 +1,12 @@
+## Two-domain beta launch — 3 November 2026
+
+The [beta checkpoint](docs/compatibility/BETA_LAUNCH_CHECKPOINT.md) records the
+project showcase on rirrd.co.uk, the separate community network on irrd.tools,
+new identities/graphs, typed RPKI refresh indexing, covering ROAs, bounded batch
+validation, beta packages/notices and Linux/ARM/oracle/fuzz evidence. Public GitHub
+visibility and release/CI verification still require repository/admin authentication.
+Full parity and production qualification remain incomplete.
+
 ## Community website and independent console — 3 November 2026
 
 The [UI and operations checkpoint](docs/compatibility/COMMUNITY_UX_CHECKPOINT.md)
