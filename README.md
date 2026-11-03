@@ -4,7 +4,7 @@ This development branch contains a transactional embedded registry, local snapsh
 
 ## Local evaluation
 
-Install stable Rust with the platform's native linker, then build and run:
+Install stable Rust with the platform's native linker and C compiler for the TLS dependency, then build and run:
 
 ```sh
 cargo build --locked
@@ -136,7 +136,7 @@ base_serial = 41
 
 The first update uses the snapshot's base serial. Subsequent attempts read the committed serial. The worker stages each response privately before acquiring the write gate, retries on the configured interval, and publishes only complete, valid transcripts. Each scheduled response is capped at 64 MiB and the peer deadline is capped at 15 seconds.
 
-## Offline NRTMv4 verification
+## NRTMv4 verification and mirroring
 
 Provide an independently obtained P-256 public key in SPKI PEM format, the compact ES256 notification, and optionally a local snapshot or delta:
 
@@ -156,7 +156,16 @@ rust-irrd source apply-nrtm4 --source EXAMPLE \
   --file snapshot.json.gz --file delta.json.gz
 ```
 
-Objects, indexes and trust state commit together. Later applications use the persisted key and support an authenticated successor key and a new session snapshot. Old sessions and keys are rejected. Supply no files when the notification is already current. Source status shows the NRTMv4 session and version. Generic purge, snapshot replacement and NRTMv3 updates reject NRTMv4-managed sources to preserve their replay protection. HTTPS retrieval, online scheduling and server publication remain open.
+Objects, indexes and trust state commit together. Later applications use the persisted key and support an authenticated successor key and a new session snapshot. Old sessions and keys are rejected. Supply no files when the notification is already current. Source status shows the NRTMv4 session and version. Generic purge, snapshot replacement and NRTMv3 updates reject NRTMv4-managed sources to preserve their replay protection.
+
+For a one-shot HTTPS sync, stop the daemon and run:
+
+```sh
+rust-irrd source sync-nrtm4 --source EXAMPLE --public-key peer.pem \
+  --notification-url https://mirror.example.net/nrtm4/update-notification-file.jose
+```
+
+Set the URL to a trusted peer. TLS uses the WebPKI root set. The client rejects redirects and fetches only signed relative references on the same HTTPS origin, after authenticating the notification. Subsequent syncs use the persisted signing key. Online scheduling and NRTMv4 server publication remain open.
 
 ## Offline route origin validation
 

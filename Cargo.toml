@@ -25,4 +25,5 @@ tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-threa
 toml = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+ureq = { version = "=3.5.1", default-features = false, features = ["rustls"] }
 zeroize = "1"

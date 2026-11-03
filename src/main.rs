@@ -14,6 +14,7 @@ mod nrtm4;
 mod nrtm4_apply;
 mod nrtm4_local;
 mod nrtm4_records;
+mod nrtm4_remote;
 mod nrtm4_state;
 mod nrtm_client;
 mod route_policy;
@@ -118,6 +119,16 @@ enum SourceCommand {
         /// Supply each selected file in snapshot-then-delta order.
         #[arg(long = "file")]
         files: Vec<PathBuf>,
+    },
+    /// Fetch and apply a signed NRTMv4 update from a trusted HTTPS endpoint.
+    SyncNrtm4 {
+        #[arg(long)]
+        source: String,
+        #[arg(long)]
+        notification_url: String,
+        /// Independently trusted P-256 public key, required for the first sync.
+        #[arg(long)]
+        public_key: Option<PathBuf>,
     },
     /// Read committed authoritative changes, newest first.
     History {
@@ -252,16 +263,7 @@ fn main() -> Result<()> {
                     files,
                 },
         } => {
-            ensure!(
-                !config.authoritative_sources.contains(&source),
-                "source is authoritative"
-            );
-            ensure!(config.sources.contains(&source), "source is not configured");
-            let store = if config.database.exists() {
-                Store::open_for_service(&config.database)?
-            } else {
-                Store::open(&config.database)?
-            };
+            let store = open_nrtm4_source(&config, &source)?;
             let result = nrtm4_apply::apply(
                 &store,
                 &source,
@@ -269,6 +271,35 @@ fn main() -> Result<()> {
                 public_key.as_deref(),
                 &files,
                 config.max_snapshot_bytes,
+            )?;
+            println!("{result}");
+        }
+        Command::Source {
+            command:
+                SourceCommand::SyncNrtm4 {
+                    source,
+                    notification_url,
+                    public_key,
+                },
+        } => {
+            let store = open_nrtm4_source(&config, &source)?;
+            let public_key = public_key
+                .as_deref()
+                .map(|path| nrtm4_local::read_small(path, nrtm4::MAX_PUBLIC_KEY_BYTES))
+                .transpose()?;
+            let fetcher = nrtm4_remote::Fetcher::new(
+                &notification_url,
+                Duration::from_secs(config.io_timeout_seconds.min(30)),
+                Duration::from_secs(120),
+            )?;
+            let compact = fetcher.notification()?;
+            let result = nrtm4_apply::apply_remote(
+                &store,
+                &source,
+                &compact,
+                public_key.as_deref(),
+                config.max_snapshot_bytes,
+                |reference, remaining| fetcher.file(reference, remaining),
             )?;
             println!("{result}");
         }
@@ -588,6 +619,22 @@ fn read_update_passwords() -> Result<Zeroizing<Vec<String>>> {
         "provide between 1 and 20 passwords"
     );
     Ok(passwords)
+}
+
+fn open_nrtm4_source(config: &Config, source: &str) -> Result<Store> {
+    ensure!(
+        !config.authoritative_sources.contains(source),
+        "source is authoritative"
+    );
+    ensure!(
+        config.sources.iter().any(|name| name == source),
+        "source is not configured"
+    );
+    if config.database.exists() {
+        Store::open_for_service(&config.database)
+    } else {
+        Store::open(&config.database)
+    }
 }
 
 fn open_source(config: &Config, source: &str) -> Result<Store> {

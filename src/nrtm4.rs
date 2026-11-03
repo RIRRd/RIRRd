@@ -244,7 +244,7 @@ fn validate_timestamp(timestamp: &str, now: SystemTime) -> Result<()> {
     Ok(())
 }
 
-fn valid_relative_path(path: &str) -> bool {
+pub(crate) fn valid_relative_path(path: &str) -> bool {
     path.len() <= MAX_URL_BYTES
         && path.split('/').all(|segment| {
             !segment.is_empty()

@@ -82,4 +82,8 @@ run built and started the pinned upstream stack, loaded five fixture
 objects into the Rust candidate and matched all 13 exact-key WHOIS
 cases. The comparison checked framing before applying the documented
 attribute-padding and filtered-auth placeholder allowances.
-[Linux CI run](https://github.com/Peravix/Rirrd/actions/runs/41612205799)
+[Initial Linux run](https://github.com/Peravix/Rirrd/actions/runs/41612205799)
+
+The expanded fixture matched all 25 TCP cases and all 25 HTTP cases in Linux
+CI. The workflow waits for both listeners and reloads the pinned daemon's
+preload cache after they have started. [Expanded Linux run](https://github.com/Peravix/Rirrd/actions/runs/41616928804)
