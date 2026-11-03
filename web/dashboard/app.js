@@ -89,7 +89,7 @@
   }
   function renderDetail() {
     const row = sourceRows().find(row => row.source === el('source-detail').value); if (!row) return;
-    const out = el('source-detail-content'); out.replaceChildren();
+    const out = el('source-detail-content'); const opened=new Set(out.dataset.source===row.source?[...out.querySelectorAll('details[open]')].map(item=>item.dataset.receipt):[]);out.dataset.source=row.source;out.replaceChildren();
     const summary = document.createElement('p'); summary.textContent = row.source + ' · ' + health(row)[0] + (row.provider ? ' · ' + row.provider : ''); out.append(summary);
     const grid = document.createElement('div'); grid.className = 'class-grid';
     for (const [name, total] of Object.entries(classes(row)).sort((a, b) => b[1] - a[1])) { const box = document.createElement('div'), label = document.createElement('span'), number = document.createElement('strong'); label.textContent = name; number.textContent = count(total); box.append(label, number); grid.append(box); }
@@ -97,6 +97,7 @@
     const note = document.createElement('p'); note.className = 'fine'; note.textContent = row.mirror ? 'Committed mirror serial: ' + (row.mirror.serial ?? 'Not reported') + '. Last successful check: ' + (row.mirror.last_success_unix_seconds ? new Date(row.mirror.last_success_unix_seconds * 1000).toISOString() : 'Unreported') : 'Snapshot imported: ' + (row.imported_at || 'Unreported') + '. A snapshot is not a continuous feed.'; out.append(note);
     for (const file of row.downloads || []) {
       const details = document.createElement('details'), title = document.createElement('summary'), info = document.createElement('p'), hash = document.createElement('pre');
+      details.dataset.receipt=file.url;details.open=opened.has(file.url);
       title.textContent = 'Publication receipt · ' + (file.url.split('/').pop() || row.source);
       info.className = 'fine'; info.textContent = file.url + ' · fetched ' + file.fetched_at + ' · ' + (file.transport_authenticated ? 'HTTPS' : 'Unauthenticated FTP') + (file.mirror_serial != null ? ' · peer serial ' + file.mirror_serial + ' · peer updated ' + file.mirror_last_update : '');
       hash.textContent = 'SHA-256: ' + file.sha256; details.append(title, info, hash); out.append(details);
@@ -107,11 +108,16 @@
     const cutoff = Date.now() / 1000 - Number(el('history-range').value);
     const samples = historyData.samples.filter(p => p.timestamp >= cutoff);
     const charts = window.RIRRdCharts;
+    const selected=location.hash.slice(1)||'overview';
+    if(selected==='overview'){
     charts.line(el('query-chart'), samples, 'http_qps', 'Public HTTP queries per second', v => v.toFixed(2) + '/s');
     charts.line(el('latency-chart'), samples, 'http_p95_ms', 'Recent HTTP p95 response time', v => v.toFixed(1) + ' ms');
+    }
+    if(selected==='system'){
     charts.line(el('memory-chart'), samples, 'rss_bytes', 'Registry process resident memory', v => (v / 1048576).toFixed(0) + ' MiB');
-    charts.line(el('vrp-chart'), samples, 'vrps', 'Validated RPKI origin payload count', v => Math.round(v).toLocaleString());
     charts.line(el('cpu-chart'), samples, 'cpu_percent', 'Registry CPU as a percentage of one core', v => v.toFixed(1) + '%');
+    }
+    if(selected==='rpki')charts.line(el('vrp-chart'),samples,'vrps','Validated RPKI origin payload count',v=>Math.round(v).toLocaleString());
     text('history-note', historyData.scope + ' Samples: ' + samples.length + '. Collection began ' + (historyData.samples[0] ? new Date(historyData.samples[0].timestamp * 1000).toLocaleString() : 'just now') + '.');
   }
   async function refreshHistory(force) {
@@ -249,12 +255,12 @@
     try {
       metadata = await json('meta.json');
       if (publicMode() && location.hash === '#network') { location.replace('/#nodes'); return; }
-      text('mode-badge', publicMode() ? 'Live · Beta' : 'Private instance'); text('brand-caption', publicMode() ? 'PUBLIC NODE TOOLS' : 'INSTANCE CONSOLE');
+      text('mode-badge', publicMode() ? 'Live · Beta' : 'Private instance'); text('brand-caption', publicMode() ? 'Public node' : 'Your instance');
       if (publicMode()) { document.querySelector('.brand>span:last-child').firstChild.nodeValue = 'irrd.tools'; document.querySelector('.mobile-brand').textContent = 'irrd.tools'; }
       text('node-name', metadata.node?.name || 'RIRRd instance');
       text('node-description', publicMode() ? [metadata.node?.location, metadata.node?.provider ? 'Hosted by ' + metadata.node.provider : '', 'Read-only routing tools'].filter(Boolean).join(' · ') : 'Your independently operated IRR and optional RPKI validator.');
       text('instance-label', publicMode() ? 'Public read-only node' : 'Independent self-hosted instance'); el('community-link').hidden = !publicMode();
-      text('mode-notice', publicMode() ? 'Public community service · Source update modes are shown individually. Use the community website to browse or submit nodes.' : 'Self-hosted RIRRd console · Independent of the public community network. No community account or node listing is required.');
+      text('mode-notice', publicMode() ? 'Public beta · Read-only queries. Source update times are listed individually.' : 'Self-hosted RIRRd console · Independent of the public community network. No community account or node listing is required.');
       fillSelect('query-source', metadata.http_sources || metadata.sources, true); commands(); el('query-value').value = sampleASN(); updateCommand(); el('query-submit').disabled = false;
       const taskName = new URLSearchParams(location.search).get('task');
       if (['origin4','origin6','recursive','set4','set6','object'].includes(taskName)) task(taskName);

@@ -1,6 +1,11 @@
 'use strict';
 (async()=>{
   const el=id=>document.getElementById(id),fmt=n=>Math.round(n).toLocaleString();
+  const menu=document.querySelector('.menu-toggle'),navigation=document.getElementById('site-navigation');
+  if(menu&&navigation){const mobile=matchMedia('(max-width:720px)');const close=()=>{navigation.hidden=mobile.matches;menu.setAttribute('aria-expanded','false');};menu.addEventListener('click',()=>{navigation.hidden=!navigation.hidden;menu.setAttribute('aria-expanded',String(!navigation.hidden));});mobile.addEventListener('change',close);navigation.addEventListener('click',()=>{if(mobile.matches)close();});document.addEventListener('keydown',event=>{if(event.key==='Escape'&&mobile.matches&&!navigation.hidden){close();menu.focus();}});close();}
+  const copy=document.getElementById('copy-example');
+  if(copy)copy.addEventListener('click',async()=>{try{await navigator.clipboard.writeText("whois -h irrd.tools '!gAS3333'");copy.textContent='Copied';}catch{copy.textContent='Select the command below';}setTimeout(()=>{copy.textContent='Copy IPv4 command';},2500);});
+  if(!el('benchmark-queries'))return;
   const legacy={nodes:'https://irrd.tools/#nodes','submit-node':'https://irrd.tools/#submit-node',query:'https://irrd.tools/dashboard/#query',rpki:'https://irrd.tools/dashboard/#rpki',sources:'https://irrd.tools/dashboard/#sources'};
   if(legacy[location.hash.slice(1)]){location.replace(legacy[location.hash.slice(1)]);return;}
   function range(values,unit=''){const lo=Math.min(...values),hi=Math.max(...values);return (unit==='ms'?lo.toFixed(2):fmt(lo))+'–'+(unit==='ms'?hi.toFixed(2):fmt(hi))+(unit?' '+unit:'');}
