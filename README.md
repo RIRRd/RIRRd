@@ -73,6 +73,8 @@ Set the recovery configuration's `database` to the new file path. Preserve the c
 
 ## HTTP WHOIS
 
+All private HTTP routes require one valid Host header naming `localhost` or the configured listener IP. Unexpected/missing/duplicate hosts and external absolute-form authorities return 400 before handling requests. IPv6 authorities use brackets. This complements the required loopback binding.
+
 With `http_listen` enabled, send a URL-encoded WHOIS command in the `q` parameter to `GET /v1/whois/`. The endpoint returns plain text for matches and HTTP 204 for no result. NRTMv3 journal downloads require TCP and the configured peer ACL.
 
 ## GraphQL
@@ -211,3 +213,5 @@ cargo fmt --all -- --check
 cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked --all-targets
 ```
+
+The [100,000-object Linux synthetic comparison](docs/benchmarks/LINUX_SYNTHETIC_100K.md) records pinned-baseline import, query, memory and storage measurements. It is a bounded development checkpoint, separate from full parity and release qualification. The generator and validating load client are in [tools/bench](tools/bench/README.md).

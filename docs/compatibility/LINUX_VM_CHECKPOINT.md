@@ -1,5 +1,7 @@
 # Linux VM checkpoint — 3 November 2026
 
+Later work: [upgraded VM checkpoint](UPGRADED_VM_CHECKPOINT.md) and [100k-object comparison / GraphQL checkpoint](../benchmarks/LINUX_SYNTHETIC_100K.md). The measurements below remain the original smaller-host historical sample.
+
 See the [upgraded VM checkpoint](UPGRADED_VM_CHECKPOINT.md) for newer code,
 24-CPU measurements and expanded authorisation/ARM64 checks. This file preserves
 the original 8-CPU evidence.

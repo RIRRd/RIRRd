@@ -1,5 +1,15 @@
 # Autonomous development checkpoint
 
+## GraphQL and scale comparison continuation
+
+The [100k synthetic checkpoint](docs/benchmarks/LINUX_SYNTHETIC_100K.md) records
+normal-entry-point comparisons, the validating native load client and the public
+site's measurement methodology. Policy/router GraphQL values and 32 field types
+across four classes now match the pinned baseline for the selected fixtures.
+Lazy resolver attributes remove eager work for identity-only queries. The
+before/after timing check is reported even when its run ranges overlap.
+Full parity and production qualification remain incomplete.
+
 ## Upgraded VM continuation
 
 The [24-CPU checkpoint](docs/compatibility/UPGRADED_VM_CHECKPOINT.md) adds four

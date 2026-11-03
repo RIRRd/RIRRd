@@ -1,0 +1,28 @@
+# Only combine with tools/oracle/compose.yaml, under disposable project rirrd-scale.
+services:
+  postgres:
+    cpuset: '0-15'
+  redis:
+    cpuset: '0-15'
+  reference:
+    image: irrd-454-oracle-reference
+    cpuset: '0-15'
+    command: ['sleep', 'infinity']
+    volumes:
+      - type: bind
+        source: ${RIRRD_BENCH_STATE:?set RIRRD_BENCH_STATE}/irrd.yaml
+        target: /etc/irrd.yaml
+        read_only: true
+      - type: bind
+        source: ${RIRRD_BENCH_STATE:?set RIRRD_BENCH_STATE}/synthetic-100k.rpsl
+        target: /fixture/perf.rpsl
+        read_only: true
+    healthcheck:
+      test: ['CMD', 'python', '-c', 'pass']
+networks:
+  default:
+    driver_opts:
+      com.docker.network.bridge.name: irrd-scale0
+    ipam:
+      config:
+        - subnet: 172.30.56.0/24
