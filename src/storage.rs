@@ -178,23 +178,23 @@ impl Store {
             }
         }
         write.commit()?;
-        Ok(Self {
-            db,
-            query_gate: RwLock::new(()),
-            legacy_md5_sources: HashSet::new(),
-            route_policy: RoutePolicy::default(),
-        })
+        Ok(Self::from_database(db))
     }
 
     /// Open without creating the file or initializing its application tables.
     pub fn open_existing(path: &Path) -> Result<Self> {
         let db = Database::open(path).with_context(|| format!("open {}", path.display()))?;
-        Ok(Self {
+        Ok(Self::from_database(db))
+    }
+
+    /// Wrap an already opened redb handle without initializing registry tables.
+    pub(crate) fn from_database(db: Database) -> Self {
+        Self {
             db,
             query_gate: RwLock::new(()),
             legacy_md5_sources: HashSet::new(),
             route_policy: RoutePolicy::default(),
-        })
+        }
     }
 
     /// Hold a read guard across a service query that performs multiple reads.
@@ -674,6 +674,27 @@ impl Store {
             });
         }
         Ok(entries)
+    }
+
+    /// Return the oldest and newest retained NRTMv3 operations for one source.
+    pub fn nrtm3_journal_bounds(&self, source: &str) -> Result<Option<(u64, u64)>> {
+        let source = canonical_source(source)?;
+        let read = self.db.begin_read()?;
+        let journal = match read.open_table(JOURNAL) {
+            Ok(table) => table,
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        let mut range = journal.range((source.as_str(), 0)..=(source.as_str(), u64::MAX))?;
+        let Some((first, _)) = range.next().transpose()? else {
+            return Ok(None);
+        };
+        let first = first.value().1;
+        let last = range
+            .next_back()
+            .transpose()?
+            .map_or(first, |(key, _)| key.value().1);
+        Ok(Some((first, last)))
     }
 
     /// Read one retained contiguous interval and its ending serial from a single snapshot.

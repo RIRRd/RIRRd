@@ -2,6 +2,7 @@
 
 mod authoritative;
 mod authoritative_validation;
+mod backup;
 mod config;
 mod graphql;
 mod import;
@@ -190,6 +191,16 @@ enum ExportCommand {
 #[derive(Subcommand)]
 enum DatabaseCommand {
     Verify,
+    /// Write a private, versioned backup of the offline database.
+    Backup {
+        #[arg(long)]
+        file: PathBuf,
+    },
+    /// Restore a verified backup into a new database path.
+    Restore {
+        #[arg(long)]
+        file: PathBuf,
+    },
     /// Reclaim unused space in the offline registry.
     Compact {
         #[arg(long, required = true)]
@@ -296,6 +307,18 @@ fn main() -> Result<()> {
         } => {
             let objects = Store::open_existing(&config.database)?.verify()?;
             println!("{}", serde_json::json!({ "objects": objects }));
+        }
+        Command::Database {
+            command: DatabaseCommand::Backup { file },
+        } => {
+            let bytes = backup::create(&config.database, &file)?;
+            println!("{}", serde_json::json!({ "database_bytes": bytes }));
+        }
+        Command::Database {
+            command: DatabaseCommand::Restore { file },
+        } => {
+            let bytes = backup::restore(&file, &config.database)?;
+            println!("{}", serde_json::json!({ "database_bytes": bytes }));
         }
         Command::Database {
             command: DatabaseCommand::Compact { yes },
@@ -610,6 +633,7 @@ async fn serve(config: Config, store: Arc<Store>) -> Result<()> {
             http,
             store,
             sources,
+            config.authoritative_sources.clone(),
             update_sources,
             timeout,
             async move {

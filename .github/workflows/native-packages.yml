@@ -85,6 +85,11 @@ jobs:
             registry.fedoraproject.org/fedora:43@sha256:d3a43e7fcc63b7098ddcaa3356baabe5fd5f3001b1d84fafef9545d352871970 \
             bash -euc 'dnf -y install /packages/*.rpm util-linux
               bash /source/deploy/packages/test-install.sh /source/examples/example.rpsl'
+      - name: Exercise the packaged unit under systemd
+        run: |
+          packages=( "$RUNNER_TEMP"/native-packages/dist/*.deb )
+          sudo apt-get install -y --no-install-recommends "${packages[0]}"
+          sudo bash deploy/packages/test-install.sh --systemd "$GITHUB_WORKSPACE/examples/example.rpsl"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: native-linux-${{ matrix.rpm }}

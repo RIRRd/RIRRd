@@ -131,6 +131,7 @@ fn camel_case(attribute: &str) -> String {
 struct Lookup {
     store: Arc<Store>,
     sources: Arc<[String]>,
+    authoritative_sources: Arc<HashSet<String>>,
     slots: Arc<Semaphore>,
 }
 
@@ -633,7 +634,152 @@ async fn recursive_set_members(
     )))
 }
 
-fn make_schema(store: Arc<Store>, sources: Vec<String>) -> Result<Schema> {
+struct DatabaseStatus {
+    source: String,
+    authoritative: bool,
+    serial: Option<u64>,
+    journal: Option<(u64, u64)>,
+    nrtm4: Option<(String, u64)>,
+}
+
+fn status_int(serial: Option<u64>) -> Option<Value> {
+    // The upstream fields use GraphQL's signed 32-bit Int. Preserve the
+    // original cursor in storage and omit values the wire type cannot carry.
+    serial
+        .and_then(|serial| i32::try_from(serial).ok())
+        .map(Value::from)
+}
+
+fn database_status_type() -> GraphqlObject {
+    let string = TypeRef::named_nn(TypeRef::STRING);
+    let boolean = TypeRef::named_nn(TypeRef::BOOLEAN);
+    let int = TypeRef::named(TypeRef::INT);
+    type StatusValue = fn(&DatabaseStatus) -> Option<Value>;
+    let fields: [(&str, TypeRef, StatusValue); 12] = [
+        ("source_type", string.clone(), |_| {
+            Some(Value::from("regular"))
+        }),
+        ("source", string, |status| {
+            Some(Value::from(status.source.as_str()))
+        }),
+        ("authoritative", boolean.clone(), |status| {
+            Some(Value::from(status.authoritative))
+        }),
+        ("rpkiRovFilter", boolean.clone(), |_| {
+            Some(Value::from(false))
+        }),
+        ("scopefilterEnabled", boolean.clone(), |_| {
+            Some(Value::from(false))
+        }),
+        ("localJournalKept", boolean.clone(), |status| {
+            Some(Value::from(status.journal.is_some()))
+        }),
+        ("synchronisedSerials", boolean, |status| {
+            let newest = status.journal.map(|(_, newest)| newest);
+            Some(Value::from(newest.is_some() && newest == status.serial))
+        }),
+        ("serialOldestJournal", int.clone(), |status| {
+            status_int(status.journal.map(|(oldest, _)| oldest))
+        }),
+        ("serialNewestJournal", int.clone(), |status| {
+            status_int(status.journal.map(|(_, newest)| newest))
+        }),
+        ("serialNewestMirror", int.clone(), |status| {
+            status_int(status.serial)
+        }),
+        (
+            "nrtm4ClientSessionId",
+            TypeRef::named(TypeRef::STRING),
+            |status| {
+                status
+                    .nrtm4
+                    .as_ref()
+                    .map(|(session, _)| Value::from(session.as_str()))
+            },
+        ),
+        ("nrtm4ClientVersion", int.clone(), |status| {
+            status_int(status.nrtm4.as_ref().map(|(_, version)| *version))
+        }),
+    ];
+    let mut object = GraphqlObject::new("DatabaseStatus");
+    for (name, ty, value) in fields {
+        object = object.field(Field::new(name, ty, move |ctx| {
+            FieldFuture::new(async move {
+                let status = ctx.parent_value.try_downcast_ref::<DatabaseStatus>()?;
+                Ok(value(status).map(FieldValue::value))
+            })
+        }));
+    }
+    for (name, ty) in [
+        ("objectClassFilter", TypeRef::named_nn_list(TypeRef::STRING)),
+        ("routePreference", int.clone()),
+        ("serialLastExport", int.clone()),
+        ("nrtm4ServerSessionId", TypeRef::named(TypeRef::STRING)),
+        ("nrtm4ServerVersion", int.clone()),
+        (
+            "nrtm4ServerLastUpdateNotificationFileUpdate",
+            TypeRef::named(TypeRef::STRING),
+        ),
+        ("nrtm4ServerLastSnapshotVersion", int),
+        ("rpslDataUpdated", TypeRef::named(TypeRef::STRING)),
+        ("lastUpdate", TypeRef::named(TypeRef::STRING)),
+        ("aliased_sources", TypeRef::named_nn_list(TypeRef::STRING)),
+    ] {
+        object = object.field(Field::new(name, ty, |_| {
+            FieldFuture::new(async { Ok(None::<FieldValue<'_>>) })
+        }));
+    }
+    object
+}
+
+async fn database_status(
+    ctx: ResolverContext<'_>,
+) -> async_graphql::Result<Option<FieldValue<'_>>> {
+    let lookup = ctx.data::<Lookup>()?;
+    let mut sources = source_filter(&ctx, &lookup.sources)?;
+    if sources.len() > MAX_FILTER_VALUES {
+        return Err(Error::new(format!(
+            "Select at most {MAX_FILTER_VALUES} sources for databaseStatus."
+        )));
+    }
+    if sources.is_empty() {
+        return Ok(Some(FieldValue::list(Vec::<FieldValue<'_>>::new())));
+    }
+    let mut seen = HashSet::new();
+    sources.retain(|source| seen.insert(source.clone()));
+    let authoritative_sources = Arc::clone(&lookup.authoritative_sources);
+    let rows = lookup
+        .run(move |store| {
+            sources
+                .into_iter()
+                .map(|source| {
+                    let authoritative = authoritative_sources.contains(&source);
+                    let serial = store.source_serial(&source)?;
+                    let journal = store.nrtm3_journal_bounds(&source)?;
+                    let nrtm4 = store
+                        .nrtm4_state(&source)?
+                        .map(|state| (state.session_id, state.version));
+                    Ok(DatabaseStatus {
+                        source,
+                        authoritative,
+                        serial,
+                        journal,
+                        nrtm4,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()
+        })
+        .await?;
+    Ok(Some(FieldValue::list(
+        rows.into_iter().map(FieldValue::owned_any),
+    )))
+}
+
+fn make_schema(
+    store: Arc<Store>,
+    sources: Vec<String>,
+    authoritative_sources: HashSet<String>,
+) -> Result<Schema> {
     let list = TypeRef::named_nn_list(TypeRef::STRING);
     let ip_version = TypeRef::named(TypeRef::INT);
     let root = GraphqlObject::new("Query")
@@ -647,6 +793,14 @@ fn make_schema(store: Arc<Store>, sources: Vec<String>) -> Result<Schema> {
             .argument(InputValue::new("objectClass", list.clone()))
             .argument(InputValue::new("sources", list.clone()))
             .argument(InputValue::new("recordLimit", TypeRef::named(TypeRef::INT))),
+        )
+        .field(
+            Field::new(
+                "databaseStatus",
+                TypeRef::named_list("DatabaseStatus"),
+                |ctx| FieldFuture::new(database_status(ctx)),
+            )
+            .argument(InputValue::new("sources", list.clone())),
         )
         .field(
             Field::new(
@@ -707,6 +861,7 @@ fn make_schema(store: Arc<Store>, sources: Vec<String>) -> Result<Schema> {
         .data(Lookup {
             store,
             sources: sources.into(),
+            authoritative_sources: Arc::new(authoritative_sources),
             slots: Arc::new(Semaphore::new(MAX_LOOKUPS)),
         })
         .limit_depth(MAX_DEPTH)
@@ -714,6 +869,7 @@ fn make_schema(store: Arc<Store>, sources: Vec<String>) -> Result<Schema> {
         .limit_recursive_depth(MAX_DEPTH + 4)
         .limit_directives(4)
         .register(root)
+        .register(database_status_type())
         .register(interface)
         .register(Scalar::new("ASN").validator(|value| asn_value(value).is_some()))
         .register(Scalar::new("IP").validator(|value| matches!(value, Value::String(_))))
@@ -761,11 +917,12 @@ pub async fn serve(
     listener: TcpListener,
     store: Arc<Store>,
     sources: Vec<String>,
+    authoritative_sources: HashSet<String>,
     update_sources: Option<HashSet<String>>,
     timeout: Duration,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> Result<()> {
-    let schema = make_schema(store.clone(), sources)?;
+    let schema = make_schema(store.clone(), sources, authoritative_sources)?;
     let mut app = Router::new()
         .route("/graphql", post(execute))
         .route("/graphql/", post(execute))
@@ -834,8 +991,134 @@ mod tests {
                 record("as-set: AS-CROSS\nmembers: AS64501\nsource: OTHER"),
             ],
         )?;
-        let schema = make_schema(store, vec!["TEST".into(), "OTHER".into()])?;
+        let schema = make_schema(store, vec!["TEST".into(), "OTHER".into()], HashSet::new())?;
         Ok((directory, schema))
+    }
+
+    #[tokio::test]
+    async fn database_status_reports_config_and_committed_mirror_state() -> Result<()> {
+        use crate::{
+            nrtm3::{Kind, Operation},
+            nrtm4_records::Record,
+            nrtm4_state::fixture_state,
+        };
+
+        const SESSION: &str = "c86f0f62-447e-4bdf-8cb6-18f861bc3532";
+        let directory = tempfile::tempdir()?;
+        let store = Arc::new(Store::open(&directory.path().join("status.redb"))?);
+        let writer = Arc::clone(&store);
+        spawn_blocking(move || -> Result<()> {
+            let record = |text| crate::rpsl::parse(text).map_err(anyhow::Error::msg);
+            writer.replace_source("MIRROR", [record("aut-num: AS64496\nsource: MIRROR")])?;
+            writer.apply_nrtm3(
+                "MIRROR",
+                (42, 42),
+                Some(41),
+                [Ok(Operation {
+                    kind: Kind::Add,
+                    serial: 42,
+                    object: record("aut-num: AS64497\nsource: MIRROR")?,
+                })],
+            )?;
+            let state = fixture_state("NRTMFOUR", SESSION, 7);
+            writer.apply_nrtm4(
+                "NRTMFOUR",
+                None,
+                &state,
+                true,
+                [Ok(Record::Snapshot(record(
+                    "aut-num: AS64496\nsource: NRTMFOUR",
+                )?))],
+            )?;
+            Ok(())
+        })
+        .await??;
+        let schema = make_schema(
+            store,
+            vec!["TEST".into(), "MIRROR".into(), "NRTMFOUR".into()],
+            HashSet::from(["TEST".into()]),
+        )?;
+        let response = schema
+            .execute(
+                r#"{
+                    databaseStatus(sources:["nrtmfour","TEST","MIRROR","MIRROR"]) {
+                        source_type source authoritative rpkiRovFilter scopefilterEnabled
+                        localJournalKept synchronisedSerials serialNewestMirror
+                        serialOldestJournal serialNewestJournal
+                        nrtm4ClientSessionId nrtm4ClientVersion nrtm4ServerVersion aliased_sources
+                    }
+                }"#,
+            )
+            .await;
+        assert!(response.errors.is_empty(), "{:?}", response.errors);
+        assert_eq!(
+            response.data.into_json()?,
+            json!({"databaseStatus":[
+                {
+                    "source_type":"regular","source":"NRTMFOUR","authoritative":false,
+                    "rpkiRovFilter":false,"scopefilterEnabled":false,
+                    "localJournalKept":false,"synchronisedSerials":false,"serialNewestMirror":null,
+                    "serialOldestJournal":null,"serialNewestJournal":null,
+                    "nrtm4ClientSessionId":SESSION,"nrtm4ClientVersion":7,
+                    "nrtm4ServerVersion":null,"aliased_sources":null
+                },
+                {
+                    "source_type":"regular","source":"TEST","authoritative":true,
+                    "rpkiRovFilter":false,"scopefilterEnabled":false,
+                    "localJournalKept":false,"synchronisedSerials":false,"serialNewestMirror":null,
+                    "serialOldestJournal":null,"serialNewestJournal":null,
+                    "nrtm4ClientSessionId":null,"nrtm4ClientVersion":null,
+                    "nrtm4ServerVersion":null,"aliased_sources":null
+                },
+                {
+                    "source_type":"regular","source":"MIRROR","authoritative":false,
+                    "rpkiRovFilter":false,"scopefilterEnabled":false,
+                    "localJournalKept":true,"synchronisedSerials":true,"serialNewestMirror":42,
+                    "serialOldestJournal":42,"serialNewestJournal":42,
+                    "nrtm4ClientSessionId":null,"nrtm4ClientVersion":null,
+                    "nrtm4ServerVersion":null,"aliased_sources":null
+                }
+            ]})
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn database_status_bounds_default_selection_and_keeps_pinned_int_type() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let store = Arc::new(Store::open(&directory.path().join("status.redb"))?);
+        let sources = (0..=MAX_FILTER_VALUES)
+            .map(|index| format!("SOURCE{index}"))
+            .collect();
+        let schema = make_schema(store, sources, HashSet::new())?;
+        assert!(
+            schema
+                .sdl()
+                .contains("databaseStatus(sources: [String!]): [DatabaseStatus]")
+        );
+        assert_eq!(status_int(Some(i32::MAX as u64 + 1)), None);
+        assert_eq!(
+            status_int(Some(i32::MAX as u64)),
+            Some(Value::from(i32::MAX))
+        );
+        for invalid in [
+            "{ databaseStatus { source } }",
+            r#"{ databaseStatus(sources:["UNKNOWN"]) { source } }"#,
+        ] {
+            assert!(
+                !schema.execute(invalid).await.errors.is_empty(),
+                "{invalid}"
+            );
+        }
+        let response = schema
+            .execute(r#"{ databaseStatus(sources:["SOURCE0"]) { source } }"#)
+            .await;
+        assert!(response.errors.is_empty(), "{:?}", response.errors);
+        assert_eq!(
+            response.data.into_json()?,
+            json!({"databaseStatus":[{"source":"SOURCE0"}]})
+        );
+        Ok(())
     }
 
     #[tokio::test]
@@ -1074,6 +1357,7 @@ mod tests {
             listener,
             store,
             vec!["TEST".into()],
+            HashSet::new(),
             None,
             Duration::from_secs(2),
             async move {

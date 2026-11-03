@@ -1264,7 +1264,47 @@ max_snapshot_bytes = 4096
             .status
             .success()
     );
-    let (_server, address) = Server::start(&config);
+    let backup = workspace.path().join("registry.backup");
+    let backup_command = || {
+        let mut command = cli(&config);
+        command.args(["database", "backup", "--file"]).arg(&backup);
+        command
+    };
+    successful(backup_command().output().unwrap());
+    assert!(!backup_command().output().unwrap().status.success());
+    let restore_config = workspace.path().join("restored.toml");
+    let original_config = fs::read_to_string(&config).unwrap();
+    fs::write(
+        &restore_config,
+        original_config.replace("test.redb", "restored.redb"),
+    )
+    .unwrap();
+    let restore = |input: &Path| {
+        cli(&restore_config)
+            .args(["database", "restore", "--file"])
+            .arg(input)
+            .output()
+            .unwrap()
+    };
+    let corrupted = workspace.path().join("corrupted.backup");
+    let mut corrupt_bytes = fs::read(&backup).unwrap();
+    *corrupt_bytes.last_mut().unwrap() ^= 1;
+    fs::write(&corrupted, corrupt_bytes).unwrap();
+    assert!(!restore(&corrupted).status.success());
+    assert!(!workspace.path().join("restored.redb").exists());
+    successful(restore(&backup));
+    assert!(!restore(&backup).status.success());
+    let restored_status = successful(
+        cli(&restore_config)
+            .args(["source", "status", "--source", "TEST"])
+            .output()
+            .unwrap(),
+    );
+    assert_eq!(
+        serde_json::from_slice::<Value>(&restored_status).unwrap()["nrtm4"]["version"],
+        8
+    );
+    let (_server, address) = Server::start(&restore_config);
     assert_eq!(whois(address, b"!maut-num,AS64496\n"), "D\n");
     assert!(whois(address, b"!maut-num,AS64497\n").contains("aut-num: AS64497"));
 }

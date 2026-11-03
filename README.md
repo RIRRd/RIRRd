@@ -54,13 +54,25 @@ To export one source, use a private directory and a new filename:
 cargo run --locked -- --config examples/irrd.toml export snapshot --source EXAMPLE --file private/example.rpsl --include-sensitive
 ```
 
-Export reads one committed view, writes raw objects to a temporary file, then publishes it without overwriting an existing file. You can import the snapshot into a new database configured for that source. This source-level round trip carries the stored RPSL, with blank object separators added as needed. Source serials, recovery metadata and a versioned backup format are future work.
+Export reads one committed view, writes raw objects to a temporary file, then publishes it without overwriting an existing file. You can import the snapshot into a new database configured for that source. This source-level round trip carries the stored RPSL, with blank object separators added as needed. Use the full database backup below when you need replication and recovery metadata.
 
 Use the example on a trusted local machine. Keep database and snapshot files private because stored raw text can contain maintainer credentials. Public WHOIS rendering removes `auth` and supplied `rpki-ov-state` fields.
 
+## Full database backup and restore
+
+Stop the daemon and use a private directory for the backup and restored database. The backup contains raw credential-bearing RPSL, indexes, journals, protected names and replication state. The archive includes a version and a SHA-256 checksum. Restore validates the archive and database before publishing the restored file. Both commands require a new destination.
+
+```sh
+rust-irrd --config /etc/rust-irrd/irrd.toml database backup --file private/registry.rirrd
+rust-irrd --config private/recovery.toml database restore --file private/registry.rirrd
+rust-irrd --config private/recovery.toml database verify
+```
+
+Set the recovery configuration's `database` to the new file path. Preserve the configuration and external policy files separately, and use a release compatible with the stored schema.
+
 ## GraphQL
 
-Set `http_listen = "127.0.0.1:8080"` in TOML. Send JSON by POST to `/graphql/` with a `query` field. The implemented subset accepts bounded exact-key queries through `rpslObjects`, prefix queries through `asnPrefixes` and `asSetPrefixes`, and set expansion through `recursiveSetMembers`. The optional `rootSource` argument selects the root independently of the source order used for nested set lookups. For example:
+Set `http_listen = "127.0.0.1:8080"` in TOML. Send JSON by POST to `/graphql/` with a `query` field. The implemented subset accepts bounded exact-key queries through `rpslObjects`, prefix queries through `asnPrefixes` and `asSetPrefixes`, set expansion through `recursiveSetMembers`, and configured-source and replication metadata through `databaseStatus`. The optional `rootSource` argument selects the root independently of the source order used for nested set lookups. For example:
 
 ```graphql
 {
