@@ -132,6 +132,25 @@ pub fn validate(object: &Object) -> Result<()> {
             ],
         ),
         "rtr-set" => (&["rtr-set", "mnt-by", "source"], ROUTE_SET_OPTIONAL),
+        "inet-rtr" => (
+            &["inet-rtr", "local-as", "mnt-by", "source"],
+            &[
+                "descr",
+                "alias",
+                "ifaddr",
+                "interface",
+                "peer",
+                "mp-peer",
+                "member-of",
+                "rs-in",
+                "rs-out",
+                "admin-c",
+                "tech-c",
+                "remarks",
+                "notify",
+                "changed",
+            ],
+        ),
         "aut-num" => (
             &[
                 "aut-num", "as-name", "admin-c", "tech-c", "mnt-by", "source",
@@ -186,6 +205,10 @@ pub fn validate(object: &Object) -> Result<()> {
                     | "rtr-set"
                     | "filter"
                     | "mp-filter"
+                    | "inet-rtr"
+                    | "local-as"
+                    | "rs-in"
+                    | "rs-out"
             )
         {
             return Err(anyhow!("duplicate {name} attribute"));
@@ -204,7 +227,7 @@ pub fn validate(object: &Object) -> Result<()> {
                 );
                 route = Some(network);
             }
-            "origin" | "aut-num" => ensure!(
+            "origin" | "aut-num" | "local-as" => ensure!(
                 scalar(attribute).and_then(asn).is_some_and(assignable_asn),
                 "{name} must be an AS number allowed for authoritative objects"
             ),
@@ -224,6 +247,8 @@ pub fn validate(object: &Object) -> Result<()> {
                 ensure!(values.peek().is_some(), "empty member-of attribute");
                 let prefix = if object.class == "aut-num" {
                     "AS-"
+                } else if object.class == "inet-rtr" {
+                    "RTRS-"
                 } else {
                     "RS-"
                 };
@@ -268,6 +293,10 @@ pub fn validate(object: &Object) -> Result<()> {
                     ensure!(values.all(valid_name), "invalid maintainer in mbrs-by-ref");
                 }
             }
+            "inet-rtr" | "alias" => ensure!(
+                scalar(attribute).is_some_and(crate::rpsl::dns_name),
+                "invalid router DNS name"
+            ),
             "organisation" | "mntner" | "nic-hdl" | "source" | "admin-c" | "tech-c" => {
                 ensure!(
                     scalar(attribute).is_some_and(valid_name),
@@ -1095,6 +1124,29 @@ mod policy_set_tests {
             .map_err(anyhow::Error::msg)?;
             assert!(validate(&object).is_err(), "{member}");
         }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod router_tests {
+    use super::*;
+
+    #[test]
+    fn validates_router_schema_and_weak_membership() -> Result<()> {
+        let text = "inet-rtr: router.example\nlocal-as: AS64496\nalias: alias.example\nmember-of: AS64496:RTRS-MISSING\nadmin-c: TC1-TEST\nmnt-by: TEST-MNT\nsource: TEST\n";
+        validate(&parse(text).map_err(anyhow::Error::msg)?)?;
+        for bad in [
+            text.replace("local-as: AS64496\n", ""),
+            text.replace("alias.example", "bad..example"),
+            text.replace("AS64496:RTRS-MISSING", "AS64496:RS-WRONG"),
+            format!("{text}local-as: AS64497\n"),
+            format!("{text}rs-in: ANY\nrs-in: ANY\n"),
+            text.replace("AS64496\n", "not-an-asn\n"),
+        ] {
+            assert!(validate(&parse(&bad).map_err(anyhow::Error::msg)?).is_err());
+        }
+        validate(&parse(&format!("{text}ifaddr: 192.0.2.1 masklen 24\nifaddr: 192.0.2.2 masklen 24\npeer: AS64496\nmp-peer: AS64497\n")).map_err(anyhow::Error::msg)?)?;
         Ok(())
     }
 }

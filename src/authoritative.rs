@@ -60,6 +60,7 @@ pub fn authorize(
                     | "filter-set"
                     | "peering-set"
                     | "rtr-set"
+                    | "inet-rtr"
             ),
             "unsupported authoritative object class"
         );

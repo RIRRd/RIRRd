@@ -1599,7 +1599,7 @@ fn authoritative_organisation_cli_and_http_preserve_authorization_and_references
 }
 
 #[test]
-fn authoritative_policy_sets_require_parent_and_owner_and_preserve_atomicity() {
+fn authoritative_policy_sets_and_routers_preserve_authorization_and_atomicity() {
     let workspace = tempfile::tempdir().unwrap();
     let config = workspace.path().join("irrd.toml");
     fs::write(&config, "database = \"test.redb\"\nsources = [\"TEST\", \"OTHER\"]\nauthoritative_sources = [\"TEST\"]\nlisten = \"127.0.0.1:0\"\nhttp_listen = \"127.0.0.1:0\"\nhttp_authoritative_updates = true\nmax_connections = 4\nio_timeout_seconds = 2\nmax_snapshot_bytes = 65536\n").unwrap();
@@ -1675,6 +1675,9 @@ fn authoritative_policy_sets_require_parent_and_owner_and_preserve_atomicity() {
         "owner proof\nparent proof\n",
         false,
     ));
+    let router = "inet-rtr: router.example\nlocal-as: AS64496\nmember-of: AS64496:RTRS-MISSING\nadmin-c: SET1-TEST\nmnt-by: OWNER-MNT\nsource: TEST\n";
+    assert!(!submit(router, "parent proof\n", false).status.success());
+    successful(submit(router, "owner proof\n", false));
     let contact = "person: Set Contact\nnic-hdl: SET1-TEST\nsource: TEST\n";
     assert!(!submit(contact, "owner proof\n", true).status.success());
     let (server, tcp) = Server::start(&config);
@@ -1732,6 +1735,46 @@ fn authoritative_policy_sets_require_parent_and_owner_and_preserve_atomicity() {
             1
         );
     }
+    assert_eq!(
+        request(
+            "POST",
+            &router.replace("AS64496\n", "bad-asn\n"),
+            &["owner proof"]
+        )["summary"]["failed"],
+        1
+    );
+    assert_eq!(
+        request(
+            "POST",
+            &router.replace("SET1-TEST", "MISSING-TEST"),
+            &["owner proof"]
+        )["summary"]["failed"],
+        1
+    );
+    assert_eq!(
+        request(
+            "POST",
+            &router.replace("source: TEST", "source: OTHER"),
+            &["owner proof"]
+        )["summary"]["failed"],
+        1
+    );
+    assert_eq!(
+        request(
+            "POST",
+            &format!("{router}alias: alias.example\n"),
+            &["owner proof"]
+        )["summary"]["successful_modify"],
+        1
+    );
+    assert_eq!(
+        request("DELETE", router, &["parent proof"])["summary"]["failed"],
+        1
+    );
+    assert_eq!(
+        request("DELETE", router, &["owner proof"])["summary"]["successful_delete"],
+        1
+    );
     drop(server);
     successful(submit(contact, "owner proof\n", true));
     successful(cli(&config).args(["database", "verify"]).output().unwrap());

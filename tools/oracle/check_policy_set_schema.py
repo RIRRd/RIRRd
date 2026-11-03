@@ -27,4 +27,9 @@ for payload in ['', 'filter: ANY\nfilter: ANY\n', 'filter: ANY\nmp-filter: ANY\n
 for member in ['2001:db8::1', 'router..example', 'router.example/32', 'AS64496:RS-WRONG']:
     check('rtr-set', f'rtr-set: AS64496:RTRS-TEST\nmembers: {member}\n{common}', False)
 check('rtr-set', f'rtr-set: AS64496:RTRS-TEST\nmembers: router.example,,router2.example,\n{common}', True)
-print(f'{checks} policy-set schema cases match pinned IRRd')
+router = 'inet-rtr: router.example\nlocal-as: AS64496\nalias: alias.example\nmember-of: AS64496:RTRS-MISSING\n' + common
+check('inet-rtr', router, True)
+for bad in [router.replace('local-as: AS64496\n',''), router.replace('alias.example','bad..example'), router.replace('AS64496:RTRS-MISSING','AS64496:RS-WRONG'), router+'local-as: AS64497\n', router+'rs-in: ANY\nrs-in: ANY\n', router.replace('AS64496\n','not-an-asn\n')]:
+    check('inet-rtr',bad,False)
+check('inet-rtr',router+'ifaddr: 192.0.2.1 masklen 24\nifaddr: 192.0.2.2 masklen 24\npeer: AS64496\nmp-peer: AS64497\n',True)
+print(f'{checks} policy-set and router schema cases match pinned IRRd')
