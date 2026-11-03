@@ -1,0 +1,23 @@
+{
+	servers {
+		protocols h1 h2
+	}
+}
+rirrd.co.uk {
+	root * /var/www/rirrd-coming-soon
+	encode gzip
+	@dashboard path /dashboard/*
+	@page not path /dashboard/*
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy no-referrer
+	}
+	header @dashboard Content-Security-Policy "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
+	header @page Content-Security-Policy "default-src 'none'; style-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'"
+	@queries path /graphql/ /v1/whois/ /dashboard/meta.json /dashboard/live.json
+	reverse_proxy @queries 127.0.0.1:9281 {
+		header_up Host 127.0.0.1
+		header_up X-RIRRd-Client {remote_host}
+	}
+	file_server
+}

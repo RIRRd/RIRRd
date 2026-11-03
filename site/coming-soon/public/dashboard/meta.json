@@ -1,0 +1,21 @@
+{
+  "mode": "live",
+  "version": "0.1.0",
+  "source_revision": "9f35c33560b8620afd7e4b8cf0ddbe73951a3241",
+  "node": {
+    "name": "RIRRd public test registry",
+    "location": null,
+    "sponsor": null
+  },
+  "sources": [
+    "RIPE",
+    "ARIN",
+    "AFRINIC",
+    "LACNIC",
+    "RIPE-NONAUTH"
+  ],
+  "whois_listen": "rirrd.co.uk:43",
+  "max_connections": 128,
+  "database_cache_mib": 64,
+  "public_service": true
+}
