@@ -149,6 +149,7 @@ struct HttpWhois {
 #[derive(Deserialize)]
 struct HttpParameters {
     q: Option<String>,
+    sources: Option<String>,
 }
 
 /// Serve unframed WHOIS results on the optional HTTP listener. NRTM transfer
@@ -200,13 +201,32 @@ async fn http_query(State(state): State<HttpWhois>, request: Request) -> Respons
     if query.len() > MAX_QUERY_BYTES as usize || query.chars().any(char::is_control) {
         return invalid_query.into_response();
     }
+    // Stateless HTTP source selection also works with ! commands. TCP uses
+    // !s in a persistent session; mixing RIPE flags with ! commands is invalid.
+    let client = if let Some(names) = params.sources {
+        if names.len() > 1024 || names.chars().any(char::is_control) {
+            return invalid_query.into_response();
+        }
+        let Some(sources) = select_sources(&names, &state.client.access.sources) else {
+            return invalid_query.into_response();
+        };
+        Client {
+            access: Arc::new(Access {
+                sources: sources.into(),
+                nrtm3: HashMap::new(),
+            }),
+            peer: state.client.peer,
+        }
+    } else {
+        state.client.clone()
+    };
     let Ok(permit) = state.slots.try_acquire_owned() else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
     let worker = tokio::task::spawn_blocking(move || {
         let _permit = permit;
         let _view = state.store.query_gate().blocking_read();
-        execute_http(query.trim(), &state.store, &state.client)
+        execute_http(query.trim(), &state.store, &client)
     });
     match timeout(state.deadline, worker).await {
         Ok(Ok(Ok((StatusCode::NO_CONTENT, _)))) => StatusCode::NO_CONTENT.into_response(),

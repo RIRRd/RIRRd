@@ -19,6 +19,7 @@ fn default_database_cache_mib() -> usize {
 pub struct Config {
     #[serde(default)]
     pub node: NodeConfig,
+    pub rpki: Option<RpkiConfig>,
     pub database: PathBuf,
     #[serde(default = "default_database_cache_mib")]
     pub database_cache_mib: usize,
@@ -27,6 +28,8 @@ pub struct Config {
     pub sources: Vec<String>,
     /// Optional HTTP query subset for source-specific distribution policies.
     pub http_sources: Option<Vec<String>>,
+    /// Optional raw HTTP WHOIS service scope, independently of GraphQL exports.
+    pub http_whois_sources: Option<Vec<String>>,
     #[serde(default)]
     pub authoritative_sources: HashSet<String>,
     #[serde(default)]
@@ -49,6 +52,16 @@ pub struct Config {
     pub nrtm3_sync: HashMap<String, MirrorConfig>,
     pub io_timeout_seconds: u64,
     pub max_snapshot_bytes: u64,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RpkiConfig {
+    pub cache_dir: PathBuf,
+    pub rtr_listen: Option<SocketAddr>,
+    pub refresh_seconds: u64,
+    pub expire_seconds: u64,
+    pub validation_threads: usize,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -103,6 +116,12 @@ impl Config {
         let contents = fs::read_to_string(path)
             .with_context(|| format!("reading config {}", path.display()))?;
         let mut config: Self = toml::from_str(&contents).context("invalid configuration")?;
+        if let Some(sources) = &config.http_whois_sources {
+            ensure!(
+                !sources.is_empty() && sources.iter().all(|s| config.sources.contains(s)),
+                "HTTP WHOIS sources must be configured sources"
+            );
+        }
         for label in std::iter::once(&config.node.name)
             .chain(config.node.location.iter())
             .chain(config.node.sponsor.iter())
@@ -112,6 +131,27 @@ impl Config {
                     && label.len() <= 128
                     && !label.chars().any(char::is_control),
                 "node labels must contain 1–128 bytes without control characters"
+            );
+        }
+        if let Some(rpki) = &config.rpki {
+            ensure!(
+                rpki.cache_dir.is_absolute() && rpki.cache_dir.parent().is_some(),
+                "RPKI cache_dir must be an absolute directory path"
+            );
+            ensure!(
+                (60..=86400).contains(&rpki.refresh_seconds)
+                    && (600..=172800).contains(&rpki.expire_seconds)
+                    && rpki.expire_seconds >= rpki.refresh_seconds,
+                "invalid RPKI refresh/expiry bounds"
+            );
+            ensure!(
+                (1..=8).contains(&rpki.validation_threads),
+                "RPKI validation_threads must be 1–8"
+            );
+            ensure!(
+                rpki.rtr_listen
+                    .is_none_or(|address| address.ip().to_canonical().is_loopback()),
+                "experimental RTR listener must use loopback"
             );
         }
         ensure!(

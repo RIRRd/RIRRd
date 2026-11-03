@@ -84,7 +84,7 @@ pub fn router(metadata: Metadata, store: std::sync::Arc<crate::storage::Store>) 
             "/ui/mirrors.json",
             get(move || {
                 let store = store.clone();
-                async move { match store.object_count() { Ok(total) => axum::Json(serde_json::json!({"sources":store.mirror_status(), "total_objects":total})).into_response(), Err(_) => StatusCode::SERVICE_UNAVAILABLE.into_response(), } }
+                async move { match store.object_count() { Ok(total) => axum::Json(serde_json::json!({"sources":store.mirror_status(), "total_objects":total,"class_counts":store.class_counts().ok()})).into_response(), Err(_) => StatusCode::SERVICE_UNAVAILABLE.into_response(), } }
             }),
         )
         .route(

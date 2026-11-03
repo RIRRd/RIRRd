@@ -2169,6 +2169,68 @@ fn snapshot_policies_survive_restart_and_http_source_subset_is_enforced() {
 }
 
 #[test]
+fn raw_http_whois_scope_is_independent_of_structured_queries_and_browse() {
+    let workspace = tempfile::tempdir().unwrap();
+    let config = workspace.path().join("irrd.toml");
+    fs::write(&config, "database = \"registry.redb\"\nsources = [\"TEST\", \"OTHER\"]\nhttp_sources = [\"TEST\"]\nhttp_whois_sources = [\"TEST\", \"OTHER\"]\nlisten = \"127.0.0.1:0\"\nhttp_listen = \"127.0.0.1:0\"\nmax_connections = 8\nio_timeout_seconds = 2\nmax_snapshot_bytes = 65536\n").unwrap();
+    let fixture = workspace.path().join("fixture.rpsl");
+    for source in ["TEST", "OTHER"] {
+        fs::write(&fixture, format!("as-set: AS-A\nmembers: AS64496\nsource: {source}\n\nas-set: AS-B\nmembers: AS64497\nsource: {source}\n")).unwrap();
+        successful(
+            cli(&config)
+                .args(["import", "snapshot", "--source", source, "--file"])
+                .arg(&fixture)
+                .output()
+                .unwrap(),
+        );
+    }
+    let (_server, address) = Server::start_listener(&config, "GraphQL listening");
+    let get = |path: &str| {
+        whois(
+            address,
+            format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+                .as_bytes(),
+        )
+    };
+    let raw = get("/v1/whois/?q=-s%20OTHER%20AS-A");
+    assert!(raw.starts_with("HTTP/1.1 200 ") && raw.contains("source: OTHER"));
+    for path in [
+        "/v1/irr/objects?source=OTHER&class=as-set",
+        "/v1/irr/objects?source=TEST&class=mntner",
+        "/v1/irr/objects?source=TEST&class=as-set&limit=101",
+        "/v1/irr/objects?source=TEST&class=as-set&after=%00",
+    ] {
+        assert!(get(path).starts_with("HTTP/1.1 400 "), "{path}");
+    }
+    let members = get("/v1/whois/?q=!iAS-A,1&sources=OTHER");
+    assert!(members.starts_with("HTTP/1.1 200 ") && members.contains("AS64496"));
+    assert!(get("/v1/whois/?q=!iAS-A,1&sources=UNAVAILABLE").starts_with("HTTP/1.1 400 "));
+    let json_get = |path: &str| -> Value {
+        let raw = get(path);
+        assert!(raw.starts_with("HTTP/1.1 200 "), "{raw}");
+        serde_json::from_str(raw.split_once("\r\n\r\n").unwrap().1).unwrap()
+    };
+    let first = json_get("/v1/irr/objects?source=TEST&class=as-set&limit=1");
+    assert_eq!(first["keys"], serde_json::json!(["AS-A"]));
+    assert_eq!(first["next_cursor"], "AS-A");
+    let second = json_get("/v1/irr/objects?source=TEST&class=as-set&limit=1&after=AS-A");
+    assert_eq!(second["keys"], serde_json::json!(["AS-B"]));
+    assert!(second["next_cursor"].is_null());
+    let status = json_get("/v1/rpki/status");
+    assert_eq!(status["enabled"], false);
+    assert!(
+        get("/v1/rpki/validate?prefix=192.0.2.0%2F24&origin=AS64496").starts_with("HTTP/1.1 503 ")
+    );
+    let counts = json_get("/ui/mirrors.json");
+    assert_eq!(counts["class_counts"]["TEST"]["as-set"], 2);
+    let body =
+        serde_json::json!({"query":"{ rpslObjects(sources:[\"OTHER\"]) { rpslPk } }"}).to_string();
+    let response=whois(address,format!("POST /graphql/ HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes());
+    let value: Value = serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap();
+    assert!(value.get("errors").is_some());
+}
+
+#[test]
 fn bundled_dashboard_serves_local_assets_metadata_and_uses_the_private_api() {
     let workspace = tempfile::tempdir().unwrap();
     let config = workspace.path().join("dashboard.toml");

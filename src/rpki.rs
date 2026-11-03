@@ -39,6 +39,33 @@ impl RoaTable {
         Ok(Self { vrps })
     }
 
+    /// Construct the ROV index directly from the embedded validator's verified payloads.
+    pub fn from_payloads(payloads: impl IntoIterator<Item = (String, u32, u8)>) -> Result<Self> {
+        let mut vrps = Vec::new();
+        for (prefix, origin, max_length) in payloads {
+            ensure!(vrps.len() < MAX_VRPS, "ROA payload limit exceeded");
+            let prefix = Prefix::parse(&prefix)?;
+            ensure!(
+                max_length >= prefix.length()
+                    && max_length
+                        <= if matches!(prefix, Prefix::V6(..)) {
+                            128
+                        } else {
+                            32
+                        },
+                "invalid payload maximum length"
+            );
+            vrps.push(Vrp {
+                prefix,
+                origin,
+                max_length,
+            });
+        }
+        vrps.sort_unstable();
+        vrps.dedup();
+        Ok(Self { vrps })
+    }
+
     /// Number of distinct validated prefix, origin and max-length tuples.
     pub fn len(&self) -> usize {
         self.vrps.len()

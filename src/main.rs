@@ -7,6 +7,7 @@ mod config;
 mod dashboard;
 mod graphql;
 mod import;
+mod irr_api;
 mod legacy_md5;
 mod maintainer_auth;
 mod mirror_worker;
@@ -20,6 +21,7 @@ mod nrtm4_state;
 mod nrtm_client;
 mod route_policy;
 mod rpki;
+mod rpki_service;
 mod rpsl;
 mod scope;
 mod sets;
@@ -741,8 +743,17 @@ async fn serve(config: Config, store: Arc<Store>) -> Result<()> {
         ),
         None => None,
     };
+    let rpki_shared = rpki_service::Shared::new(config.rpki.clone());
     let (stop, stopped) = watch::channel(false);
     let mut services = JoinSet::new();
+    if let Some(rpki_config) = config.rpki.clone() {
+        services.spawn(rpki_service::run(
+            rpki_config,
+            rpki_shared.clone(),
+            stopped.clone(),
+        ));
+    }
+
     for (source, mirror) in &config.nrtm3_sync {
         services.spawn(mirror_worker::run(
             store.clone(),
@@ -772,6 +783,8 @@ async fn serve(config: Config, store: Arc<Store>) -> Result<()> {
                 authoritative_sources: config.authoritative_sources.clone(),
                 update_sources,
                 timeout,
+                whois_sources: config.http_whois_sources.clone(),
+                rpki: rpki_shared.clone(),
                 dashboard: dashboard::Metadata {
                     mode: "live",
                     version: env!("CARGO_PKG_VERSION"),

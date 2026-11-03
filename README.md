@@ -4,6 +4,17 @@
 
 Project code is [MIT-licensed](LICENSE). The repository remains private during development; a public open-source release is planned.
 
+The project combines a compact Rust IRR service, a source/query dashboard and
+optional in-process RPKI validation. The first public test node is
+[**RIRRd UK 01**](https://rirrd.co.uk), hosted in the United Kingdom by
+**HYEHOST LLC**. See the [API and command guide](docs/operations/API_COMMANDS.md),
+[BIRD/FRR integration](docs/operations/ROUTER_INTEGRATION.md),
+[embedded validator profile](docs/operations/INTEGRATED_RPKI.md) and
+[community node directory](docs/community/NETWORK.md). The embedded validator
+uses the attributed Routinator Rust library. Full parity and release
+qualification remain incomplete.
+
+
 This development branch contains a transactional embedded registry, local snapshot and incremental mirroring commands, a TCP WHOIS listener and an optional read-only GraphQL service. The compatibility baseline is IRRd v4.5.4 at commit `8e8080dab744a348b7d0e6efcb53f403301dd075`. See the [compatibility matrix](docs/compatibility/IRRD_FEATURE_MATRIX.md), [upstream issue backlog](docs/compatibility/IRRD_ISSUE_BACKLOG.md) and [development checkpoint](AUTONOMOUS_PROGRESS.md) for release blockers and evidence.
 
 RIRRd aims to provide the features of a self-hosted IRRd service on smaller Linux

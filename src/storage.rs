@@ -59,6 +59,7 @@ const AS_BLOCK_COVER: TableDefinition<RangeCoverKey<'static>, ()> =
     TableDefinition::new("as_block_cover_v1");
 // A row is (source, field, normalized value, class, object key).
 const INVERSE: TableDefinition<InverseKey, ()> = TableDefinition::new("inverse_v1");
+const CLASS_COUNTS: TableDefinition<ExactKey, u64> = TableDefinition::new("object_class_counts_v1");
 const SERIALS: TableDefinition<&str, u64> = TableDefinition::new("source_serials_v1");
 const MIRROR_FILTERS: TableDefinition<&str, &str> = TableDefinition::new("mirror_class_filters_v1");
 const AUTH_NRTM3_SERIALS: TableDefinition<&str, u64> =
@@ -160,6 +161,15 @@ impl Store {
                 .list_tables()?
                 .map(|table| table.name().to_owned())
                 .collect();
+            if !tables.contains(CLASS_COUNTS.name()) {
+                let mut counts = write.open_table(CLASS_COUNTS)?;
+                for entry in records.iter()? {
+                    let (identity, _) = entry?;
+                    let (source, class, _) = identity.value();
+                    let value = counts.get((source, class))?.map_or(0, |n| n.value());
+                    counts.insert((source, class), value + 1)?;
+                }
+            }
             let backfill_prefixes = !tables.contains(PREFIXES.name());
             let backfill_inverse = !tables.contains(INVERSE.name());
             let backfill_inetnum = !tables.contains(INETNUM_COVER.name());
@@ -277,6 +287,55 @@ impl Store {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .clone()
+    }
+
+    /// Transactionally maintained counts; no object scan during status polling.
+    pub fn class_counts(
+        &self,
+    ) -> Result<std::collections::BTreeMap<String, std::collections::BTreeMap<String, u64>>> {
+        let read = self.db.begin_read()?;
+        let counts = read.open_table(CLASS_COUNTS)?;
+        let mut result =
+            std::collections::BTreeMap::<String, std::collections::BTreeMap<String, u64>>::new();
+        for entry in counts.iter()? {
+            let (key, count) = entry?;
+            let (source, class) = key.value();
+            result
+                .entry(source.into())
+                .or_default()
+                .insert(class.into(), count.value());
+        }
+        Ok(result)
+    }
+
+    pub fn object_keys(
+        &self,
+        source: &str,
+        class: &str,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<(Vec<String>, bool)> {
+        ensure!(limit > 0 && limit <= 100, "object page limit must be 1–100");
+        let read = self.db.begin_read()?;
+        let records = read.open_table(OBJECTS)?;
+        let upper = format!("{class}\0");
+        let lower = after.map_or(std::ops::Bound::Included((source, class, "")), |key| {
+            std::ops::Bound::Excluded((source, class, key))
+        });
+        let mut keys = Vec::new();
+        for entry in records
+            .range((
+                lower,
+                std::ops::Bound::Excluded((source, upper.as_str(), "")),
+            ))?
+            .take(limit + 1)
+        {
+            let (key, _) = entry?;
+            keys.push(key.value().2.to_owned());
+        }
+        let more = keys.len() > limit;
+        keys.truncate(limit);
+        Ok((keys, more))
     }
 
     pub fn object_count(&self) -> Result<u64> {
@@ -1428,12 +1487,16 @@ impl Store {
             prefixes.len()? == routes,
             "some routes are missing from the route prefix index"
         );
+        let mut expected_counts = std::collections::BTreeMap::<(String, String), u64>::new();
         let mut indexed_attributes = 0;
         let mut indexed_inetnum_blocks = 0;
         let mut indexed_as_blocks = 0;
         for entry in records.iter()? {
             let (identity, text) = entry?;
             let (source, class, key) = identity.value();
+            *expected_counts
+                .entry((source.into(), class.into()))
+                .or_default() += 1;
             if class == "inetnum"
                 && let Some(inetnum_cover) = &inetnum_cover
             {
@@ -1482,6 +1545,22 @@ impl Store {
                 as_block_cover.len()? == indexed_as_blocks,
                 "unexpected AS-block cover index entries"
             );
+        }
+        match read.open_table(CLASS_COUNTS) {
+            Ok(counts) => {
+                let mut actual = std::collections::BTreeMap::new();
+                for entry in counts.iter()? {
+                    let (key, n) = entry?;
+                    let (source, class) = key.value();
+                    actual.insert((source.to_owned(), class.to_owned()), n.value());
+                }
+                ensure!(
+                    actual == expected_counts,
+                    "object class counts do not match stored objects"
+                );
+            }
+            Err(redb::TableError::TableDoesNotExist(_)) => {}
+            Err(error) => return Err(error.into()),
         }
         verify_journal(&read)?;
         verify_mirror_filters(&read)?;
@@ -1737,6 +1816,7 @@ struct WriteIndexes<'txn> {
     inverse: Table<'txn, InverseKey, ()>,
     inetnum_cover: Table<'txn, RangeCoverKey<'static>, ()>,
     as_block_cover: Table<'txn, RangeCoverKey<'static>, ()>,
+    class_counts: Table<'txn, ExactKey, u64>,
 }
 
 impl<'txn> WriteIndexes<'txn> {
@@ -1748,6 +1828,7 @@ impl<'txn> WriteIndexes<'txn> {
             inverse: write.open_table(INVERSE)?,
             inetnum_cover: write.open_table(INETNUM_COVER)?,
             as_block_cover: write.open_table(AS_BLOCK_COVER)?,
+            class_counts: write.open_table(CLASS_COUNTS)?,
         })
     }
 
@@ -1885,6 +1966,14 @@ impl<'txn> WriteIndexes<'txn> {
             self.inverse
                 .insert((source, field, value.as_ref(), class, key), ())?;
         }
+        let count = self
+            .class_counts
+            .get((source, class))?
+            .map_or(0, |value| value.value());
+        self.class_counts.insert(
+            (source, class),
+            count.checked_add(1).context("object count overflow")?,
+        )?;
         Ok(attributes.skipped_invalid_values)
     }
 
@@ -1929,6 +2018,17 @@ impl<'txn> WriteIndexes<'txn> {
                     .is_some(),
                 "object is missing from the inverse lookup index"
             );
+        }
+        let count = self
+            .class_counts
+            .get((source, class))?
+            .context("missing object class count")?
+            .value();
+        ensure!(count > 0, "invalid zero object class count");
+        if count == 1 {
+            self.class_counts.remove((source, class))?;
+        } else {
+            self.class_counts.insert((source, class), count - 1)?;
         }
         Ok(())
     }
@@ -2272,6 +2372,48 @@ mod tests {
         } else {
             store.replace_source("TEST", [Ok(maintainer)])?;
         }
+        Ok(())
+    }
+
+    #[test]
+    fn class_counts_and_key_pages_follow_commits_rollbacks_and_legacy_upgrade() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("counts.redb");
+        let store = Store::open(&path)?;
+        store.replace_source(
+            "TEST",
+            [
+                Ok(object("TEST", "as-set", "AS-A")),
+                Ok(object("TEST", "as-set", "AS-B")),
+                Ok(object("TEST", "route", "192.0.2.0/24AS64496")),
+            ],
+        )?;
+        assert_eq!(store.class_counts()?["TEST"]["as-set"], 2);
+        assert_eq!(
+            store.object_keys("TEST", "as-set", None, 1)?,
+            (vec![String::from("AS-A")], true)
+        );
+        assert_eq!(
+            store.object_keys("TEST", "as-set", Some("AS-A"), 1)?,
+            (vec![String::from("AS-B")], false)
+        );
+        let bad = [
+            Ok(object("TEST", "as-set", "AS-C")),
+            Err(anyhow::anyhow!("late fixture failure")),
+        ];
+        assert!(store.replace_source("TEST", bad).is_err());
+        assert_eq!(store.class_counts()?["TEST"]["as-set"], 2);
+        assert_eq!(store.verify()?, 3);
+        let write = store.db.begin_write()?;
+        write.delete_table(CLASS_COUNTS)?;
+        write.commit()?;
+        drop(store);
+        let store = Store::open_for_service(&path)?;
+        assert_eq!(store.class_counts()?["TEST"]["route"], 1);
+        assert_eq!(store.verify()?, 3);
+        store.replace_source("TEST", std::iter::empty())?;
+        assert!(store.class_counts()?.is_empty());
+        assert_eq!(store.verify()?, 0);
         Ok(())
     }
 

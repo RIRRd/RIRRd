@@ -1042,6 +1042,8 @@ pub struct HttpServiceConfig {
     pub update_sources: Option<HashSet<String>>,
     pub timeout: Duration,
     pub dashboard: crate::dashboard::Metadata,
+    pub rpki: Arc<crate::rpki_service::Shared>,
+    pub whois_sources: Option<Vec<String>>,
 }
 
 pub async fn serve(
@@ -1056,6 +1058,8 @@ pub async fn serve(
         update_sources,
         timeout,
         dashboard,
+        rpki,
+        whois_sources,
     } = config;
     let schema = make_schema(store.clone(), sources.clone(), authoritative_sources)?;
     let mut app = Router::new()
@@ -1071,7 +1075,11 @@ pub async fn serve(
         ))
         .with_state(schema)
         .layer(Extension(store.clone()))
-        .merge(crate::whois::http_router(store.clone(), sources, timeout));
+        .merge(crate::whois::http_router(
+            store.clone(),
+            whois_sources.unwrap_or_else(|| sources.clone()),
+            timeout,
+        ));
     if let Some(update_sources) = update_sources {
         app = app.merge(crate::submission_http::router(
             store.clone(),
@@ -1080,6 +1088,8 @@ pub async fn serve(
         ));
     }
     app = app.merge(crate::dashboard::router(dashboard, store.clone())?);
+    app = app.merge(crate::rpki_service::router(rpki));
+    app = app.merge(crate::irr_api::router(store.clone(), sources, timeout));
     app = app.layer(middleware::from_fn_with_state(
         listener.local_addr()?.ip(),
         bound_host,
@@ -1111,6 +1121,8 @@ mod tests {
             authoritative_sources: HashSet::new(),
             update_sources,
             timeout: Duration::from_secs(2),
+            whois_sources: None,
+            rpki: crate::rpki_service::Shared::new(None),
             dashboard: crate::dashboard::Metadata {
                 mode: "live",
                 version: env!("CARGO_PKG_VERSION"),
