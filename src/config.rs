@@ -31,7 +31,10 @@ impl Config {
             "database path is empty"
         );
         if let Some(http) = config.http_listen {
-            ensure!(http.ip().to_canonical().is_loopback(), "http_listen must use a loopback address");
+            ensure!(
+                http.ip().to_canonical().is_loopback(),
+                "http_listen must use a loopback address"
+            );
             ensure!(
                 http.port() == 0 || http != config.listen,
                 "WHOIS and HTTP must use distinct addresses"

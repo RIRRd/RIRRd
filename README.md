@@ -1,6 +1,6 @@
 # Rust IRRd
 
-This development branch contains an offline snapshot importer, a transactional embedded registry and a limited TCP WHOIS listener. The compatibility baseline is IRRd v4.5.4 at commit `8e8080dab744a348b7d0e6efcb53f403301dd075`. See the [compatibility matrix](docs/compatibility/IRRD_FEATURE_MATRIX.md) and [development checkpoint](AUTONOMOUS_PROGRESS.md) for release blockers and evidence.
+This development branch contains a transactional embedded registry, local snapshot and incremental mirroring commands, a TCP WHOIS listener and an optional read-only GraphQL service. The compatibility baseline is IRRd v4.5.4 at commit `8e8080dab744a348b7d0e6efcb53f403301dd075`. See the [compatibility matrix](docs/compatibility/IRRD_FEATURE_MATRIX.md), [upstream issue backlog](docs/compatibility/IRRD_ISSUE_BACKLOG.md) and [development checkpoint](AUTONOMOUS_PROGRESS.md) for release blockers and evidence.
 
 ## Local evaluation
 
@@ -77,6 +77,19 @@ Set `http_listen = "127.0.0.1:8080"` in TOML. Send JSON by POST to `/graphql/` w
 On opening an existing registry database, the server adds missing lookup indexes in one transaction. Back up the database before upgrading. To roll back the binary, restore a pre-upgrade copy before importing or purging sources.
 
 Stop the daemon before purging a source. Use `source purge --source EXAMPLE --yes` with the same configuration to remove that source's objects and their index entries. A repeated purge succeeds. Remove the source from configuration separately if it should no longer be selectable. Purge is logical removal from the registry and database indexes.
+
+## Offline NRTMv3 mirroring
+
+Import the source's full snapshot first and record its published serial. Stop the daemon before applying a transcript or syncing with a peer. For a snapshot whose serial was 41, use one of the following:
+
+```sh
+rust-irrd source apply-nrtm3 --source EXAMPLE --base-serial 41 --file updates.nrtm
+rust-irrd source sync-nrtm3 --source EXAMPLE --base-serial 41 --endpoint 127.0.0.1:8043
+```
+
+Subsequent updates use the committed serial automatically. Run `rust-irrd source status --source EXAMPLE` to read it. A full snapshot replacement or purge clears the recorded serial.
+
+This client profile accepts finite, unfiltered version 3 responses with explicit contiguous serials. It commits object changes, indexes and the last serial together after validating the complete response. Filtered streams can legally contain serial gaps and are outside the supported profile. Remote sync uses plaintext TCP with an explicitly supplied peer IP and port. Use a trusted network or authenticated tunnel for replication traffic.
 
 ## Development checks
 

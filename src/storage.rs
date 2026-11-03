@@ -10,13 +10,17 @@ use std::{
 
 use anyhow::{Context, Result, ensure};
 use redb::{
-    Database, Durability, MultimapTableDefinition, MultimapTableHandle, ReadOnlyTable,
-    ReadableMultimapTable, ReadableTable, ReadableTableMetadata, TableDefinition, TableHandle,
+    Database, Durability, MultimapTable, MultimapTableDefinition, MultimapTableHandle,
+    ReadOnlyTable, ReadableMultimapTable, ReadableTable, ReadableTableMetadata, Table,
+    TableDefinition, TableHandle, WriteTransaction,
 };
 
-use crate::rpsl::{Object, lookup_attributes};
+use crate::{
+    nrtm3::{Kind, Operation},
+    rpsl::{Object, lookup_attributes},
+};
 
-type Identity = (&'static str, &'static str, &'static str);
+type Identity<'a> = (&'a str, &'a str, &'a str);
 type ExactKey = (&'static str, &'static str);
 type PrefixKey<'a> = (&'a str, &'a str, u128, u8, u32);
 type InverseKey = (
@@ -28,14 +32,16 @@ type InverseKey = (
 );
 
 // Identity is (source, class, key). The exact index maps (source, key) to classes.
-const OBJECTS: TableDefinition<Identity, &str> = TableDefinition::new("objects_v1");
+const OBJECTS: TableDefinition<Identity<'static>, &str> = TableDefinition::new("objects_v1");
 const EXACT: MultimapTableDefinition<ExactKey, &str> = MultimapTableDefinition::new("exact_v1");
 // The origin index maps (source, class, origin) to distinct canonical prefixes.
-const ORIGINS: MultimapTableDefinition<Identity, &str> = MultimapTableDefinition::new("origins_v1");
+const ORIGINS: MultimapTableDefinition<Identity<'static>, &str> =
+    MultimapTableDefinition::new("origins_v1");
 // Per-source order by network address permits one range scan for all descendants.
 const PREFIXES: TableDefinition<PrefixKey<'static>, ()> = TableDefinition::new("route_prefixes_v1");
 // A row is (source, field, normalized value, class, object key).
 const INVERSE: TableDefinition<InverseKey, ()> = TableDefinition::new("inverse_v1");
+const SERIALS: TableDefinition<&str, u64> = TableDefinition::new("source_serials_v1");
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PrefixMatch {
@@ -86,6 +92,7 @@ impl Store {
             let mut origins = write.open_multimap_table(ORIGINS)?;
             let mut prefixes = write.open_table(PREFIXES)?;
             let mut inverse = write.open_table(INVERSE)?;
+            write.open_table(SERIALS)?;
             if backfill_origins || backfill_prefixes || backfill_inverse {
                 for entry in records.iter()? {
                     let (identity, text) = entry?;
@@ -127,21 +134,15 @@ impl Store {
         source: &str,
         objects: impl IntoIterator<Item = Result<Object>>,
     ) -> Result<u64> {
-        let source = source.to_ascii_uppercase();
-        ensure!(
-            !source.is_empty() && !source.contains('\0'),
-            "invalid source name"
-        );
+        let source = canonical_source(source)?;
         let mut write = self.db.begin_write()?;
         write.set_durability(Durability::Immediate);
         let mut count = 0;
         let mut skipped_lookup_values = 0;
         {
             let mut records = write.open_table(OBJECTS)?;
-            let mut exact = write.open_multimap_table(EXACT)?;
-            let mut origins = write.open_multimap_table(ORIGINS)?;
-            let mut prefixes = write.open_table(PREFIXES)?;
-            let mut inverse = write.open_table(INVERSE)?;
+            let mut indexes = WriteIndexes::open(&write)?;
+            write.open_table(SERIALS)?.remove(source.as_str())?;
 
             // Appending the smallest character gives the exclusive end of this source's range.
             let next_source = format!("{source}\0");
@@ -151,94 +152,119 @@ impl Store {
             )?;
             for entry in old_records {
                 let (identity, text) = entry?;
-                let (source, class, key) = identity.value();
-                ensure!(
-                    exact.remove((source, key), class)?,
-                    "object is missing from the exact lookup index"
-                );
-                if let Some((prefix, origin)) = route_index_parts(class, key)? {
-                    ensure!(
-                        origins.remove((source, class, origin), prefix)?,
-                        "object is missing from the route origin index"
-                    );
-                    ensure!(
-                        prefixes
-                            .remove(prefix_index_key(source, class, prefix, origin)?)?
-                            .is_some(),
-                        "object is missing from the route prefix index"
-                    );
-                }
-                let attributes =
-                    lookup_attributes(class, text.value()).map_err(anyhow::Error::msg)?;
-                for (field, value) in attributes.inverse_entries().collect::<HashSet<_>>() {
-                    ensure!(
-                        inverse
-                            .remove((source, field, value.as_ref(), class, key))?
-                            .is_some(),
-                        "object is missing from the inverse lookup index"
-                    );
-                }
+                indexes.remove(identity.value(), text.value())?;
             }
 
             for object in objects {
                 let object = object?;
-                let attributes = object.lookup_attributes().map_err(anyhow::Error::msg)?;
-                let Object {
-                    source: object_source,
-                    class,
-                    key,
-                    text,
-                } = object;
+                let identity = validate_identity(&source, &object)?;
+                let (_, class, key) = identity;
                 ensure!(
-                    object_source == source,
-                    "object source does not match {source}"
-                );
-                ensure!(
-                    !class.is_empty() && !key.is_empty(),
-                    "empty object identity"
-                );
-                let identity = (source.as_str(), class.as_str(), key.as_str());
-                ensure!(
-                    records.insert(identity, text.as_str())?.is_none(),
+                    records.insert(identity, object.text.as_str())?.is_none(),
                     "duplicate {class} object {key} in {source}"
                 );
-                ensure!(
-                    !exact.insert((source.as_str(), key.as_str()), class.as_str())?,
-                    "unexpected duplicate entry in the exact lookup index"
-                );
-                if let Some((prefix, origin)) = route_index_parts(&class, &key)? {
-                    ensure!(
-                        !origins.insert((source.as_str(), class.as_str(), origin), prefix)?,
-                        "unexpected duplicate entry in the route origin index"
-                    );
-                    ensure!(
-                        prefixes
-                            .insert(prefix_index_key(&source, &class, prefix, origin)?, ())?
-                            .is_none(),
-                        "unexpected duplicate entry in the route prefix index"
-                    );
-                }
-                skipped_lookup_values += attributes.skipped_invalid_values;
-                for (field, value) in attributes.inverse_entries() {
-                    inverse.insert(
-                        (
-                            source.as_str(),
-                            field,
-                            value.as_ref(),
-                            class.as_str(),
-                            key.as_str(),
-                        ),
-                        (),
-                    )?;
-                }
+                skipped_lookup_values += indexes.insert(&object)?;
                 count += 1;
             }
         }
         write.commit()?;
-        if skipped_lookup_values != 0 {
-            tracing::warn!(%source, skipped_lookup_values, "retained malformed lookup attribute values in snapshot text without indexing them");
-        }
+        warn_skipped_lookup_values(&source, skipped_lookup_values);
         Ok(count)
+    }
+
+    /// Atomically apply one contiguous NRTMv3 response and its last serial.
+    pub fn apply_nrtm3(
+        &self,
+        source: &str,
+        declared: (u64, u64),
+        initial_base: Option<u64>,
+        operations: impl IntoIterator<Item = Result<Operation, String>>,
+    ) -> Result<u64> {
+        let source = canonical_source(source)?;
+        let (start, end) = declared;
+        ensure!(start > 0 && end >= start, "invalid NRTMv3 serial range");
+        let mut write = self.db.begin_write()?;
+        write.set_durability(Durability::Immediate);
+        let mut skipped_lookup_values = 0;
+        {
+            let mut serials = write.open_table(SERIALS)?;
+            let mut records = write.open_table(OBJECTS)?;
+            let mut indexes = WriteIndexes::open(&write)?;
+            let recorded = serials.get(source.as_str())?.map(|serial| serial.value());
+            let mut last = if let Some(recorded) = recorded {
+                ensure!(
+                    initial_base.is_none(),
+                    "a base serial is already recorded for {source}"
+                );
+                recorded
+            } else {
+                let base = initial_base
+                    .context("initial NRTMv3 apply requires the imported snapshot serial")?;
+                let next_source = format!("{source}\0");
+                ensure!(
+                    records
+                        .range((source.as_str(), "", "")..(next_source.as_str(), "", ""))?
+                        .next()
+                        .transpose()?
+                        .is_some(),
+                    "initial NRTMv3 apply requires an imported snapshot for {source}"
+                );
+                base
+            };
+            ensure!(
+                last.checked_add(1) == Some(start),
+                "NRTMv3 range starts at {start} after serial {last}"
+            );
+
+            // The iterator reports terminal framing errors after yielding its last operation.
+            for operation in operations {
+                let Operation {
+                    kind,
+                    serial,
+                    object,
+                } = operation.map_err(anyhow::Error::msg)?;
+                ensure!(
+                    last.checked_add(1) == Some(serial) && serial <= end,
+                    "non-contiguous NRTMv3 serial {serial} after {last}"
+                );
+                let identity = validate_identity(&source, &object)?;
+                match kind {
+                    Kind::Add => {
+                        if let Some(previous) = records.insert(identity, object.text.as_str())? {
+                            indexes.remove(identity, previous.value())?;
+                        }
+                        skipped_lookup_values += indexes.insert(&object)?;
+                    }
+                    Kind::Delete => {
+                        if let Some(previous) = records.remove(identity)? {
+                            indexes.remove(identity, previous.value())?;
+                        }
+                    }
+                }
+                last = serial;
+            }
+            ensure!(
+                last == end,
+                "NRTMv3 stream ended at serial {last}, expected {end}"
+            );
+            serials.insert(source.as_str(), end)?;
+        }
+        write.commit()?;
+        warn_skipped_lookup_values(&source, skipped_lookup_values);
+        Ok(end)
+    }
+
+    pub fn source_serial(&self, source: &str) -> Result<Option<u64>> {
+        let source = canonical_source(source)?;
+        let read = self.db.begin_read()?;
+        read.open_table(OBJECTS)
+            .context("missing or invalid registry objects table")?;
+        let serials = match read.open_table(SERIALS) {
+            Ok(table) => table,
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        Ok(serials.get(source.as_str())?.map(|serial| serial.value()))
     }
 
     /// Find up to `limit` objects by their key in the given source priority order.
@@ -630,6 +656,107 @@ impl Store {
     }
 }
 
+struct WriteIndexes<'txn> {
+    exact: MultimapTable<'txn, ExactKey, &'static str>,
+    origins: MultimapTable<'txn, Identity<'static>, &'static str>,
+    prefixes: Table<'txn, PrefixKey<'static>, ()>,
+    inverse: Table<'txn, InverseKey, ()>,
+}
+
+impl<'txn> WriteIndexes<'txn> {
+    fn open(write: &'txn WriteTransaction) -> Result<Self> {
+        Ok(Self {
+            exact: write.open_multimap_table(EXACT)?,
+            origins: write.open_multimap_table(ORIGINS)?,
+            prefixes: write.open_table(PREFIXES)?,
+            inverse: write.open_table(INVERSE)?,
+        })
+    }
+
+    fn insert(&mut self, object: &Object) -> Result<usize> {
+        let source = object.source.as_str();
+        let class = object.class.as_str();
+        let key = object.key.as_str();
+        ensure!(
+            !self.exact.insert((source, key), class)?,
+            "unexpected duplicate entry in the exact lookup index"
+        );
+        if let Some((prefix, origin)) = route_index_parts(class, key)? {
+            ensure!(
+                !self.origins.insert((source, class, origin), prefix)?,
+                "unexpected duplicate entry in the route origin index"
+            );
+            ensure!(
+                self.prefixes
+                    .insert(prefix_index_key(source, class, prefix, origin)?, ())?
+                    .is_none(),
+                "unexpected duplicate entry in the route prefix index"
+            );
+        }
+        let attributes = object.lookup_attributes().map_err(anyhow::Error::msg)?;
+        for (field, value) in attributes.inverse_entries() {
+            self.inverse
+                .insert((source, field, value.as_ref(), class, key), ())?;
+        }
+        Ok(attributes.skipped_invalid_values)
+    }
+
+    fn remove(&mut self, (source, class, key): Identity<'_>, text: &str) -> Result<()> {
+        ensure!(
+            self.exact.remove((source, key), class)?,
+            "object is missing from the exact lookup index"
+        );
+        if let Some((prefix, origin)) = route_index_parts(class, key)? {
+            ensure!(
+                self.origins.remove((source, class, origin), prefix)?,
+                "object is missing from the route origin index"
+            );
+            ensure!(
+                self.prefixes
+                    .remove(prefix_index_key(source, class, prefix, origin)?)?
+                    .is_some(),
+                "object is missing from the route prefix index"
+            );
+        }
+        let attributes = lookup_attributes(class, text).map_err(anyhow::Error::msg)?;
+        for (field, value) in attributes.inverse_entries().collect::<HashSet<_>>() {
+            ensure!(
+                self.inverse
+                    .remove((source, field, value.as_ref(), class, key))?
+                    .is_some(),
+                "object is missing from the inverse lookup index"
+            );
+        }
+        Ok(())
+    }
+}
+
+fn canonical_source(source: &str) -> Result<String> {
+    ensure!(
+        !source.is_empty() && !source.contains('\0'),
+        "invalid source name"
+    );
+    Ok(source.to_ascii_uppercase())
+}
+
+fn validate_identity<'a>(source: &str, object: &'a Object) -> Result<Identity<'a>> {
+    ensure!(
+        object.source == source,
+        "object source does not match {source}"
+    );
+    ensure!(
+        !object.class.is_empty() && !object.key.is_empty(),
+        "empty object identity"
+    );
+    Ok((&object.source, &object.class, &object.key))
+}
+
+fn warn_skipped_lookup_values(source: &str, skipped_lookup_values: usize) {
+    if skipped_lookup_values != 0 {
+        tracing::warn!(%source, skipped_lookup_values, "retained malformed lookup attribute values in stored object text without indexing them");
+    }
+}
+
 struct RoutePrefix {
     network: u128,
     length: u8,
@@ -709,7 +836,7 @@ fn route_index_parts<'a>(class: &str, key: &'a str) -> Result<Option<(&'a str, &
 }
 
 fn read_object(
-    records: &ReadOnlyTable<Identity, &str>,
+    records: &ReadOnlyTable<Identity<'static>, &str>,
     source: &str,
     class: &str,
     key: &str,
@@ -933,6 +1060,160 @@ mod tests {
                 .to_string()
                 .contains("unexpected inverse lookup index entries")
         );
+        Ok(())
+    }
+
+    #[test]
+    fn nrtm3_apply_updates_indexes_and_retains_source_serial_across_reopen() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("registry.redb");
+        let store = Store::open(&path)?;
+        let sources = [String::from("TEST")];
+        let replaced_key = "192.0.2.0/24AS64496";
+        let deleted_key = "192.0.3.0/24AS64496";
+        let mut previous = object("TEST", "route", replaced_key);
+        previous.text.push_str("mnt-by: OLD-MNT\n");
+        let mut updated = object("TEST", "route", replaced_key);
+        updated.text.push_str("mnt-by: NEW-MNT\n");
+        let deleted = object("TEST", "route", deleted_key);
+        let add = Operation {
+            kind: Kind::Add,
+            serial: 42,
+            object: updated.clone(),
+        };
+        let delete = Operation {
+            kind: Kind::Delete,
+            serial: 43,
+            object: deleted.clone(),
+        };
+        assert!(store.apply_nrtm3("TEST", (42, 43), Some(41), []).is_err());
+        store.replace_source("TEST", [Ok(previous), Ok(deleted)])?;
+        store.replace_source("OTHER", [Ok(object("OTHER", "route", deleted_key))])?;
+        assert!(store.apply_nrtm3("TEST", (42, 43), None, []).is_err());
+        assert_eq!(
+            store.apply_nrtm3("TEST", (42, 43), Some(41), [Ok(add), Ok(delete)])?,
+            43
+        );
+        drop(store);
+
+        let store = Store::open_existing(&path)?;
+        assert_eq!(store.source_serial("test")?, Some(43));
+        assert_eq!(store.source_serial("OTHER")?, None);
+        assert_eq!(
+            store.exact(replaced_key, &sources, 2)?,
+            std::slice::from_ref(&updated)
+        );
+        assert!(store.exact(deleted_key, &sources, 2)?.is_empty());
+        assert_eq!(
+            store.exact(deleted_key, &[String::from("OTHER")], 2)?.len(),
+            1
+        );
+        assert!(store.inverse("mnt-by", "OLD-MNT", &sources, 2)?.is_empty());
+        assert_eq!(
+            store.inverse("mnt-by", "NEW-MNT", &sources, 2)?,
+            std::slice::from_ref(&updated)
+        );
+        assert_eq!(
+            store.origin_prefixes("route", "AS64496", &sources, 2)?,
+            ["192.0.2.0/24"]
+        );
+        assert_eq!(
+            store.routes_matching_prefix(
+                "route",
+                "192.0.2.0/23",
+                PrefixMatch::MoreSpecific,
+                &sources,
+                2
+            )?,
+            [updated]
+        );
+        assert_eq!(store.verify()?, 2);
+        assert!(store.apply_nrtm3("TEST", (42, 43), None, []).is_err());
+        assert!(store.apply_nrtm3("TEST", (44, 44), Some(43), []).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn nrtm3_bad_batches_roll_back_and_snapshot_replacement_resets_serial() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = Store::open(&dir.path().join("registry.redb"))?;
+        let sources = [String::from("TEST")];
+        let old = object("TEST", "aut-num", "AS64496");
+        store.replace_source("TEST", [Ok(old.clone())])?;
+        let absent = object("TEST", "aut-num", "AS64500");
+        assert_eq!(
+            store.apply_nrtm3(
+                "TEST",
+                (10, 10),
+                Some(9),
+                [Ok(Operation {
+                    kind: Kind::Delete,
+                    serial: 10,
+                    object: absent
+                })]
+            )?,
+            10
+        );
+
+        let delete = || {
+            Ok(Operation {
+                kind: Kind::Delete,
+                serial: 11,
+                object: old.clone(),
+            })
+        };
+        let add = |source, serial| {
+            Ok(Operation {
+                kind: Kind::Add,
+                serial,
+                object: object(source, "aut-num", "AS64497"),
+            })
+        };
+        for bad in [
+            [delete(), Err(String::from("missing END"))],
+            [delete(), add("OTHER", 12)],
+            [delete(), add("TEST", 11)],
+            [delete(), add("TEST", 13)],
+        ] {
+            assert!(store.apply_nrtm3("TEST", (11, 12), None, bad).is_err());
+            assert_eq!(store.source_serial("TEST")?, Some(10));
+            assert_eq!(
+                store.exact("AS64496", &sources, 2)?,
+                std::slice::from_ref(&old)
+            );
+            assert!(store.exact("AS64497", &sources, 2)?.is_empty());
+        }
+        // A terminal parse error after the declared final operation must still roll back.
+        assert!(
+            store
+                .apply_nrtm3(
+                    "TEST",
+                    (11, 11),
+                    None,
+                    [delete(), Err(String::from("trailing data"))]
+                )
+                .is_err()
+        );
+        assert!(
+            store
+                .apply_nrtm3("TEST", (11, 12), None, [delete()])
+                .is_err()
+        );
+        assert!(
+            store
+                .replace_source("TEST", [Err(anyhow::anyhow!("snapshot failed"))])
+                .is_err()
+        );
+        assert_eq!(store.source_serial("TEST")?, Some(10));
+        store.replace_source("TEST", [Ok(old)])?;
+        assert_eq!(store.source_serial("TEST")?, None);
+        assert_eq!(
+            store.apply_nrtm3("TEST", (11, 11), Some(10), [add("TEST", 11)])?,
+            11
+        );
+        store.replace_source("TEST", [])?;
+        assert_eq!(store.source_serial("TEST")?, None);
+        assert_eq!(store.verify()?, 0);
         Ok(())
     }
 

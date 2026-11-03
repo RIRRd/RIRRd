@@ -3,13 +3,17 @@
 mod config;
 mod graphql;
 mod import;
+mod nrtm3;
+mod nrtm_client;
 mod rpsl;
 mod sets;
 mod storage;
 mod whois;
 
 use std::{
-    io::{BufWriter, Write},
+    fs::File,
+    io::{BufRead, BufReader, BufWriter, Write},
+    net::SocketAddr,
     path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
@@ -58,6 +62,31 @@ enum Command {
 
 #[derive(Subcommand)]
 enum SourceCommand {
+    /// Report the last committed incremental serial for one source.
+    Status {
+        #[arg(long)]
+        source: String,
+    },
+    /// Apply a local NRTMv3 transcript to an offline registry.
+    ApplyNrtm3 {
+        #[arg(long)]
+        source: String,
+        #[arg(long)]
+        file: PathBuf,
+        /// Serial of the imported snapshot, required on the first apply.
+        #[arg(long)]
+        base_serial: Option<u64>,
+    },
+    /// Fetch and apply an unfiltered NRTMv3 update from a trusted endpoint.
+    SyncNrtm3 {
+        #[arg(long)]
+        source: String,
+        #[arg(long)]
+        endpoint: SocketAddr,
+        /// Serial of the imported snapshot, required on the first sync.
+        #[arg(long)]
+        base_serial: Option<u64>,
+    },
     /// Remove one source's stored objects and indexes.
     Purge {
         #[arg(long)]
@@ -163,16 +192,110 @@ fn main() -> Result<()> {
             command: SourceCommand::Purge { source, yes },
         } => {
             ensure!(yes, "source purge requires --yes");
-            ensure!(config.sources.contains(&source), "source is not configured");
-            let store = Store::open_for_service(&config.database)?;
+            let store = open_source(&config, &source)?;
             store.replace_source(&source, std::iter::empty())?;
             println!(
                 "{}",
                 serde_json::json!({ "source": source, "purged": true })
             );
         }
+        Command::Source {
+            command: SourceCommand::Status { source },
+        } => {
+            let store = open_source(&config, &source)?;
+            let serial = store.source_serial(&source)?;
+            print_serial(&source, serial);
+        }
+        Command::Source {
+            command:
+                SourceCommand::ApplyNrtm3 {
+                    source,
+                    file,
+                    base_serial,
+                },
+        } => {
+            let store = open_source(&config, &source)?;
+            let input = BufReader::new(File::open(file).context("opening NRTMv3 transcript")?);
+            let serial = apply_nrtm3(
+                &store,
+                &source,
+                base_serial,
+                input,
+                config.max_snapshot_bytes,
+            )?;
+            print_serial(&source, Some(serial));
+        }
+        Command::Source {
+            command:
+                SourceCommand::SyncNrtm3 {
+                    source,
+                    endpoint,
+                    base_serial,
+                },
+        } => {
+            let store = open_source(&config, &source)?;
+            let committed = store.source_serial(&source)?;
+            let base = match (committed, base_serial) {
+                (Some(base), None) | (None, Some(base)) => base,
+                (Some(_), Some(_)) => anyhow::bail!("source already has a committed serial"),
+                (None, None) => anyhow::bail!("first sync requires --base-serial"),
+            };
+            let start = base
+                .checked_add(1)
+                .context("source serial cannot advance")?;
+            match nrtm_client::fetch(
+                endpoint,
+                &source,
+                start,
+                Duration::from_secs(config.io_timeout_seconds),
+                config.max_snapshot_bytes,
+            )? {
+                Some(input) => {
+                    let serial = apply_nrtm3(
+                        &store,
+                        &source,
+                        base_serial,
+                        input,
+                        config.max_snapshot_bytes,
+                    )?;
+                    print_serial(&source, Some(serial));
+                }
+                None => println!(
+                    "{}",
+                    serde_json::json!({
+                        "source": source, "serial": committed, "up_to_date": true,
+                    })
+                ),
+            }
+        }
     }
     Ok(())
+}
+
+fn open_source(config: &Config, source: &str) -> Result<Store> {
+    ensure!(
+        config.sources.iter().any(|configured| configured == source),
+        "source is not configured"
+    );
+    Store::open_for_service(&config.database)
+}
+
+fn apply_nrtm3(
+    store: &Store,
+    source: &str,
+    base_serial: Option<u64>,
+    input: impl BufRead,
+    max_bytes: u64,
+) -> Result<u64> {
+    let transcript = nrtm3::Reader::new(input, source, max_bytes).map_err(anyhow::Error::msg)?;
+    store.apply_nrtm3(source, transcript.range(), base_serial, transcript)
+}
+
+fn print_serial(source: &str, serial: Option<u64>) {
+    println!(
+        "{}",
+        serde_json::json!({ "source": source, "serial": serial })
+    );
 }
 
 async fn serve(config: Config, store: Arc<Store>) -> Result<()> {

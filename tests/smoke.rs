@@ -1,6 +1,6 @@
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{SocketAddr, TcpStream};
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::Path;
 use std::process::{Child, Command, Output, Stdio};
 use std::sync::mpsc;
@@ -396,5 +396,108 @@ max_snapshot_bytes = 4096
             .as_str()
             .unwrap()
             .contains("source: TEST")
+    );
+}
+
+#[test]
+fn nrtm3_commits_objects_and_serial_together_over_file_and_tcp() {
+    let workspace = tempfile::tempdir().unwrap();
+    let config = workspace.path().join("irrd.toml");
+    fs::write(
+        &config,
+        r#"database = "test.redb"
+sources = ["TEST"]
+listen = "127.0.0.1:0"
+max_connections = 4
+io_timeout_seconds = 3
+max_snapshot_bytes = 4096
+"#,
+    )
+    .unwrap();
+    let snapshot = workspace.path().join("snapshot.rpsl");
+    fs::write(&snapshot, "aut-num: AS64496\nsource: TEST\n").unwrap();
+    successful(
+        cli(&config)
+            .args(["import", "snapshot", "--source", "TEST", "--file"])
+            .arg(snapshot)
+            .output()
+            .unwrap(),
+    );
+
+    let transcript = workspace.path().join("update.txt");
+    fs::write(
+        &transcript,
+        "%START Version: 3 TEST 42-42\n\nADD 42\n\naut-num: AS64497\nsource: TEST\n\n%END OTHER\n",
+    )
+    .unwrap();
+    let apply = || {
+        let mut command = cli(&config);
+        command
+            .args([
+                "source",
+                "apply-nrtm3",
+                "--source",
+                "TEST",
+                "--base-serial",
+                "41",
+                "--file",
+            ])
+            .arg(&transcript);
+        command
+    };
+    let status = || {
+        let output = successful(
+            cli(&config)
+                .args(["source", "status", "--source", "TEST"])
+                .output()
+                .unwrap(),
+        );
+        serde_json::from_slice::<Value>(&output).unwrap()["serial"].clone()
+    };
+    assert!(!apply().output().unwrap().status.success());
+    assert_eq!(status(), Value::Null);
+
+    fs::write(
+        &transcript,
+        "%START Version: 3 TEST 42-42\n\nADD 42\n\naut-num: AS64497\nsource: TEST\n\n%END TEST\n",
+    )
+    .unwrap();
+    successful(apply().output().unwrap());
+    assert_eq!(status(), 42);
+    assert!(!apply().output().unwrap().status.success());
+
+    let upstream = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = upstream.local_addr().unwrap().to_string();
+    let fetch = thread::spawn(move || {
+        let (mut socket, _) = upstream.accept().unwrap();
+        socket.set_read_timeout(Some(IO_DEADLINE)).unwrap();
+        let mut query = String::new();
+        BufReader::new(&mut socket).read_line(&mut query).unwrap();
+        assert_eq!(query, "-g TEST:3:43-LAST\n");
+        socket
+            .write_all(b"%START Version: 3 TEST 43-43\n\nDEL 43\n\naut-num: AS64496\n\n%END TEST\n")
+            .unwrap();
+    });
+    let sync = cli(&config)
+        .args([
+            "source",
+            "sync-nrtm3",
+            "--source",
+            "TEST",
+            "--endpoint",
+            &endpoint,
+        ])
+        .output()
+        .unwrap();
+    successful(sync);
+    fetch.join().unwrap();
+    assert_eq!(status(), 43);
+
+    let (_server, address) = Server::start(&config);
+    assert_eq!(whois(address, b"!maut-num,AS64496\n"), "D\n");
+    let remaining = "aut-num: AS64497\nsource: TEST\n";
+    assert_eq!(
+        whois(address, b"!maut-num,AS64497\n"),
+        format!("A{}\n{remaining}C\n", remaining.len())
     );
 }
