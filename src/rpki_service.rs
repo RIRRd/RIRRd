@@ -329,10 +329,16 @@ fn validator(
                 "not all five trust anchors produced valid publication points"
             );
             let rejected = metrics.publication.rejected_points;
-            let anchors = metrics.tals.iter().map(|t| json!({"name":t.name(),"valid_publication_points":t.publication.valid_points,"rejected_publication_points":t.publication.rejected_points,"vrps_ipv4":t.payload.v4_origins.contributed,"vrps_ipv6":t.payload.v6_origins.contributed})).collect();
             shared.state("publishing");
             let changed = history.update(report, &LocalExceptions::empty(), metrics);
             history.mark_update_done();
+            // Contribution counters are finalized by into_snapshot() inside
+            // history.update(), after global deduplication and filtering.
+            let final_metrics = history
+                .read()
+                .metrics()
+                .ok_or_else(|| anyhow::anyhow!("missing finalized RPKI metrics"))?;
+            let anchors = final_metrics.tals.iter().map(|t| json!({"name":t.name(),"valid_publication_points":t.publication.valid_points,"rejected_publication_points":t.publication.rejected_points,"vrps_ipv4":t.payload.v4_origins.contributed,"vrps_ipv6":t.payload.v6_origins.contributed})).collect();
             let snapshot = history
                 .read()
                 .current()

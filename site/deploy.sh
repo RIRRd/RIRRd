@@ -8,7 +8,7 @@ caddy validate --config "$PWD/site/Caddyfile" --adapter caddyfile
 backup="/var/backups/rirrd-web/$(date -u +%Y%m%dT%H%M%SZ)"
 install -d -m 700 "$backup"
 cp -a /etc/caddy/Caddyfile "$backup/"
-for path in /etc/systemd/system/rirrd-community.service /usr/local/lib/rirrd-community/service.py /usr/local/lib/rirrd-live/gateway.py /usr/local/lib/rirrd-live/node.json; do
+for path in /etc/systemd/system/rirrd-community.service /etc/systemd/system/rirrd-live-gateway.service.d/telemetry.conf /usr/local/lib/rirrd-community/service.py /usr/local/lib/rirrd-live/gateway.py /usr/local/lib/rirrd-live/node.json; do
     if [ -f "$path" ]; then cp -a "$path" "$backup/"; fi
 done
 for path in /var/www/rirrd-project /var/www/irrd-tools; do

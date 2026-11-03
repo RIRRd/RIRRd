@@ -8,7 +8,7 @@ window.RIRRdCharts = (() => {
   function line(container, points, key, title, format = String) {
     const valid=points.filter(p=>Number.isFinite(p[key]) && Number.isFinite(p.timestamp));
     if (!valid.length) return empty(container,'No samples yet. This chart starts with real observations; it has no generated history.');
-    const svg=base(container,title); container.dataset.points=String(valid.length);
+    const svg=base(container,title+'; '+valid.length+' actual samples; latest '+format(valid.at(-1)[key])); container.dataset.points=String(valid.length);
     const left=80,right=660,top=15,bottom=175;
     let first=Math.min(...points.map(p=>p.timestamp)),last=Math.max(...points.map(p=>p.timestamp));
     if(first===last){first-=30;last+=30;}
@@ -22,15 +22,15 @@ window.RIRRdCharts = (() => {
     for(const group of segments){svg.append(node('polyline',{points:group.map(p=>`${x(p.timestamp)},${y(p[key])}`).join(' '),class:'chart-line',fill:'none'}));if(group.length===1)svg.append(node('circle',{cx:x(group[0].timestamp),cy:y(group[0][key]),r:3,class:'chart-dot'}));}
     const marker=node('circle',{r:4,class:'chart-dot',visibility:'hidden'});svg.append(marker);
     const hint=document.createElement('p');hint.className='chart-readout';hint.textContent='Latest: '+format(valid.at(-1)[key])+' · '+new Date(valid.at(-1).timestamp*1000).toLocaleString();container.append(hint);
-    function select(index){const p=valid[index];marker.setAttribute('cx',x(p.timestamp));marker.setAttribute('cy',y(p[key]));marker.setAttribute('visibility','visible');hint.textContent=format(p[key])+' · '+new Date(p.timestamp*1000).toLocaleString();}
+    function select(index){const p=valid[index];marker.setAttribute('cx',x(p.timestamp));marker.setAttribute('cy',y(p[key]));marker.setAttribute('visibility','visible');hint.textContent=format(p[key])+' · '+new Date(p.timestamp*1000).toLocaleString();controls.setAttribute('aria-valuetext',hint.textContent);}
     svg.addEventListener('pointermove',event=>{const rect=svg.getBoundingClientRect(),position=(event.clientX-rect.left)/rect.width*680;const time=first+(position-left)/(right-left)*(last-first);let nearest=0;for(let i=1;i<valid.length;i++)if(Math.abs(valid[i].timestamp-time)<Math.abs(valid[nearest].timestamp-time))nearest=i;select(nearest);});
-    const controls=document.createElement('input');controls.type='range';controls.min='0';controls.max=String(valid.length-1);controls.value=controls.max;controls.setAttribute('aria-label',title+': inspect sample');controls.className='chart-slider';controls.addEventListener('input',()=>select(Number(controls.value)));container.append(controls);
+    const controls=document.createElement('input');controls.type='range';controls.min='0';controls.max=String(valid.length-1);controls.value=controls.max;controls.setAttribute('aria-label',title+': inspect sample');controls.className='chart-slider';controls.setAttribute('aria-valuetext',hint.textContent);controls.addEventListener('input',()=>select(Number(controls.value)));container.append(controls);
   }
   function bars(container, values, title, format = n=>Math.round(n).toLocaleString()) {
     const rows=values.filter(v=>Number.isFinite(v.value)&&v.value>=0);
     if(!rows.length)return empty(container,'No measured data available.');
-    const height=rows.length*33+20,svg=base(container,title,height),max=Math.max(...rows.map(r=>r.value),1);container.dataset.points=String(rows.length);
-    rows.forEach((r,i)=>{const y=15+i*33;svg.append(node('text',{x:0,y:y+13,class:'chart-label'},r.label));const rect=node('rect',{x:150,y,width:Math.max(1,r.value/max*400),height:20,class:r.reference?'chart-bar reference':'chart-bar'});rect.append(node('title',{},r.label+': '+format(r.value)));svg.append(rect,node('text',{x:565,y:y+14,class:'chart-label'},format(r.value)));});
+    const height=rows.length*33+20,svg=base(container,title+'; '+rows.map(r=>r.label+': '+format(r.value)).join('; '),height),max=Math.max(...rows.map(r=>r.value),1);container.dataset.points=String(rows.length);
+    rows.forEach((r,i)=>{const y=15+i*33;svg.append(node('text',{x:0,y:y+13,class:'chart-label'},r.label));const rect=node('rect',{x:150,y,width:Math.max(0,r.value/max*400),height:20,class:r.reference?'chart-bar reference':'chart-bar'});rect.append(node('title',{},r.label+': '+format(r.value)));svg.append(rect,node('text',{x:565,y:y+14,class:'chart-label'},format(r.value)));});
   }
   return {line,bars,empty};
 })();
