@@ -4,6 +4,7 @@ use std::{
     borrow::Cow,
     collections::{HashMap, HashSet},
     future::Future,
+    net::IpAddr,
     sync::{Arc, OnceLock},
     time::Duration,
 };
@@ -19,7 +20,7 @@ use async_graphql::{
 use axum::{
     Extension, Json, Router,
     extract::{DefaultBodyLimit, Request as HttpRequest, State},
-    http::StatusCode,
+    http::{StatusCode, header::HOST, uri::Authority},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::post,
@@ -972,6 +973,50 @@ fn make_schema(
     builder.finish().context("building GraphQL schema")
 }
 
+// HTTP is loopback-only. Reject arbitrary DNS names before any route (including
+// updates) to prevent a browser reaching the private API through DNS rebinding.
+fn allowed_authority(value: &str, listen_ip: IpAddr) -> bool {
+    if value.contains('@') {
+        return false;
+    }
+    let Ok(authority) = value.parse::<Authority>() else {
+        return false;
+    };
+    let Some(suffix) = authority.as_str().strip_prefix(authority.host()) else {
+        return false;
+    };
+    if !suffix.is_empty()
+        && !suffix.strip_prefix(':').is_some_and(|port| {
+            port.bytes().all(|b| b.is_ascii_digit()) && port.parse::<u16>().is_ok()
+        })
+    {
+        return false;
+    }
+    let host = authority.host();
+    let host = host
+        .strip_prefix('[')
+        .and_then(|v| v.strip_suffix(']'))
+        .unwrap_or(host);
+    host.eq_ignore_ascii_case("localhost") || host.parse::<IpAddr>().ok() == Some(listen_ip)
+}
+
+async fn bound_host(State(listen_ip): State<IpAddr>, req: HttpRequest, next: Next) -> Response {
+    let mut hosts = req.headers().get_all(HOST).iter();
+    let valid = hosts
+        .next()
+        .and_then(|h| h.to_str().ok())
+        .is_some_and(|host| allowed_authority(host, listen_ip))
+        && hosts.next().is_none()
+        && req
+            .uri()
+            .authority()
+            .is_none_or(|authority| allowed_authority(authority.as_str(), listen_ip));
+    if !valid {
+        return (StatusCode::BAD_REQUEST, "Invalid host header").into_response();
+    }
+    next.run(req).await
+}
+
 async fn bound_http(State(limits): State<HttpLimits>, req: HttpRequest, next: Next) -> Response {
     let Ok(_permit) = limits.slots.try_acquire() else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
@@ -1022,6 +1067,10 @@ pub async fn serve(
             timeout,
         ));
     }
+    app = app.layer(middleware::from_fn_with_state(
+        listener.local_addr()?.ip(),
+        bound_host,
+    ));
     tracing::info!(address = %listener.local_addr()?, "GraphQL listening");
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown)
@@ -1448,6 +1497,105 @@ mod tests {
             "{:?}",
             response.errors
         );
+        Ok(())
+    }
+
+    #[test]
+    fn loopback_authorities_reject_external_and_ambiguous_names() {
+        let ipv4: IpAddr = "127.0.0.1".parse().unwrap();
+        let ipv6: IpAddr = "::1".parse().unwrap();
+        for host in ["localhost", "LOCALHOST:9080", "127.0.0.1", "127.0.0.1:9080"] {
+            assert!(allowed_authority(host, ipv4), "{host}");
+        }
+        assert!(allowed_authority("[::1]:9080", ipv6));
+        for host in [
+            "",
+            "evil.example",
+            "localhost.evil.example",
+            "evil@localhost",
+            "localhost,evil.example",
+            "localhost:99999",
+            "localhost:bad",
+            "localhost:+80",
+            "localhost.",
+            "[::1]",
+            "127.0.0.2",
+            "localhost/path",
+        ] {
+            assert!(!allowed_authority(host, ipv4), "{host}");
+        }
+    }
+
+    #[tokio::test]
+    async fn all_http_routes_reject_untrusted_hosts_before_handling_requests() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let store = Arc::new(Store::open(&directory.path().join("host.redb"))?);
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let (stop, stopped) = oneshot::channel();
+        let server = tokio::spawn(serve(
+            listener,
+            store,
+            vec!["TEST".into()],
+            HashSet::new(),
+            Some(HashSet::from(["TEST".into()])),
+            Duration::from_secs(2),
+            async move {
+                let _ = stopped.await;
+            },
+        ));
+        async fn request(
+            address: std::net::SocketAddr,
+            target: &str,
+            host: &str,
+        ) -> Result<String> {
+            let mut connection = TcpStream::connect(address).await?;
+            let body = r#"{"query":"{ rpslObjects(rpslPk:[\"AS64496\"]) { rpslPk } }"}"#;
+            connection.write_all(format!("POST {target} HTTP/1.0\r\n{host}Connection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len()).as_bytes()).await?;
+            let mut reply = String::new();
+            tokio::time::timeout(
+                Duration::from_secs(3),
+                connection.read_to_string(&mut reply),
+            )
+            .await??;
+            Ok(reply)
+        }
+        for target in [
+            "/graphql/",
+            "/v1/whois/?q=AS64496",
+            "/v1/submit/",
+            "/missing",
+        ] {
+            for host in [
+                "Host: secret.evil.example\r\n",
+                "",
+                "Host: localhost\r\nHost: secret.evil.example\r\n",
+            ] {
+                let reply = request(address, target, host).await?;
+                assert_eq!(
+                    reply.split_whitespace().nth(1),
+                    Some("400"),
+                    "{target}: {reply}"
+                );
+                assert!(!reply.contains("secret.evil.example"));
+            }
+        }
+        let reply = request(
+            address,
+            "http://secret.evil.example/graphql/",
+            "Host: localhost\r\n",
+        )
+        .await?;
+        assert_eq!(reply.split_whitespace().nth(1), Some("400"), "{reply}");
+        for host in [
+            "Host: localhost\r\n".to_owned(),
+            format!("Host: {address}\r\n"),
+        ] {
+            let reply = request(address, "/graphql/", &host).await?;
+            assert_eq!(reply.split_whitespace().nth(1), Some("200"), "{reply}");
+        }
+        let _ = stop.send(());
+        tokio::time::timeout(Duration::from_secs(3), server).await???;
         Ok(())
     }
 
