@@ -163,11 +163,25 @@ impl Store {
                 .collect();
             if !tables.contains(CLASS_COUNTS.name()) {
                 let mut counts = write.open_table(CLASS_COUNTS)?;
+                // OBJECTS is ordered by (source, class, key). Aggregate one
+                // contiguous group at a time: constant memory and one metadata
+                // write per class, rather than a B-tree update per object.
+                let mut group = (String::new(), String::new());
+                let mut count = 0u64;
                 for entry in records.iter()? {
                     let (identity, _) = entry?;
                     let (source, class, _) = identity.value();
-                    let value = counts.get((source, class))?.map_or(0, |n| n.value());
-                    counts.insert((source, class), value + 1)?;
+                    if group.0 != source || group.1 != class {
+                        if count > 0 {
+                            counts.insert((group.0.as_str(), group.1.as_str()), count)?;
+                        }
+                        group = (source.to_owned(), class.to_owned());
+                        count = 0;
+                    }
+                    count += 1;
+                }
+                if count > 0 {
+                    counts.insert((group.0.as_str(), group.1.as_str()), count)?;
                 }
             }
             let backfill_prefixes = !tables.contains(PREFIXES.name());
