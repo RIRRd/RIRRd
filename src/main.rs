@@ -5,6 +5,7 @@ mod graphql;
 mod import;
 mod nrtm3;
 mod nrtm_client;
+mod rpki;
 mod rpsl;
 mod sets;
 mod storage;
@@ -57,6 +58,24 @@ enum Command {
     Source {
         #[command(subcommand)]
         command: SourceCommand,
+    },
+    Rpki {
+        #[command(subcommand)]
+        command: RpkiCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum RpkiCommand {
+    /// Classify one route using a validator-produced ROA JSON file.
+    Validate {
+        #[arg(long)]
+        roas: PathBuf,
+        #[arg(long)]
+        prefix: String,
+        /// Route origin as a decimal ASN.
+        #[arg(long)]
+        origin: u32,
     },
 }
 
@@ -267,6 +286,25 @@ fn main() -> Result<()> {
                     })
                 ),
             }
+        }
+        Command::Rpki {
+            command:
+                RpkiCommand::Validate {
+                    roas,
+                    prefix,
+                    origin,
+                },
+        } => {
+            let file = File::open(roas).context("opening validated ROA feed")?;
+            let table =
+                rpki::RoaTable::read(file, config.max_snapshot_bytes.min(256 * 1024 * 1024))?;
+            let state = table.validate(&prefix, origin)?;
+            println!(
+                "{}",
+                serde_json::json!({
+                    "prefix": prefix, "origin": origin, "state": state, "roas": table.len(),
+                })
+            );
         }
     }
     Ok(())

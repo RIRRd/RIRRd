@@ -261,6 +261,8 @@ fn whois_pipelines_commands_and_keeps_source_selection_per_connection() {
 sources = ["TEST", "OTHER"]
 listen = "127.0.0.1:0"
 max_connections = 4
+max_connections_per_ip = 1
+connection_limit_exempt_ips = ["::ffff:127.0.0.1"]
 io_timeout_seconds = 2
 max_snapshot_bytes = 4096
 "#,
@@ -289,6 +291,12 @@ max_snapshot_bytes = 4096
     let (_server, address) = Server::start(&config);
     let other = "aut-num: AS64496\nsource: OTHER\n";
     let test = "aut-num: AS64496\nsource: TEST\n";
+    let mut held = TcpStream::connect_timeout(&address, IO_DEADLINE).unwrap();
+    held.set_read_timeout(Some(IO_DEADLINE)).unwrap();
+    held.write_all(b"!!\n!s-lc\n").unwrap();
+    let mut ready = [0; b"A11\nTEST,OTHER\nC\n".len()];
+    held.read_exact(&mut ready).unwrap();
+    assert_eq!(&ready, b"A11\nTEST,OTHER\nC\n");
     assert_eq!(
         whois(
             address,
@@ -299,6 +307,8 @@ max_snapshot_bytes = 4096
             other.len()
         )
     );
+    held.write_all(b"!q\n").unwrap();
+    drop(held);
     assert_eq!(
         whois(address, b"!maut-num,AS64496\n"),
         format!("A{}\n{test}C\n", test.len())
@@ -500,4 +510,48 @@ max_snapshot_bytes = 4096
         whois(address, b"!maut-num,AS64497\n"),
         format!("A{}\n{remaining}C\n", remaining.len())
     );
+}
+
+#[test]
+fn rpki_cli_reports_route_origin_validation_states() {
+    let workspace = tempfile::tempdir().unwrap();
+    let config = workspace.path().join("irrd.toml");
+    fs::write(
+        &config,
+        r#"database = "test.redb"
+sources = ["TEST"]
+listen = "127.0.0.1:0"
+max_connections = 4
+io_timeout_seconds = 2
+max_snapshot_bytes = 4096
+"#,
+    )
+    .unwrap();
+    let roas = workspace.path().join("roas.json");
+    fs::write(
+        &roas,
+        r#"{"roas":[{"prefix":"192.0.2.0/24","asn":"AS64496","maxLength":25}]}"#,
+    )
+    .unwrap();
+    for (prefix, origin, state) in [
+        ("192.0.2.0/25", "64496", "VALID"),
+        ("192.0.2.0/26", "64496", "INVALID"),
+        ("192.0.2.0/24", "64497", "INVALID"),
+        ("198.51.100.0/24", "64496", "NOT_FOUND"),
+    ] {
+        let output = successful(
+            cli(&config)
+                .args([
+                    "rpki", "validate", "--prefix", prefix, "--origin", origin, "--roas",
+                ])
+                .arg(&roas)
+                .output()
+                .unwrap(),
+        );
+        assert_eq!(
+            serde_json::from_slice::<Value>(&output).unwrap()["state"],
+            state
+        );
+    }
+    assert!(!workspace.path().join("test.redb").exists());
 }

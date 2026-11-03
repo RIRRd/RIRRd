@@ -1,13 +1,18 @@
-//! Bounded read-only GraphQL exact-key queries over the shared store.
+//! Bounded read-only GraphQL queries over the shared store.
 
-use std::{collections::HashMap, future::Future, sync::Arc, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    future::Future,
+    sync::Arc,
+    time::Duration,
+};
 
 use anyhow::{Context, Result};
 use async_graphql::{
     Error, Request, Value,
     dynamic::{
         Field, FieldFuture, FieldValue, InputValue, Interface, InterfaceField,
-        Object as GraphqlObject, ResolverContext, Schema, TypeRef,
+        Object as GraphqlObject, ResolverContext, Scalar, Schema, TypeRef,
     },
 };
 use axum::{
@@ -20,12 +25,14 @@ use axum::{
 };
 use tokio::{net::TcpListener, sync::Semaphore, task::spawn_blocking};
 
-use crate::{rpsl::Object, storage::Store};
+use crate::{rpsl::Object, sets::routes_for_as_set, storage::Store};
 
 const MAX_HTTP_BYTES: usize = 16 * 1024;
 const MAX_HTTP_REQUESTS: usize = 8;
 const MAX_LOOKUPS: usize = 8;
 const MAX_RECORDS: usize = 8;
+const MAX_SET_NAMES: usize = 8;
+const MAX_PREFIXES: usize = 4096;
 const MAX_FILTER_VALUES: usize = 32;
 const MAX_FILTER_BYTES: usize = 512;
 const MAX_COMPLEXITY: usize = 24;
@@ -118,6 +125,29 @@ struct Lookup {
     store: Arc<Store>,
     sources: Arc<[String]>,
     slots: Arc<Semaphore>,
+}
+
+impl Lookup {
+    async fn run<T: Send + 'static>(
+        &self,
+        work: impl FnOnce(&Store) -> Result<T> + Send + 'static,
+    ) -> async_graphql::Result<T> {
+        let permit = Arc::clone(&self.slots)
+            .try_acquire_owned()
+            .map_err(|_| Error::new("Too many concurrent lookups."))?;
+        let store = Arc::clone(&self.store);
+        spawn_blocking(move || {
+            let _permit = permit;
+            work(&store)
+        })
+        .await
+        .context("GraphQL lookup worker failed")
+        .and_then(|result| result)
+        .map_err(|error| {
+            tracing::error!(%error, "GraphQL lookup failed");
+            Error::new("Lookup failed.")
+        })
+    }
 }
 
 #[derive(Clone)]
@@ -261,15 +291,12 @@ fn list_filter(
     Ok(Some(values))
 }
 
-async fn objects(ctx: ResolverContext<'_>) -> async_graphql::Result<Option<FieldValue<'_>>> {
-    let lookup = ctx.data::<Lookup>()?;
-    let Some(keys) = list_filter(&ctx, "rpslPk")? else {
-        return Err(Error::new("Your query must be more specific."));
-    };
-
-    let classes = list_filter(&ctx, "objectClass")?;
-    let sources = list_filter(&ctx, "sources")?.map_or_else(
-        || lookup.sources.to_vec(),
+fn source_filter(
+    ctx: &ResolverContext<'_>,
+    configured: &[String],
+) -> async_graphql::Result<Vec<String>> {
+    let sources = list_filter(ctx, "sources")?.map_or_else(
+        || configured.to_vec(),
         |mut sources| {
             sources
                 .iter_mut()
@@ -277,12 +304,20 @@ async fn objects(ctx: ResolverContext<'_>) -> async_graphql::Result<Option<Field
             sources
         },
     );
-    if sources
-        .iter()
-        .any(|source| !lookup.sources.contains(source))
-    {
+    if sources.iter().any(|source| !configured.contains(source)) {
         return Err(Error::new("Unknown source."));
     }
+    Ok(sources)
+}
+
+async fn objects(ctx: ResolverContext<'_>) -> async_graphql::Result<Option<FieldValue<'_>>> {
+    let lookup = ctx.data::<Lookup>()?;
+    let Some(keys) = list_filter(&ctx, "rpslPk")? else {
+        return Err(Error::new("Your query must be more specific."));
+    };
+
+    let classes = list_filter(&ctx, "objectClass")?;
+    let sources = source_filter(&ctx, &lookup.sources)?;
 
     let limit = ctx
         .args
@@ -304,21 +339,9 @@ async fn objects(ctx: ResolverContext<'_>) -> async_graphql::Result<Option<Field
         return Ok(Some(FieldValue::list(Vec::<FieldValue<'_>>::new())));
     }
 
-    let permit = Arc::clone(&lookup.slots)
-        .try_acquire_owned()
-        .map_err(|_| Error::new("Too many concurrent lookups."))?;
-    let store = Arc::clone(&lookup.store);
-    let records = spawn_blocking(move || {
-        let _permit = permit;
-        store.exact_objects(&keys, &sources, &classes.unwrap_or_default(), limit)
-    })
-    .await
-    .context("GraphQL lookup worker failed")
-    .and_then(|result| result)
-    .map_err(|error| {
-        tracing::error!(%error, "GraphQL object lookup failed");
-        Error::new("Object lookup failed.")
-    })?;
+    let records = lookup
+        .run(move |store| store.exact_objects(&keys, &sources, &classes.unwrap_or_default(), limit))
+        .await?;
 
     let objects = records
         .into_iter()
@@ -331,19 +354,200 @@ async fn objects(ctx: ResolverContext<'_>) -> async_graphql::Result<Option<Field
     Ok(Some(FieldValue::list(objects)))
 }
 
+struct Prefixes {
+    key: Value,
+    prefixes: Vec<String>,
+}
+
+fn prefix_type(name: &str, key: &str, key_type: &str) -> GraphqlObject {
+    GraphqlObject::new(name)
+        .field(Field::new(key, TypeRef::named_nn(key_type), |ctx| {
+            FieldFuture::new(async move {
+                let row = ctx.parent_value.try_downcast_ref::<Prefixes>()?;
+                Ok(Some(FieldValue::value(row.key.clone())))
+            })
+        }))
+        .field(Field::new(
+            "prefixes",
+            TypeRef::named_nn_list("IP"),
+            |ctx| {
+                FieldFuture::new(async move {
+                    let row = ctx.parent_value.try_downcast_ref::<Prefixes>()?;
+                    Ok(Some(FieldValue::list(
+                        row.prefixes.iter().map(FieldValue::value),
+                    )))
+                })
+            },
+        ))
+}
+
+fn asn_value(value: &Value) -> Option<u32> {
+    match value {
+        Value::Number(number) => u32::try_from(number.as_u64()?).ok(),
+        Value::String(number) if number.bytes().all(|byte| byte.is_ascii_digit()) => {
+            number.parse().ok()
+        }
+        _ => None,
+    }
+}
+
+fn ip_family(ctx: &ResolverContext<'_>) -> async_graphql::Result<Option<bool>> {
+    match ctx
+        .args
+        .get("ipVersion")
+        .filter(|value| !value.is_null())
+        .map(|value| value.i64())
+        .transpose()?
+    {
+        None | Some(0) => Ok(None),
+        Some(4) => Ok(Some(false)),
+        Some(6) => Ok(Some(true)),
+        Some(_) => Err(Error::new("ipVersion must be 4 or 6.")),
+    }
+}
+
+fn prefix_values(
+    rows: Option<Vec<Prefixes>>,
+) -> async_graphql::Result<Option<FieldValue<'static>>> {
+    let rows =
+        rows.ok_or_else(|| Error::new(format!("Result exceeds {MAX_PREFIXES} prefixes.")))?;
+    Ok(Some(FieldValue::list(
+        rows.into_iter().map(FieldValue::owned_any),
+    )))
+}
+
+async fn asn_prefixes(ctx: ResolverContext<'_>) -> async_graphql::Result<Option<FieldValue<'_>>> {
+    let lookup = ctx.data::<Lookup>()?;
+    let asns = ctx.args.try_get("asns")?.list()?;
+    if asns.len() > MAX_FILTER_VALUES {
+        return Err(Error::new("Too many values for asns."));
+    }
+    let asns = asns
+        .iter()
+        .map(|asn| asn_value(asn.as_value()).ok_or_else(|| Error::new("Invalid ASN.")))
+        .collect::<async_graphql::Result<Vec<_>>>()?;
+    let sources = source_filter(&ctx, &lookup.sources)?;
+    let family = ip_family(&ctx)?;
+    let rows = lookup
+        .run(move |store| {
+            let mut remaining = MAX_PREFIXES;
+            let mut rows = Vec::with_capacity(asns.len());
+            for asn in asns {
+                let origin = format!("AS{asn}");
+                let mut prefixes = Vec::new();
+                for (class, ipv6) in [("route", false), ("route6", true)] {
+                    if family.is_none_or(|requested| requested == ipv6) {
+                        let routes =
+                            store.origin_prefixes(class, &origin, &sources, remaining + 1)?;
+                        if routes.len() > remaining {
+                            return Ok(None);
+                        }
+                        remaining -= routes.len();
+                        prefixes.extend(routes);
+                    }
+                }
+                rows.push(Prefixes {
+                    key: Value::from(asn),
+                    prefixes,
+                });
+            }
+            Ok(Some(rows))
+        })
+        .await?;
+    prefix_values(rows)
+}
+
+async fn as_set_prefixes(
+    ctx: ResolverContext<'_>,
+) -> async_graphql::Result<Option<FieldValue<'_>>> {
+    let lookup = ctx.data::<Lookup>()?;
+    let mut names =
+        list_filter(&ctx, "setNames")?.ok_or_else(|| Error::new("Missing setNames."))?;
+    if names.len() > MAX_SET_NAMES {
+        return Err(Error::new("Too many values for setNames."));
+    }
+    if ctx
+        .args
+        .get("sqlTrace")
+        .filter(|value| !value.is_null())
+        .map(|value| value.boolean())
+        .transpose()?
+        .unwrap_or(false)
+    {
+        return Err(Error::new("SQL tracing is unavailable."));
+    }
+    let mut seen = HashSet::new();
+    names.retain_mut(|name| {
+        name.make_ascii_uppercase();
+        seen.insert(name.clone())
+    });
+    let sources = source_filter(&ctx, &lookup.sources)?;
+    let family = ip_family(&ctx)?;
+    let excluded = list_filter(&ctx, "excludeSets")?.unwrap_or_default();
+    let rows = lookup
+        .run(move |store| {
+            let mut remaining = MAX_PREFIXES;
+            let mut rows = Vec::with_capacity(names.len());
+            for name in names {
+                let prefixes = routes_for_as_set(store, &sources, &name, family, &excluded)?;
+                if prefixes.len() > remaining {
+                    return Ok(None);
+                }
+                remaining -= prefixes.len();
+                rows.push(Prefixes {
+                    key: Value::from(name),
+                    prefixes,
+                });
+            }
+            Ok(Some(rows))
+        })
+        .await?;
+    prefix_values(rows)
+}
+
 fn make_schema(store: Arc<Store>, sources: Vec<String>) -> Result<Schema> {
     let list = TypeRef::named_nn_list(TypeRef::STRING);
-    let root = GraphqlObject::new("Query").field(
-        Field::new(
-            "rpslObjects",
-            TypeRef::named_nn_list(OBJECT_INTERFACE),
-            |ctx| FieldFuture::new(objects(ctx)),
+    let ip_version = TypeRef::named(TypeRef::INT);
+    let root = GraphqlObject::new("Query")
+        .field(
+            Field::new(
+                "rpslObjects",
+                TypeRef::named_nn_list(OBJECT_INTERFACE),
+                |ctx| FieldFuture::new(objects(ctx)),
+            )
+            .argument(InputValue::new("rpslPk", list.clone()))
+            .argument(InputValue::new("objectClass", list.clone()))
+            .argument(InputValue::new("sources", list.clone()))
+            .argument(InputValue::new("recordLimit", TypeRef::named(TypeRef::INT))),
         )
-        .argument(InputValue::new("rpslPk", list.clone()))
-        .argument(InputValue::new("objectClass", list.clone()))
-        .argument(InputValue::new("sources", list))
-        .argument(InputValue::new("recordLimit", TypeRef::named(TypeRef::INT))),
-    );
+        .field(
+            Field::new(
+                "asnPrefixes",
+                TypeRef::named_nn_list("ASNPrefixes"),
+                |ctx| FieldFuture::new(asn_prefixes(ctx)),
+            )
+            .argument(InputValue::new("asns", TypeRef::named_nn_list_nn("ASN")))
+            .argument(InputValue::new("ipVersion", ip_version.clone()))
+            .argument(InputValue::new("sources", list.clone())),
+        )
+        .field(
+            Field::new(
+                "asSetPrefixes",
+                TypeRef::named_nn_list("AsSetPrefixes"),
+                |ctx| FieldFuture::new(as_set_prefixes(ctx)),
+            )
+            .argument(InputValue::new(
+                "setNames",
+                TypeRef::named_nn_list_nn(TypeRef::STRING),
+            ))
+            .argument(InputValue::new("ipVersion", ip_version))
+            .argument(InputValue::new("sources", list.clone()))
+            .argument(InputValue::new("excludeSets", list))
+            .argument(InputValue::new(
+                "sqlTrace",
+                TypeRef::named(TypeRef::BOOLEAN),
+            )),
+        );
     let mut interface = Interface::new(OBJECT_INTERFACE);
     for &(name, output) in COMMON_FIELDS {
         interface = interface.field(InterfaceField::new(name, output.graphql_type()));
@@ -360,7 +564,11 @@ fn make_schema(store: Arc<Store>, sources: Vec<String>) -> Result<Schema> {
         .limit_recursive_depth(MAX_DEPTH + 4)
         .limit_directives(4)
         .register(root)
-        .register(interface);
+        .register(interface)
+        .register(Scalar::new("ASN").validator(|value| asn_value(value).is_some()))
+        .register(Scalar::new("IP").validator(|value| matches!(value, Value::String(_))))
+        .register(prefix_type("ASNPrefixes", "asn", "ASN"))
+        .register(prefix_type("AsSetPrefixes", "rpslPk", TypeRef::STRING));
 
     for &(class, name) in OBJECT_TYPES {
         let mut object = GraphqlObject::new(name).implement(OBJECT_INTERFACE);
@@ -443,11 +651,19 @@ mod tests {
                     "aut-num: AS64496\nas-name: EXAMPLE\nmnt-by: test-mnt, extra-mnt\nsource: TEST",
                 ),
                 record("route6: 2001:DB8:0::/32\norigin: as064496\nsource: TEST"),
+                record("route: 192.0.2.0/24\norigin: AS64496\nsource: TEST"),
+                record("route: 198.51.100.0/24\norigin: AS4200000000\nsource: TEST"),
+                record("as-set: AS-EXAMPLE\nmembers: AS64496, AS-NESTED\nsource: TEST"),
+                record("as-set: AS-NESTED\nmembers: AS4200000000\nsource: TEST"),
             ],
         )?;
         store.replace_source(
             "OTHER",
-            [record("aut-num: AS64496\nas-name: OTHER\nsource: OTHER")],
+            [
+                record("aut-num: AS64496\nas-name: OTHER\nsource: OTHER"),
+                record("route: 192.0.2.0/24\norigin: AS64496\nsource: OTHER"),
+                record("route: 203.0.113.0/24\norigin: AS64496\nsource: OTHER"),
+            ],
         )?;
         let schema = make_schema(store, vec!["TEST".into(), "OTHER".into()])?;
         Ok((directory, schema))
@@ -515,12 +731,80 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn resolves_asn_prefixes_with_unsigned_asns_and_source_filters() -> Result<()> {
+        let (_directory, schema) = test_schema()?;
+        let request: Request = serde_json::from_value(json!({
+            "query": "query Find($origins:[ASN!]!) {
+                all: asnPrefixes(asns:$origins) { asn prefixes }
+                ipv6: asnPrefixes(asns:[64496], ipVersion:6, sources:[\"TEST\"]) { asn prefixes }
+                filtered: asnPrefixes(asns:[64496], ipVersion:4, sources:[\"OTHER\"]) { asn prefixes }
+            }",
+            "variables": {"origins": [4_200_000_000_u32, 64496, 64497, "64496"]}
+        }))?;
+        let response = schema.execute(request).await;
+        assert!(response.errors.is_empty(), "{:?}", response.errors);
+        let both = json!({
+            "asn":64496,
+            "prefixes":["192.0.2.0/24","203.0.113.0/24","2001:db8::/32"]
+        });
+        assert_eq!(
+            serde_json::to_value(response.data)?,
+            json!({
+                "all": [
+                    {"asn":4_200_000_000_u32, "prefixes":["198.51.100.0/24"]},
+                    both,
+                    {"asn":64497, "prefixes":[]},
+                    both
+                ],
+                "ipv6":[{"asn":64496, "prefixes":["2001:db8::/32"]}],
+                "filtered":[{"asn":64496, "prefixes":["192.0.2.0/24","203.0.113.0/24"]}]
+            })
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn expands_as_set_prefixes_with_exclusions_and_empty_results() -> Result<()> {
+        let (_directory, schema) = test_schema()?;
+        let response = schema
+            .execute(
+                r#"{
+                    expanded: asSetPrefixes(setNames:["as-example","AS-EXAMPLE","AS-MISSING"], sources:["TEST"]) {
+                        rpslPk prefixes
+                    }
+                    excluded: asSetPrefixes(setNames:["AS-EXAMPLE"], excludeSets:["as-nested"], ipVersion:4) {
+                        rpslPk prefixes
+                    }
+                    filtered: asSetPrefixes(setNames:["AS-EXAMPLE"], sources:["OTHER"]) { rpslPk prefixes }
+                }"#,
+            )
+            .await;
+        assert!(response.errors.is_empty(), "{:?}", response.errors);
+        assert_eq!(
+            serde_json::to_value(response.data)?,
+            json!({
+                "expanded":[
+                    {"rpslPk":"AS-EXAMPLE","prefixes":["192.0.2.0/24","198.51.100.0/24","2001:db8::/32"]},
+                    {"rpslPk":"AS-MISSING","prefixes":[]}
+                ],
+                "excluded":[{"rpslPk":"AS-EXAMPLE","prefixes":["192.0.2.0/24","203.0.113.0/24"]}],
+                "filtered":[{"rpslPk":"AS-EXAMPLE","prefixes":[]}]
+            })
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn rejects_unbounded_queries_and_large_alias_sets() -> Result<()> {
         let (_directory, schema) = test_schema()?;
         for query in [
             r#"{ rpslObjects { rpslPk } }"#,
             r#"{ rpslObjects(rpslPk:["AS64496"], recordLimit:9) { rpslPk } }"#,
             r#"{ rpslObjects(rpslPk:["AS64496"], sources:["UNKNOWN"]) { rpslPk } }"#,
+            r#"{ asnPrefixes(asns:[4294967296]) { prefixes } }"#,
+            r#"{ asnPrefixes(asns:[64496], ipVersion:5) { prefixes } }"#,
+            r#"{ asSetPrefixes(setNames:["AS-EXAMPLE"], sqlTrace:true) { prefixes } }"#,
+            r#"{ asSetPrefixes(setNames:["AS-EXAMPLE"], sources:["UNKNOWN"]) { prefixes } }"#,
         ] {
             assert!(!schema.execute(query).await.errors.is_empty(), "{query}");
         }

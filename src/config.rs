@@ -1,7 +1,7 @@
 use std::{
     collections::HashSet,
     fs,
-    net::SocketAddr,
+    net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
 };
 
@@ -17,6 +17,8 @@ pub struct Config {
     pub http_listen: Option<SocketAddr>,
     pub max_connections: usize,
     pub max_connections_per_ip: Option<usize>,
+    #[serde(default)]
+    pub connection_limit_exempt_ips: HashSet<IpAddr>,
     pub io_timeout_seconds: u64,
     pub max_snapshot_bytes: u64,
 }
@@ -64,6 +66,15 @@ impl Config {
                 "max_connections_per_ip must be between 1 and max_connections"
             );
         }
+        ensure!(
+            config.connection_limit_exempt_ips.len() <= 256,
+            "connection_limit_exempt_ips supports at most 256 addresses"
+        );
+        config.connection_limit_exempt_ips = config
+            .connection_limit_exempt_ips
+            .into_iter()
+            .map(|address| address.to_canonical())
+            .collect();
         ensure!(
             (1..=300).contains(&config.io_timeout_seconds),
             "io_timeout_seconds must be between 1 and 300"

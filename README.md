@@ -41,6 +41,7 @@ Bare, route and inverse lookups return at most 16 objects. A single-AS origin lo
 | `http_listen` | Optional loopback HTTP address for read-only GraphQL. |
 | `max_connections` | Concurrent client limit, 1–4096. |
 | `max_connections_per_ip` | Optional concurrent WHOIS limit per client IP, at most the global limit. |
+| `connection_limit_exempt_ips` | Optional list of up to 256 exact IPv4 or IPv6 addresses exempt from the per-IP limit. The global limit still applies. |
 | `io_timeout_seconds` | Deadline per read, lookup or write, 1–300 seconds. |
 | `max_snapshot_bytes` | Uncompressed input byte limit, 1 byte–64 GiB. Individual records are limited to 64 KiB. |
 
@@ -58,7 +59,7 @@ Use the example on a trusted local machine. Keep database and snapshot files pri
 
 ## GraphQL
 
-Set `http_listen = "127.0.0.1:8080"` in TOML. Send JSON by POST to `/graphql/` with a `query` field. The implemented subset accepts bounded exact-key queries through `rpslObjects`, with optional object classes and sources. For example:
+Set `http_listen = "127.0.0.1:8080"` in TOML. Send JSON by POST to `/graphql/` with a `query` field. The implemented subset accepts bounded exact-key queries through `rpslObjects`, with optional object classes and sources, and prefix queries through `asnPrefixes` and `asSetPrefixes`. For example:
 
 ```graphql
 {
@@ -90,6 +91,16 @@ rust-irrd source sync-nrtm3 --source EXAMPLE --base-serial 41 --endpoint 127.0.0
 Subsequent updates use the committed serial automatically. Run `rust-irrd source status --source EXAMPLE` to read it. A full snapshot replacement or purge clears the recorded serial.
 
 This client profile accepts finite, unfiltered version 3 responses with explicit contiguous serials. It commits object changes, indexes and the last serial together after validating the complete response. Filtered streams can legally contain serial gaps and are outside the supported profile. Remote sync uses plaintext TCP with an explicitly supplied peer IP and port. Use a trusted network or authenticated tunnel for replication traffic.
+
+## Offline route origin validation
+
+Supply JSON exported by a trusted RPKI validator with a top-level `roas` list. Each entry specifies `prefix`, `asn` and `maxLength`. The command returns `VALID`, `INVALID` or `NOT_FOUND`.
+
+```sh
+rust-irrd rpki validate --roas validated-roas.json --prefix 192.0.2.0/24 --origin 64496
+```
+
+This command evaluates validated payloads locally. It does not currently annotate or suppress live registry results.
 
 ## Development checks
 

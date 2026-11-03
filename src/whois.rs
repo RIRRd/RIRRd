@@ -113,8 +113,11 @@ pub async fn serve(
             }
             accepted = listener.accept() => {
                 let (socket, address) = accepted?;
+                let ip = address.ip().to_canonical();
+                let peer_limit = config.max_connections_per_ip
+                    .filter(|_| !config.connection_limit_exempt_ips.contains(&ip));
                 if let Some(permit) = admit(
-                    &slots, &mut peers, address.ip(), config.max_connections_per_ip, config.max_connections,
+                    &slots, &mut peers, ip, peer_limit, config.max_connections,
                 ) {
                     clients.spawn(handle(socket, store.clone(), sources.clone(), deadline, permit, stopped.clone()));
                 }
@@ -596,6 +599,7 @@ mod tests {
         let first = admit(&slots, &mut peers, localhost, Some(1), 2).unwrap();
         assert!(admit(&slots, &mut peers, mapped, Some(1), 2).is_none());
         let second = admit(&slots, &mut peers, other, Some(1), 2).unwrap();
+        assert!(admit(&slots, &mut peers, localhost, None, 2).is_none());
         assert!(admit(&slots, &mut peers, "127.0.0.3".parse().unwrap(), Some(1), 2).is_none());
         drop((first, second));
         assert!(admit(&slots, &mut peers, mapped, Some(1), 2).is_some());
