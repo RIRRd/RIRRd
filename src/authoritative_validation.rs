@@ -102,6 +102,16 @@ pub fn validate(object: &Object) -> Result<()> {
                 "phone", "fax-no", "admin-c", "tech-c", "remarks", "notify", "changed",
             ],
         ),
+        "as-block" => (
+            &["as-block", "admin-c", "tech-c", "mnt-by", "source"],
+            &["descr", "remarks", "notify", "changed"],
+        ),
+        "domain" => (
+            &["domain", "admin-c", "tech-c", "zone-c", "mnt-by", "source"],
+            &[
+                "descr", "nserver", "sub-dom", "dom-net", "refer", "remarks", "notify", "changed",
+            ],
+        ),
         "route" => (&["route", "origin", "mnt-by", "source"], ROUTE_OPTIONAL),
         "route6" => (&["route6", "origin", "mnt-by", "source"], ROUTE_OPTIONAL),
         "as-set" => (&["as-set", "mnt-by", "source"], AS_SET_OPTIONAL),
@@ -187,6 +197,9 @@ pub fn validate(object: &Object) -> Result<()> {
             && matches!(
                 name,
                 "person"
+                    | "as-block"
+                    | "domain"
+                    | "refer"
                     | "role"
                     | "mntner"
                     | "nic-hdl"
@@ -728,6 +741,42 @@ mod tests {
 
     fn object(text: &str) -> Object {
         parse(text).unwrap()
+    }
+
+    #[test]
+    fn validates_as_block_and_domain_profiles_and_zone_contacts() -> Result<()> {
+        let contacts_text = "admin-c: CT1-TEST\ntech-c: CT1-TEST\nmnt-by: TEST-MNT\nsource: TEST\n";
+        let block = format!("as-block: AS64496 - AS64511\n{contacts_text}");
+        validate(&object(&block))?;
+        assert_eq!(contacts(&object(&block))?, ["CT1-TEST"]);
+        let domain = format!("domain: 2.0.192.in-addr.arpa\nzone-c: ZONE-TEST\n{contacts_text}");
+        validate(&object(&domain))?;
+        assert_eq!(contacts(&object(&domain))?, ["ZONE-TEST", "CT1-TEST"]);
+        // Pinned upstream treats these DNS-delegation descriptions as opaque
+        // RPSL text, rather than performing DNS or network validation.
+        validate(&object(&format!(
+            "{domain}nserver: opaque DNS description\nsub-dom: child\ndom-net: legacy text\nrefer: referral\n"
+        )))?;
+        for text in [&block, &domain] {
+            for missing in [
+                "admin-c: CT1-TEST\n",
+                "tech-c: CT1-TEST\n",
+                "mnt-by: TEST-MNT\n",
+            ] {
+                assert!(validate(&object(&text.replace(missing, ""))).is_err());
+            }
+            assert!(validate(&object(&format!("{text}auth: DUMMY\n"))).is_err());
+            assert!(
+                validate(&object(
+                    &text.replace("admin-c: CT1-TEST", "admin-c: CT1-TEST, CT2-TEST")
+                ))
+                .is_err()
+            );
+        }
+        assert!(validate(&object(&domain.replace("zone-c: ZONE-TEST\n", ""))).is_err());
+        assert!(validate(&object(&format!("{domain}refer: first\nrefer: second\n"))).is_err());
+        assert!(parse(&block.replace("AS64496 - AS64511", "AS64511 - AS64496")).is_err());
+        Ok(())
     }
 
     #[test]

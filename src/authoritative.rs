@@ -64,6 +64,8 @@ pub fn authorize(
                     | "peering-set"
                     | "rtr-set"
                     | "inet-rtr"
+                    | "as-block"
+                    | "domain"
             ),
             "unsupported authoritative object class"
         );

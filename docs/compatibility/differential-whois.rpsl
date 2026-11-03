@@ -79,3 +79,18 @@ rs-out:         ANY
 admin-c:        DIFF1-TEST
 mnt-by:         DIFFERENTIAL-MNT
 source:         DIFFERENTIAL
+
+as-block:      AS64496 - AS64511
+descr:         Original synthetic documentation range
+admin-c:       DIFF1-TEST
+tech-c:        DIFF1-TEST
+mnt-by:        DIFFERENTIAL-MNT
+source:        DIFFERENTIAL
+
+domain:        2.0.192.in-addr.arpa
+admin-c:       DIFF1-TEST
+tech-c:        DIFF1-TEST
+zone-c:        DIFF1-TEST
+nserver:       ns.example.invalid
+mnt-by:        DIFFERENTIAL-MNT
+source:        DIFFERENTIAL

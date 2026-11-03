@@ -1599,6 +1599,142 @@ fn authoritative_organisation_cli_and_http_preserve_authorization_and_references
 }
 
 #[test]
+fn as_block_and_domain_updates_enforce_maintainers_zone_references_and_rollback() {
+    let workspace = tempfile::tempdir().unwrap();
+    let config = workspace.path().join("irrd.toml");
+    fs::write(&config, "database = \"registry.redb\"\nsources = [\"TEST\", \"OTHER\"]\nauthoritative_sources = [\"TEST\", \"OTHER\"]\nlisten = \"127.0.0.1:0\"\nhttp_listen = \"127.0.0.1:0\"\nhttp_authoritative_updates = true\nmax_connections = 8\nio_timeout_seconds = 2\nmax_snapshot_bytes = 65536\n").unwrap();
+    let snapshot = workspace.path().join("fixture.rpsl");
+    let hash = bcrypt::hash_with_salt("domain fixture proof", 4, [17; 16]).unwrap();
+    for source in ["TEST", "OTHER"] {
+        let mut objects = format!(
+            "mntner: OWNER-MNT\nauth: BCRYPT-PW {hash}\nmnt-by: OWNER-MNT\nsource: {source}\n"
+        );
+        if source == "TEST" {
+            objects.push_str("\nperson: Admin Contact\nnic-hdl: CT1-TEST\nmnt-by: OWNER-MNT\nsource: TEST\n\nperson: Zone Contact\nnic-hdl: ZONE-TEST\nmnt-by: OWNER-MNT\nsource: TEST\n");
+        }
+        fs::write(&snapshot, objects).unwrap();
+        successful(
+            cli(&config)
+                .args([
+                    "import",
+                    "snapshot",
+                    "--source",
+                    source,
+                    "--authoritative-restore",
+                    "--file",
+                ])
+                .arg(&snapshot)
+                .output()
+                .unwrap(),
+        );
+    }
+    let block = "as-block: AS64496 - AS64511\nadmin-c: CT1-TEST\ntech-c: CT1-TEST\nmnt-by: OWNER-MNT\nsource: TEST\n";
+    let domain = "domain: 2.0.192.in-addr.arpa\nadmin-c: CT1-TEST\ntech-c: CT1-TEST\nzone-c: ZONE-TEST\nnserver: ns.example.invalid\nmnt-by: OWNER-MNT\nsource: TEST\n";
+    let submission = workspace.path().join("submission.rpsl");
+    let submit = |text: &str, proof: &str, delete: bool| {
+        fs::write(&submission, text).unwrap();
+        let mut command = cli(&config);
+        command
+            .args(["update", "--source", "TEST", "--file"])
+            .arg(&submission)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        if delete {
+            command.arg("--delete");
+        }
+        let mut child = command.spawn().unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(format!("{proof}\n").as_bytes())
+            .unwrap();
+        child.wait_with_output().unwrap()
+    };
+    for text in [block, domain] {
+        assert!(!submit(text, "wrong fixture proof", false).status.success());
+    }
+    let mixed = format!("{block}\n{}", domain.replace("ZONE-TEST", "MISSING-TEST"));
+    assert!(
+        !submit(&mixed, "domain fixture proof", false)
+            .status
+            .success()
+    );
+    let count = successful(cli(&config).args(["database", "verify"]).output().unwrap());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&count).unwrap()["objects"],
+        4
+    );
+    successful(submit(
+        &format!("{block}\n{domain}"),
+        "domain fixture proof",
+        false,
+    ));
+    let (server, tcp) = Server::start(&config);
+    assert!(whois(tcp, b"!mas-block,AS64496 - AS64511\n").contains("as-block:"));
+    assert!(whois(tcp, b"!mdomain,2.0.192.in-addr.arpa\n").contains("zone-c: ZONE-TEST"));
+    drop(server);
+    let (server, http) = Server::start_listener(&config, "GraphQL listening");
+    let request = |method: &str, text: &str, proof: &str| {
+        let body = serde_json::json!({"objects":[{"object_text":text}],"passwords":[proof],"delete_reason":"fixture cleanup"}).to_string();
+        let raw = whois(http, format!("{method} /v1/submit/ HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes());
+        assert!(raw.starts_with("HTTP/1.1 200 "));
+        assert!(!raw.contains(proof) && !raw.contains("$2b$"));
+        serde_json::from_str::<Value>(raw.split_once("\r\n\r\n").unwrap().1).unwrap()
+    };
+    let zone = "person: Zone Contact\nnic-hdl: ZONE-TEST\nsource: TEST\n";
+    assert_eq!(
+        request("DELETE", zone, "domain fixture proof")["summary"]["failed"],
+        1
+    );
+    for text in [block, domain] {
+        assert_eq!(
+            request(
+                "POST",
+                &text.replace("source: TEST", "source: OTHER"),
+                "domain fixture proof"
+            )["summary"]["failed"],
+            1
+        );
+        assert_eq!(
+            request(
+                "POST",
+                &text.replace("CT1-TEST", "MISSING-TEST"),
+                "domain fixture proof"
+            )["summary"]["failed"],
+            1
+        );
+        assert_eq!(
+            request(
+                "POST",
+                &format!("{text}remarks: changed\n"),
+                "domain fixture proof"
+            )["summary"]["successful_modify"],
+            1
+        );
+        assert_eq!(
+            request("DELETE", text, "wrong fixture proof")["summary"]["failed"],
+            1
+        );
+    }
+    assert_eq!(
+        request("DELETE", domain, "domain fixture proof")["summary"]["successful_delete"],
+        1
+    );
+    assert_eq!(
+        request("DELETE", zone, "domain fixture proof")["summary"]["successful_delete"],
+        1
+    );
+    assert_eq!(
+        request("DELETE", block, "domain fixture proof")["summary"]["successful_delete"],
+        1
+    );
+    drop(server);
+    successful(cli(&config).args(["database", "verify"]).output().unwrap());
+}
+
+#[test]
 fn authoritative_policy_sets_and_routers_preserve_authorization_and_atomicity() {
     let workspace = tempfile::tempdir().unwrap();
     let config = workspace.path().join("irrd.toml");

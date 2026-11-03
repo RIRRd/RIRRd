@@ -52,6 +52,12 @@ DEFAULT_CASES = (
     ("A", "!r2001:db8::/32,L"),
     ("D", "!r2001:db8::/32,M"),
     ("A", "!r2001:db8::/31,M"),
+    ("A", "!mas-block,AS64496 - AS64511"),
+    ("A", "!mas-block,as64496 - as64511"),
+    ("D", "!mas-block,AS64497 - AS64511"),
+    ("A", "!mdomain,2.0.192.in-addr.arpa"),
+    ("A", "!mdomain,2.0.192.IN-ADDR.ARPA"),
+    ("D", "!mdomain,absent.example.invalid"),
 )
 QUERY_PREFIXES = ("!m", "!r", "!g", "!6")
 MAX_RESPONSE_BYTES = 256 * 1024

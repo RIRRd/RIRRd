@@ -152,3 +152,16 @@ worker configuration requires a separate IRRd runtime config and restart; the
 argument records metadata and does not reconfigure the daemon. Retain each run.
 The 24-CPU VM checkpoint uses five runs, eight IRRd workers and a Rust connection
 cap of eight; the historical single-worker reference results are a different profile.
+
+## AS-block and domain continuation
+
+`check_delegation_schema.py` covers 16 AS-block/domain schema cases. The normal
+HTTP comparator now checks 71 authorization outcomes, including distinct domain
+zone-contact references, maintainer denial, missing/cross-source contacts and
+delete protection. The WHOIS corpus has 45 TCP and 45 HTTP cases using the
+12-object original synthetic fixture. These are bounded profiles; domain's
+upstream parser makes mnt-by optional, but authenticated writes here require it.
+Opaque domain delegation text is preserved without DNS resolution or DNS changes.
+`check_mirror_admission.py` checks three non-strict upstream rejections of unsafe
+control characters inside AS-set member names; the deployment withholds the
+complete record rather than inventing a cleaned member identity.

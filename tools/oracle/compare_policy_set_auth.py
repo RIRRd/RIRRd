@@ -64,4 +64,23 @@ check('POST',dummy+f'auth: BCRYPT-PW {SYNTHETIC_HASH}\n',[owner],'failed')
 check('POST',dummy.replace('OWNER-MNT','NEW-MNT'),[owner],'failed')
 check('POST',dummy,[owner],'successful_modify')
 check('POST',dummy+'auth: BCRYPT-PW DummyValue\n',[owner],'successful_modify')
+# Additional bounded class profiles; no DNS queries or live delegation changes.
+zone = 'person: Zone Contact\naddress: Example Road\nphone: +1 202 555 0100\ne-mail: zone@example.invalid\nnic-hdl: ZONE1-AUTH\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\n'
+check('POST', zone, [owner], 'successful_create')
+for head in ['as-block: AS64496 - AS64511\n', 'domain: 2.0.192.in-addr.arpa\nzone-c: ZONE1-AUTH\nnserver: ns.example.invalid\n']:
+    text = head+'admin-c: CT1-AUTH\ntech-c: CT1-AUTH\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\n'
+    check('POST',text,['wrong proof'],'failed')
+    check('POST',text,[parent],'failed')
+    check('POST',text.replace('tech-c: CT1-AUTH\n',''),[owner],'failed')
+    check('POST',text.replace('CT1-AUTH','MISSING-AUTH'),[owner],'failed')
+    check('POST',text.replace('source: AUTH-TEST','source: AUTH-OTHER'),[owner],'failed')
+    check('POST',text,[owner],'successful_create')
+    check('POST',text+'remarks: Changed\n',[owner],'successful_modify')
+    check('POST',text+'auth: DUMMY\n',[owner],'failed')
+    if head.startswith('domain:'):
+        check('POST',text.replace('ZONE1-AUTH','MISSING-AUTH'),[owner],'failed')
+        check('DELETE',zone,[owner],'failed')
+    check('DELETE',text,[parent],'failed')
+    check('DELETE',text,[owner],'successful_delete')
+check('DELETE',zone,[owner],'successful_delete')
 print(f'{checks} authoritative HTTP authorization cases match pinned IRRd (both implementations checked)')
