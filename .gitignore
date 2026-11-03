@@ -4,3 +4,19 @@
 /fuzz/corpus/
 __pycache__/
 *.redb
+
+# Local secrets and runtime material; synthetic fixtures are reviewed explicitly.
+.env
+.env.*
+!.env.example
+/private/
+/secrets/
+/data/
+*.key
+*.p12
+*.pfx
+id_ed25519*
+id_rsa*
+*.sqlite
+*.sqlite3
+*.log

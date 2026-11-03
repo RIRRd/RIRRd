@@ -1,0 +1,24 @@
+name: Source publication hygiene
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  secrets:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check candidate tree and reachable historical files
+        run: python3 tools/check_public_tree.py --snapshot "$RUNNER_TEMP/public-tree"
+      - name: Scan history and candidate tree with pinned Gitleaks 8.30.1
+        run: |
+          # Official image; network is disabled while repository contents are mounted.
+          image=docker.io/zricethezav/gitleaks@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f
+          docker pull "$image"
+          docker run --rm --network none --mount "type=bind,source=$PWD,target=/repo,readonly" \
+            --entrypoint /bin/sh "$image" -c 'git config --global --add safe.directory /repo; exec gitleaks git /repo --log-opts=--all --redact --config /repo/.gitleaks.toml'
+          docker run --rm --network none --mount "type=bind,source=$RUNNER_TEMP/public-tree,target=/tree,readonly" \
+            "$image" dir /tree --redact --config /tree/.gitleaks.toml

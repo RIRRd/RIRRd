@@ -2,7 +2,7 @@ Name:           rust-irrd
 Version:        %{package_version}
 Release:        %{?package_release}%{!?package_release:1}
 Summary:        Rust Internet Routing Registry daemon
-License:        LicenseRef-Proprietary
+License:        MIT
 URL:            https://github.com/Peravix/Rirrd
 Source0:        rust-irrd
 Source1:        rust-irrd.service
@@ -10,6 +10,7 @@ Source2:        irrd.toml
 Source3:        rust-irrd.sysusers.conf
 Source4:        rust-irrd.tmpfiles.conf
 Source5:        copyright
+Source6:        LICENSE
 Requires:       systemd
 Requires(post): systemd
 Requires(preun): systemd
@@ -30,6 +31,7 @@ install -m 0640 "%{SOURCE2}" "%{buildroot}%{_sysconfdir}/rust-irrd/irrd.toml"
 install -D -m 0644 "%{SOURCE3}" "%{buildroot}/usr/lib/sysusers.d/rust-irrd.conf"
 install -D -m 0644 "%{SOURCE4}" "%{buildroot}/usr/lib/tmpfiles.d/rust-irrd.conf"
 install -D -m 0644 "%{SOURCE5}" "%{buildroot}%{_datadir}/licenses/%{name}/copyright"
+install -D -m 0644 "%{SOURCE6}" "%{buildroot}%{_datadir}/licenses/%{name}/LICENSE"
 
 %post
 set -e
@@ -60,3 +62,4 @@ fi
 %dir %attr(0750,root,root) %{_sysconfdir}/rust-irrd
 %config(noreplace) %attr(0640,root,root) %{_sysconfdir}/rust-irrd/irrd.toml
 %license %{_datadir}/licenses/%{name}/copyright
+%license %{_datadir}/licenses/%{name}/LICENSE

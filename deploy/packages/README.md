@@ -83,9 +83,10 @@ sudo systemctl enable --now rust-irrd.service
 
 ## Licensing
 
-Project licensing is pending. The RPM uses `LicenseRef-Proprietary` and the
-Debian archive carries the package copyright notice. The workflow does not
-sign the archives or publish a release. Third-party dependency terms apply.
+Project code is MIT-licensed. Debian and RPM archives include the MIT license
+and project copyright notice; RPM metadata identifies MIT. The workflow does
+not sign archives or publish a release. Third-party dependency terms and
+release notice/SBOM qualification remain separate requirements.
 
 ## Packaging references
 

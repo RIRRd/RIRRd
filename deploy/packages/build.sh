@@ -64,6 +64,7 @@ install -m 0640 "$work/irrd.toml" "$stage/etc/rust-irrd/irrd.toml"
 install -D -m 0644 "$package_dir/rust-irrd.sysusers.conf" "$stage/usr/lib/sysusers.d/rust-irrd.conf"
 install -D -m 0644 "$package_dir/rust-irrd.tmpfiles.conf" "$stage/usr/lib/tmpfiles.d/rust-irrd.conf"
 install -D -m 0644 "$package_dir/copyright" "$stage/usr/share/doc/rust-irrd/copyright"
+install -D -m 0644 "$package_dir/../../LICENSE" "$stage/usr/share/doc/rust-irrd/LICENSE"
 for script in postinst prerm postrm; do
     install -m 0755 "$package_dir/debian/$script" "$stage/DEBIAN/$script"
 done
@@ -87,7 +88,7 @@ mkdir -p -- "$top/SOURCES"
 install -m 0755 "$binary" "$top/SOURCES/rust-irrd"
 install -m 0644 "$work/rust-irrd.service" "$work/irrd.toml" \
     "$package_dir/rust-irrd.sysusers.conf" "$package_dir/rust-irrd.tmpfiles.conf" \
-    "$package_dir/copyright" "$top/SOURCES/"
+    "$package_dir/copyright" "$package_dir/../../LICENSE" "$top/SOURCES/"
 rpmbuild -bb --target "$rpm_arch" "${rpm_cross_args[@]}" \
     --define "_topdir $top" \
     --define "package_version $version" \
