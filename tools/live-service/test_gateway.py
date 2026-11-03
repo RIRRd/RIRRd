@@ -119,6 +119,18 @@ class GatewayChecks(unittest.TestCase):
             with self.assertRaises(ValueError):
                 prepare.check_transport(bad, True)
 
+    def test_unsafe_member_record_is_withheld_without_inventing_a_name(self):
+        import gzip
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            path=root/'input.gz'
+            path.write_bytes(gzip.compress(b'as-set: AS-UNSAFE\nmembers: AS-EXA\x1fMPLE\nsource: EXAMPLE\n\naut-num: AS64496\nsource: EXAMPLE\n'))
+            rejected={}
+            counts,_,_=prepare.normalize([path],root/'output','EXAMPLE',{'as-set','aut-num'},'utf-8',rejected)
+            self.assertEqual(counts,{'aut-num':1})
+            self.assertEqual(rejected,{'unsafe_ascii_control':1})
+            self.assertNotIn('AS-UNSAFE',(root/'output').read_text())
+
     def test_failed_build_resumes_verified_sources_and_rejects_changed_inputs(self):
         import gzip
         import shutil

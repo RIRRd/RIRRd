@@ -95,8 +95,9 @@ def records(path):
             yield bytes(record)
 
 
-def normalize(paths, target, source, classes, encoding):
+def normalize(paths, target, source, classes, encoding, rejection_counts=None):
     counts, excluded = collections.Counter(), collections.Counter()
+    rejected = {} if rejection_counts is None else rejection_counts
     duplicates = 0
     # Published ARIN snapshots can contain the same canonical route identity
     # with differently cased origins. Match pinned IRRd's last-upsert-wins
@@ -131,6 +132,13 @@ def normalize(paths, target, source, classes, encoding):
                     raise ValueError('Snapshot source identity mismatch')
                 if any(k in ('password', 'override', 'api-key', 'auth', 'certif') for k, _ in fields):
                     raise ValueError('Unexpected credential field in routing-class snapshot')
+                # Do not repair malformed member names by deleting control
+                # characters: that could invent a different routing policy.
+                # Withhold the complete object and report its omission instead.
+                if any((ord(c) < 32 and c not in '\n\r\t') or ord(c) == 127 for c in text):
+                    reason = 'unsafe_ascii_control'
+                    rejected[reason] = rejected.get(reason, 0) + 1
+                    continue
                 identity = fields[0][1].upper()
                 if cls in ('route', 'route6'):
                     origins = [v for k, v in fields if k == 'origin']
@@ -244,7 +252,8 @@ name = "RIRRd public test registry"
         path = snapshot_dir / f'{source}.rpsl'
         if args.resume:
             path.unlink(missing_ok=True)
-        counts, excluded, duplicates = normalize(files, path, source, set(catalog['classes']), entry['encoding'])
+        rejections = {}
+        counts, excluded, duplicates = normalize(files, path, source, set(catalog['classes']), entry['encoding'], rejections)
         start = time.monotonic()
         result = subprocess.run([str(args.binary), '--config', str(config), 'import', 'snapshot',
                                  '--source', source, '--file', str(path)],
@@ -259,6 +268,7 @@ name = "RIRRd public test registry"
         row = {**entry, 'state': 'loaded', 'objects': imported['objects'], 'classes': counts,
                'excluded_classes': excluded, 'downloads': downloads, 'imported_at': now(),
                'duplicate_identities_last_wins': duplicates,
+               'quarantined_records': rejections,
                'import_seconds': time.monotonic() - start}
         warnings = []
         for line in result.stderr.splitlines():
