@@ -78,7 +78,7 @@ private test database. This was a parser/import exercise with a synthetic seed,
 not proof of a complete mirror, a benchmark or a replacement for proper bootstrap.
 The real transcript, snapshots, databases and logs remain outside Git.
 
-The final deployment/verification results are appended below after activation.
+The activated deployment and final verification results are recorded below.
 No new private GitHub Actions result is claimed: the deploy key cannot verify
 Actions runs or repository settings. Local commands and recorded outputs provide
 the evidence for this checkpoint.
@@ -134,7 +134,7 @@ one complete post-catch-up integrity scan. The recorded compatible runtime upgra
 requires the exact original binary fingerprint via `--previous-binary`; ordinary
 resume still rejects changed inputs. A final whole-database fingerprint permits
 activation without repeating the full scan only when the installed runtime and
-all database bytes match the final verified report. Different runtimes receive a
+all database bytes and the prepared configuration match the final verified report. Different runtimes receive a
 full verification; tampered bytes/catalog/counts are regression-tested failures.
 The final scan remains mandatory before any prepared generation is publishable.
 

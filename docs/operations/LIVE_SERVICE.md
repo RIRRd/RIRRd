@@ -216,6 +216,6 @@ must still match. The original import fingerprint is preserved separately from
 the new final-verification runtime. The complete post-catch-up verification is
 mandatory; `database count` explicitly does not establish integrity. A prepared
 activation can reuse that verification only if both the runtime fingerprint and
-complete database fingerprint still match. If the runtime differs, it must run
+complete database and configuration fingerprints still match. If the runtime differs, it must run
 a full integrity/count verification before switching. Daily bootstrap downloads
 use a 60-second network-only CLI deadline; local indexing starts after staging.
