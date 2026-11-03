@@ -34,6 +34,15 @@ These additions do not establish live filtering, full mirroring/authentication
 parity or release qualification. Public GitHub release/CI evidence remains
 pending authenticated repository access.
 
+## Compact ROV index and search efficiency
+
+The [resource/search checkpoint](../benchmarks/COMPACT_ROV_AND_SEARCH.md) records
+family-specific indexes, streamed feed parsing, bounded explanation invariants,
+full-scan/reference and CLI/API checks, Linux/ARM/fuzz evidence, paired kernel
+measurements and direct browser search. The UI/API exposes index allocation
+separately from process memory. This does not close live RPKI suppression,
+full validation coverage, authentication or release qualification gaps.
+
 ## Community website and independent console
 
 The [community UX checkpoint](COMMUNITY_UX_CHECKPOINT.md) records separate

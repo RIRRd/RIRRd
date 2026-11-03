@@ -1,3 +1,12 @@
+## Compact ROV indexes and direct search — 3 November 2026
+
+The [checkpoint](docs/benchmarks/COMPACT_ROV_AND_SEARCH.md) records 54.17% less
+owned ROV index allocation and 1.11–3.60× faster synthetic lookup profiles against
+the previous optimized RIRRd revision, plus direct all-source homepage searches,
+deferred monitoring fetches, simpler feature layouts and unbroken mobile counts.
+Normal CLI/API/browser, Linux/ARM and fuzz evidence is linked. Index allocation
+is distinct from total process memory; full parity remains incomplete.
+
 ## UI and resource-efficiency continuation — 3 November 2026
 
 The [efficiency checkpoint](docs/benchmarks/UI_EFFICIENCY.md) records deployed
