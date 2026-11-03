@@ -1,3 +1,7 @@
+> Historical deployment: the active community website now lives in
+> [site/community](../community/README.md). Use its builder and deploy script.
+> This directory retains the recorded comparison artifacts and earlier checkpoints.
+
 The current public deployment serves the operational portal at `/`, historical
 measured comparisons at `/project/`, the full dashboard at `/dashboard/`, and
 commands at `/guides/api/` and `/guides/routers/`. Use the clean core checkout

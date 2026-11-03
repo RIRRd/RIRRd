@@ -1,0 +1,30 @@
+[Unit]
+Description=RIRRd community node submission queue
+After=network.target
+
+[Service]
+Type=exec
+User=rirrd-community
+Group=rirrd-community
+StateDirectory=rirrd-community
+StateDirectoryMode=0700
+ExecStart=/usr/bin/python3 /usr/local/lib/rirrd-community/service.py serve
+Restart=on-failure
+RestartSec=5
+MemoryMax=64M
+CPUQuota=20%
+TasksMax=16
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target
