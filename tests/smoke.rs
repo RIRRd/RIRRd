@@ -1581,6 +1581,18 @@ fn authoritative_organisation_cli_and_http_preserve_authorization_and_references
         )["summary"]["successful_modify"],
         1
     );
+    let body = serde_json::json!({"query": "{ rpslObjects(rpslPk:[\"ORG-TEST\"]) { ... on RPSLOrganisation { orgName country address eMail adminC phone } } }"}).to_string();
+    let raw = whois(http, format!("POST /graphql/ HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len()).as_bytes());
+    assert!(raw.starts_with("HTTP/1.1 200 "), "{raw}");
+    let data: Value = serde_json::from_str(raw.split_once("\r\n\r\n").unwrap().1).unwrap();
+    assert!(data.get("errors").is_none(), "{data}");
+    assert_eq!(
+        data["data"]["rpslObjects"][0],
+        serde_json::json!({
+            "orgName":"Updated Organisation", "country":["GB"], "address":["Example Road"],
+            "eMail":["noc@example.net"], "adminC":["TC1-TEST"], "phone":null
+        })
+    );
     drop(server);
     successful(submit(organisation, true, "organisation secret\n"));
     successful(submit(contact, true, "organisation secret\n"));
