@@ -421,6 +421,9 @@ listen = "127.0.0.1:0"
 max_connections = 4
 io_timeout_seconds = 3
 max_snapshot_bytes = 4096
+
+[nrtm3_serve]
+TEST = ["127.0.0.1"]
 "#,
     )
     .unwrap();
@@ -429,7 +432,7 @@ max_snapshot_bytes = 4096
     successful(
         cli(&config)
             .args(["import", "snapshot", "--source", "TEST", "--file"])
-            .arg(snapshot)
+            .arg(&snapshot)
             .output()
             .unwrap(),
     );
@@ -503,13 +506,75 @@ max_snapshot_bytes = 4096
     fetch.join().unwrap();
     assert_eq!(status(), 43);
 
+    fs::write(
+        &transcript,
+        "%START Version: 3 TEST 44-44\n\nADD 44\n\nmntner: TEST-MNT\nauth: BCRYPT-PW synthetic-secret\nsource: TEST\n\n%END TEST\n",
+    )
+    .unwrap();
+    successful(
+        cli(&config)
+            .args(["source", "apply-nrtm3", "--source", "TEST", "--file"])
+            .arg(&transcript)
+            .output()
+            .unwrap(),
+    );
+
     let (_server, address) = Server::start(&config);
+    let journal = whois(address, b"-g test:3:42-LAST\n");
+    assert!(journal.starts_with("%START Version: 3 TEST 42-44\n"));
+    assert!(journal.contains("ADD 42\n"));
+    assert!(journal.contains("DEL 43\n"));
+    assert!(journal.contains("ADD 44\n"));
+    assert!(journal.ends_with("%END TEST\n\n\n"));
+    assert!(!journal.contains("synthetic-secret"));
+    assert_eq!(
+        whois(address, b"-g OTHER:3:42-LAST\n"),
+        "%% ERROR: Access denied\n\n\n"
+    );
     assert_eq!(whois(address, b"!maut-num,AS64496\n"), "D\n");
     let remaining = "aut-num: AS64497\nsource: TEST\n";
     assert_eq!(
         whois(address, b"!maut-num,AS64497\n"),
         format!("A{}\n{remaining}C\n", remaining.len())
     );
+
+    let replica = workspace.path().join("replica.toml");
+    fs::write(
+        &replica,
+        fs::read_to_string(&config)
+            .unwrap()
+            .replace("test.redb", "replica.redb"),
+    )
+    .unwrap();
+    successful(
+        cli(&replica)
+            .args(["import", "snapshot", "--source", "TEST", "--file"])
+            .arg(&snapshot)
+            .output()
+            .unwrap(),
+    );
+    let endpoint = address.to_string();
+    let sync = || {
+        let mut command = cli(&replica);
+        command.args([
+            "source",
+            "sync-nrtm3",
+            "--source",
+            "TEST",
+            "--endpoint",
+            &endpoint,
+        ]);
+        command
+    };
+    let replicated = successful(sync().args(["--base-serial", "41"]).output().unwrap());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&replicated).unwrap()["serial"],
+        44
+    );
+    let unchanged = successful(sync().output().unwrap());
+    let unchanged: Value = serde_json::from_slice(&unchanged).unwrap();
+    assert_eq!(unchanged["serial"], 44);
+    assert_eq!(unchanged["up_to_date"], true);
 }
 
 #[test]

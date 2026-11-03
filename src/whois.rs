@@ -1,5 +1,6 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
+    fmt::Write as _,
     net::IpAddr,
     sync::{Arc, Weak},
     time::Duration,
@@ -22,10 +23,17 @@ use crate::{
 const MAX_QUERY_BYTES: u64 = 512;
 const MAX_RESULTS: usize = 16;
 const MAX_SESSION_QUERIES: usize = 1024;
+const MAX_NRTM_OPERATIONS: usize = 1024;
+const MAX_NRTM_TEXT_BYTES: usize = 4 * 1024 * 1024;
 
 struct ConnectionPermit {
     _global: OwnedSemaphorePermit,
     _peer: Option<OwnedSemaphorePermit>,
+}
+
+struct Access {
+    sources: Arc<[String]>,
+    nrtm3: HashMap<String, HashSet<IpAddr>>,
 }
 
 fn admit(
@@ -86,6 +94,11 @@ enum Query {
         name: String,
         family: Option<bool>,
     },
+    Nrtm3 {
+        source: String,
+        start: u64,
+        end: Option<u64>,
+    },
     Version,
 }
 
@@ -99,7 +112,10 @@ pub async fn serve(
     let mut peers = HashMap::new();
     let deadline = Duration::from_secs(config.io_timeout_seconds);
     let mut clients = JoinSet::new();
-    let sources: Arc<[String]> = config.sources.clone().into();
+    let access = Arc::new(Access {
+        sources: config.sources.clone().into(),
+        nrtm3: config.nrtm3_serve.clone(),
+    });
 
     tracing::info!(address = %listener.local_addr()?, "WHOIS listening");
     loop {
@@ -119,7 +135,7 @@ pub async fn serve(
                 if let Some(permit) = admit(
                     &slots, &mut peers, ip, peer_limit, config.max_connections,
                 ) {
-                    clients.spawn(handle(socket, store.clone(), sources.clone(), deadline, permit, stopped.clone()));
+                    clients.spawn(handle(socket, store.clone(), access.clone(), ip, deadline, permit, stopped.clone()));
                 }
             }
         }
@@ -132,14 +148,15 @@ pub async fn serve(
 async fn handle(
     socket: TcpStream,
     store: Arc<Store>,
-    sources: Arc<[String]>,
+    access: Arc<Access>,
+    peer: IpAddr,
     deadline: Duration,
     mut permit: ConnectionPermit,
     mut stopped: watch::Receiver<bool>,
 ) {
     let (read, mut write) = socket.into_split();
     let mut input = BufReader::new(read);
-    let mut selected = sources.clone();
+    let mut selected = access.sources.clone();
     let mut excluded: Arc<[String]> = Arc::new([]);
     let mut persistent = false;
     let mut line = Vec::new();
@@ -175,7 +192,7 @@ async fn handle(
             },
             Some(SessionCommand::Identify | SessionCommand::Noop) => "C\n".to_owned(),
             Some(SessionCommand::SelectSources(requested)) => {
-                match select_sources(requested, &sources) {
+                match select_sources(requested, &access.sources) {
                     Some(requested) => {
                         selected = requested.into();
                         "C\n".to_owned()
@@ -185,20 +202,26 @@ async fn handle(
             }
             None => {
                 if let Some(query) = parse_query(&line) {
-                    let Some((response, returned_permit)) = lookup(
-                        query,
-                        store.clone(),
-                        selected.clone(),
-                        excluded.clone(),
-                        deadline,
-                        permit,
-                    )
-                    .await
-                    else {
-                        return;
-                    };
-                    permit = returned_permit;
-                    response
+                    if matches!(&query, Query::Nrtm3 { source, .. }
+                        if !access.nrtm3.get(source).is_some_and(|peers| peers.contains(&peer)))
+                    {
+                        "%% ERROR: Access denied\n\n\n".to_owned()
+                    } else {
+                        let Some((response, returned_permit)) = lookup(
+                            query,
+                            store.clone(),
+                            selected.clone(),
+                            excluded.clone(),
+                            deadline,
+                            permit,
+                        )
+                        .await
+                        else {
+                            return;
+                        };
+                        permit = returned_permit;
+                        response
+                    }
                 } else {
                     if line.trim_ascii_start().starts_with(b"!") {
                         "F Invalid or unsupported query\n".to_owned()
@@ -284,8 +307,9 @@ async fn lookup(
     deadline: Duration,
     permit: ConnectionPermit,
 ) -> Option<(String, ConnectionPermit)> {
+    let nrtm = matches!(&query, Query::Nrtm3 { .. });
     let irrd = match &query {
-        Query::Exact(_) => false,
+        Query::Exact(_) | Query::Nrtm3 { .. } => false,
         Query::Route { irrd, .. } | Query::Inverse { irrd, .. } => *irrd,
         _ => true,
     };
@@ -297,7 +321,9 @@ async fn lookup(
         Ok(Ok((Ok(response), permit))) => (response, permit),
         Ok(Ok((Err(error), permit))) => {
             tracing::error!(%error, "WHOIS lookup failed");
-            let response = if irrd {
+            let response = if nrtm {
+                "%% ERROR: Requested NRTMv3 range is unavailable\n\n\n"
+            } else if irrd {
                 "F Lookup failed\n"
             } else {
                 "% Lookup failed\r\n"
@@ -366,6 +392,32 @@ fn execute(query: Query, store: &Store, sources: &[String], excluded: &[String])
         Query::SetRoutes { name, family } => {
             let prefixes = crate::sets::routes_for_as_set(store, sources, &name, family, excluded)?;
             Ok(frame_values(prefixes))
+        }
+        Query::Nrtm3 { source, start, end } => {
+            let Some((end, operations)) = store.nrtm3_journal(
+                &source,
+                start,
+                end,
+                MAX_NRTM_OPERATIONS,
+                MAX_NRTM_TEXT_BYTES,
+            )?
+            else {
+                return Ok("% Warning: there are no newer updates available\n\n\n".to_owned());
+            };
+            let mut reply = format!("%START Version: 3 {source} {start}-{end}\n\n");
+            for operation in operations {
+                let command = match operation.kind {
+                    crate::nrtm3::Kind::Add => "ADD",
+                    crate::nrtm3::Kind::Delete => "DEL",
+                };
+                writeln!(reply, "{command} {}\n", operation.serial)?;
+                for line in operation.object.public_text().lines() {
+                    writeln!(reply, "{line}")?;
+                }
+                reply.push('\n');
+            }
+            writeln!(reply, "%END {source}\n\n")?;
+            Ok(reply)
         }
         Query::Exact(key) => {
             let objects = store.exact(&key, sources, MAX_RESULTS + 1)?;
@@ -480,6 +532,9 @@ fn parse_query(line: &[u8]) -> Option<Query> {
     if let Some(flags) = line.strip_prefix('-') {
         let (flag, argument) = flags.split_once(' ')?;
         let argument = argument.trim();
+        if flag == "g" {
+            return parse_journal_query(argument);
+        }
         if flag == "i" {
             let (field, value) = argument.split_once(' ')?;
             return inverse_query(field, value, false);
@@ -515,6 +570,36 @@ fn parse_query(line: &[u8]) -> Option<Query> {
         });
     }
     (!line.is_empty() && !line.starts_with(['!', '-'])).then(|| Query::Exact(line.to_uppercase()))
+}
+
+fn parse_journal_query(argument: &str) -> Option<Query> {
+    let (source, range) = argument.split_once(":3:")?;
+    if source.len() > 32 || !crate::rpsl::generic_name(source) {
+        return None;
+    }
+    let (start, end) = range.split_once('-')?;
+    let serial = |value: &str| {
+        value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit())
+            .then(|| value.parse::<u64>().ok())
+            .flatten()
+            .filter(|number| *number > 0)
+    };
+    let start = serial(start)?;
+    let end = if end == "LAST" {
+        None
+    } else {
+        Some(serial(end)?)
+    };
+    if end.is_some_and(|end| end < start) {
+        return None;
+    }
+    Some(Query::Nrtm3 {
+        source: source.to_ascii_uppercase(),
+        start,
+        end,
+    })
 }
 
 fn route_query(prefix: &str, mode: PrefixMatch, origins_only: bool, irrd: bool) -> Option<Query> {

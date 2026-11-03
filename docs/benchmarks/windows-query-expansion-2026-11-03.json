@@ -1,0 +1,204 @@
+{
+  "method": "synthetic exact ASN lookups on IPv4 loopback, one TCP connection per query",
+  "profile": "supplied by caller; use a release build",
+  "binary_sha256": "1c149f8960d95c9aa99be8da7b77b092bcf99a10c0a84831b6b51c26b69842b6",
+  "machine": {
+    "os": "Windows-11-10.0.26200-SP0",
+    "processor": "Intel64 Family 6 Model 167 Stepping 1, GenuineIntel",
+    "logical_cpus": 12,
+    "python": "3.12.14"
+  },
+  "dataset": {
+    "objects": 10000,
+    "plain_bytes": 560000,
+    "plain_sha256": "5779dd3f41de49b1b5dd1055683baf7d85d275ecd5288c1743ebe9514fdffbe2",
+    "gzip_bytes": 25279,
+    "gzip_sha256": "e87077844cc647a751a568d8a62b379635e1cbaf6abfb327020f97fd3bd8d409"
+  },
+  "page_cache": "uncontrolled; fresh database does not imply a cold OS cache",
+  "client_and_server": "same host",
+  "seed": 2622,
+  "warmup_queries_per_run": 400,
+  "repetitions": 3,
+  "imports": [
+    {
+      "fresh_database_plain": {
+        "wall_seconds": 0.3445384000078775,
+        "daemon_seconds": 0.132607,
+        "database_file_bytes": 4747264
+      },
+      "existing_database_plain": {
+        "wall_seconds": 0.6014925999916159,
+        "daemon_seconds": 0.4646266,
+        "database_file_bytes": 135278592
+      },
+      "existing_database_gzip": {
+        "wall_seconds": 0.47075379999296274,
+        "daemon_seconds": 0.3885839,
+        "database_file_bytes": 71053312
+      }
+    },
+    {
+      "fresh_database_plain": {
+        "wall_seconds": 0.2683106000040425,
+        "daemon_seconds": 0.1262822,
+        "database_file_bytes": 4747264
+      },
+      "existing_database_plain": {
+        "wall_seconds": 0.6738513000018429,
+        "daemon_seconds": 0.4499171,
+        "database_file_bytes": 135278592
+      },
+      "existing_database_gzip": {
+        "wall_seconds": 0.4775375999888638,
+        "daemon_seconds": 0.3945898,
+        "database_file_bytes": 71053312
+      }
+    },
+    {
+      "fresh_database_plain": {
+        "wall_seconds": 0.3686491000116803,
+        "daemon_seconds": 0.1241939,
+        "database_file_bytes": 4747264
+      },
+      "existing_database_plain": {
+        "wall_seconds": 0.5406212999951094,
+        "daemon_seconds": 0.4692395,
+        "database_file_bytes": 135278592
+      },
+      "existing_database_gzip": {
+        "wall_seconds": 0.4592051000072388,
+        "daemon_seconds": 0.3816524,
+        "database_file_bytes": 71053312
+      }
+    }
+  ],
+  "whois": {
+    "1": {
+      "runs": [
+        {
+          "queries": 4000,
+          "wall_seconds": 2.2891571000072872,
+          "queries_per_second": 1747.368059617781,
+          "latency_ms": {
+            "p50": 0.3053,
+            "p90": 0.4375,
+            "p95": 0.54,
+            "p99": 13.5601,
+            "max": 25.9772
+          }
+        },
+        {
+          "queries": 4000,
+          "wall_seconds": 3.5914078999921912,
+          "queries_per_second": 1113.7693382054144,
+          "latency_ms": {
+            "p50": 0.3214,
+            "p90": 0.5237,
+            "p95": 0.6521,
+            "p99": 19.5371,
+            "max": 26.0258
+          }
+        },
+        {
+          "queries": 4000,
+          "wall_seconds": 3.1297718999994686,
+          "queries_per_second": 1278.048409853983,
+          "latency_ms": {
+            "p50": 0.3374,
+            "p90": 0.5951,
+            "p95": 0.7433,
+            "p99": 17.1695,
+            "max": 26.1847
+          }
+        }
+      ],
+      "mean_queries_per_second": 1379.7286025590595,
+      "sample_stddev_queries_per_second": 328.80994683137635
+    },
+    "8": {
+      "runs": [
+        {
+          "queries": 4000,
+          "wall_seconds": 0.4382480000058422,
+          "queries_per_second": 9127.252149346208,
+          "latency_ms": {
+            "p50": 0.6513,
+            "p90": 0.9606,
+            "p95": 1.2565,
+            "p99": 4.8274,
+            "max": 28.9569
+          }
+        },
+        {
+          "queries": 4000,
+          "wall_seconds": 0.3428531999961706,
+          "queries_per_second": 11666.800835006577,
+          "latency_ms": {
+            "p50": 0.6004,
+            "p90": 0.7778,
+            "p95": 0.9004,
+            "p99": 1.6359,
+            "max": 14.8039
+          }
+        },
+        {
+          "queries": 4000,
+          "wall_seconds": 0.3495797999930801,
+          "queries_per_second": 11442.308737745087,
+          "latency_ms": {
+            "p50": 0.6285,
+            "p90": 0.8366,
+            "p95": 0.9622,
+            "p99": 1.6016,
+            "max": 4.7701
+          }
+        }
+      ],
+      "mean_queries_per_second": 10745.453907365958,
+      "sample_stddev_queries_per_second": 1405.8918424533485
+    },
+    "32": {
+      "runs": [
+        {
+          "queries": 4000,
+          "wall_seconds": 0.9239183000026969,
+          "queries_per_second": 4329.387133027156,
+          "latency_ms": {
+            "p50": 2.5842,
+            "p90": 4.6156,
+            "p95": 6.0631,
+            "p99": 193.8156,
+            "max": 209.5261
+          }
+        },
+        {
+          "queries": 4000,
+          "wall_seconds": 0.5808416999934707,
+          "queries_per_second": 6886.557903891826,
+          "latency_ms": {
+            "p50": 2.3717,
+            "p90": 3.8135,
+            "p95": 4.4577,
+            "p99": 7.9452,
+            "max": 247.6548
+          }
+        },
+        {
+          "queries": 4000,
+          "wall_seconds": 0.7244937000068603,
+          "queries_per_second": 5521.097008796796,
+          "latency_ms": {
+            "p50": 2.3868,
+            "p90": 3.8438,
+            "p95": 4.676,
+            "p99": 88.497,
+            "max": 241.6073
+          }
+        }
+      ],
+      "mean_queries_per_second": 5579.014015238593,
+      "sample_stddev_queries_per_second": 1279.5688229116622
+    }
+  }
+}

@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fs,
     net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
@@ -19,6 +19,8 @@ pub struct Config {
     pub max_connections_per_ip: Option<usize>,
     #[serde(default)]
     pub connection_limit_exempt_ips: HashSet<IpAddr>,
+    #[serde(default)]
+    pub nrtm3_serve: HashMap<String, HashSet<IpAddr>>,
     pub io_timeout_seconds: u64,
     pub max_snapshot_bytes: u64,
 }
@@ -55,6 +57,20 @@ impl Config {
                 "invalid configured source {source:?}"
             );
             ensure!(seen.insert(source), "duplicate configured source {source}");
+        }
+        for (source, peers) in &mut config.nrtm3_serve {
+            ensure!(
+                seen.contains(source),
+                "unknown NRTMv3 export source {source}"
+            );
+            ensure!(
+                (1..=256).contains(&peers.len()),
+                "NRTMv3 export requires 1–256 peers per source"
+            );
+            *peers = std::mem::take(peers)
+                .into_iter()
+                .map(|address| address.to_canonical())
+                .collect();
         }
         ensure!(
             (1..=4096).contains(&config.max_connections),

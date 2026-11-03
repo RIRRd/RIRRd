@@ -92,6 +92,15 @@ Subsequent updates use the committed serial automatically. Run `rust-irrd source
 
 This client profile accepts finite, unfiltered version 3 responses with explicit contiguous serials. It commits object changes, indexes and the last serial together after validating the complete response. Filtered streams can legally contain serial gaps and are outside the supported profile. Remote sync uses plaintext TCP with an explicitly supplied peer IP and port. Use a trusted network or authenticated tunnel for replication traffic.
 
+The registry retains up to 4,096 recently applied operations per source. To serve those records over WHOIS, list the trusted peer addresses for each source:
+
+```toml
+[nrtm3_serve]
+EXAMPLE = ["127.0.0.1", "::1"]
+```
+
+Peers can request `-g EXAMPLE:3:42-LAST` or give an explicit end serial. Responses allow at most 1,024 operations and 4 MiB of raw object text per request. Use an explicit range when catching up in chunks. The server checks the source-specific peer list independently of the connection's WHOIS source selection. Journal text uses the same credential redaction as public WHOIS. Snapshot replacement and source purge clear retained journal history.
+
 ## Offline route origin validation
 
 Supply JSON exported by a trusted RPKI validator with a top-level `roas` list. Each entry specifies `prefix`, `asn` and `maxLength`. The command returns `VALID`, `INVALID` or `NOT_FOUND`.

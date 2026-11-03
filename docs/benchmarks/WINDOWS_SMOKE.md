@@ -22,3 +22,15 @@ Each timed query made one IPv4 loopback TCP connection, issued an exact ASN look
 | 32 | 9,713 | 3,890 | 3.76–4.14 ms |
 
 File length increased by about 28.5× after plain replacement. Measure allocated blocks and redb page statistics over repeated replacements before choosing an optimization. The benchmark did not measure process memory, CPU, controlled cold-cache imports, representative traffic or upstream IRRd. Use the [comparative methodology](METHODOLOGY.md) for release qualification.
+
+## Query expansion checkpoint
+
+The release build at `e215aa5` was measured on the same host with the same command. The [second raw report](windows-query-expansion-2026-11-03.json) records the new binary hash and per-run samples. The workload still exercises bare ASN lookups. It does not measure the new prefix, inverse, set or GraphQL queries.
+
+| Concurrent clients | Mean queries/s | Sample standard deviation, queries/s | p95 range |
+|---:|---:|---:|---:|
+| 1 | 1,380 | 329 | 0.54–0.74 ms |
+| 8 | 10,745 | 1,406 | 0.90–1.26 ms |
+| 32 | 5,579 | 1,280 | 4.46–6.06 ms |
+
+Fresh import took 0.268–0.369 s, plain replacement 0.541–0.674 s, and gzip replacement 0.459–0.478 s. Observed file lengths were unchanged. The 32-client run was slower than the foundation checkpoint. Repeat alternating builds on an isolated host and profile the client and server before attributing the difference to a code path.

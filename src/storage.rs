@@ -11,8 +11,8 @@ use std::{
 use anyhow::{Context, Result, ensure};
 use redb::{
     Database, Durability, MultimapTable, MultimapTableDefinition, MultimapTableHandle,
-    ReadOnlyTable, ReadableMultimapTable, ReadableTable, ReadableTableMetadata, Table,
-    TableDefinition, TableHandle, WriteTransaction,
+    ReadOnlyTable, ReadTransaction, ReadableMultimapTable, ReadableTable, ReadableTableMetadata,
+    Table, TableDefinition, TableHandle, WriteTransaction,
 };
 
 use crate::{
@@ -30,6 +30,8 @@ type InverseKey = (
     &'static str,
     &'static str,
 );
+type JournalKey = (&'static str, u64);
+type JournalValue = (bool, &'static str, &'static str, &'static str);
 
 // Identity is (source, class, key). The exact index maps (source, key) to classes.
 const OBJECTS: TableDefinition<Identity<'static>, &str> = TableDefinition::new("objects_v1");
@@ -42,6 +44,9 @@ const PREFIXES: TableDefinition<PrefixKey<'static>, ()> = TableDefinition::new("
 // A row is (source, field, normalized value, class, object key).
 const INVERSE: TableDefinition<InverseKey, ()> = TableDefinition::new("inverse_v1");
 const SERIALS: TableDefinition<&str, u64> = TableDefinition::new("source_serials_v1");
+// The journal value is (is_add, object class, object key, raw object text).
+const JOURNAL: TableDefinition<JournalKey, JournalValue> = TableDefinition::new("nrtm3_journal_v1");
+const NRTM3_RETAINED_OPERATIONS: u64 = 4096;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PrefixMatch {
@@ -93,6 +98,7 @@ impl Store {
             let mut prefixes = write.open_table(PREFIXES)?;
             let mut inverse = write.open_table(INVERSE)?;
             write.open_table(SERIALS)?;
+            write.open_table(JOURNAL)?;
             if backfill_origins || backfill_prefixes || backfill_inverse {
                 for entry in records.iter()? {
                     let (identity, text) = entry?;
@@ -143,6 +149,10 @@ impl Store {
             let mut records = write.open_table(OBJECTS)?;
             let mut indexes = WriteIndexes::open(&write)?;
             write.open_table(SERIALS)?.remove(source.as_str())?;
+            write.open_table(JOURNAL)?.retain_in(
+                (source.as_str(), 0)..=(source.as_str(), u64::MAX),
+                |_, _| false,
+            )?;
 
             // Appending the smallest character gives the exclusive end of this source's range.
             let next_source = format!("{source}\0");
@@ -185,9 +195,11 @@ impl Store {
         ensure!(start > 0 && end >= start, "invalid NRTMv3 serial range");
         let mut write = self.db.begin_write()?;
         write.set_durability(Durability::Immediate);
+        let expire_through = end.saturating_sub(NRTM3_RETAINED_OPERATIONS);
         let mut skipped_lookup_values = 0;
         {
             let mut serials = write.open_table(SERIALS)?;
+            let mut journal = write.open_table(JOURNAL)?;
             let mut records = write.open_table(OBJECTS)?;
             let mut indexes = WriteIndexes::open(&write)?;
             let recorded = serials.get(source.as_str())?.map(|serial| serial.value());
@@ -241,12 +253,28 @@ impl Store {
                         }
                     }
                 }
+                if serial > expire_through {
+                    let (_, class, key) = identity;
+                    ensure!(
+                        journal
+                            .insert(
+                                (source.as_str(), serial),
+                                (kind == Kind::Add, class, key, object.text.as_str()),
+                            )?
+                            .is_none(),
+                        "duplicate retained NRTMv3 serial {serial}"
+                    );
+                }
                 last = serial;
             }
             ensure!(
                 last == end,
                 "NRTMv3 stream ended at serial {last}, expected {end}"
             );
+            journal.retain_in(
+                (source.as_str(), 0)..=(source.as_str(), expire_through),
+                |_, _| false,
+            )?;
             serials.insert(source.as_str(), end)?;
         }
         write.commit()?;
@@ -265,6 +293,74 @@ impl Store {
             Err(error) => return Err(error.into()),
         };
         Ok(serials.get(source.as_str())?.map(|serial| serial.value()))
+    }
+
+    /// Read one retained contiguous interval and its ending serial from a single snapshot.
+    /// Returned operation text is raw and can contain sensitive attributes.
+    pub fn nrtm3_journal(
+        &self,
+        source: &str,
+        start: u64,
+        end: Option<u64>,
+        max_entries: usize,
+        max_bytes: usize,
+    ) -> Result<Option<(u64, Vec<Operation>)>> {
+        let source = canonical_source(source)?;
+        ensure!(start > 0, "invalid NRTMv3 journal range");
+        let read = self.db.begin_read()?;
+        let serials = read
+            .open_table(SERIALS)
+            .context("NRTMv3 journal unavailable")?;
+        let committed = serials
+            .get(source.as_str())?
+            .context("NRTMv3 journal unavailable for source")?
+            .value();
+        if end.is_none() && committed.checked_add(1) == Some(start) {
+            return Ok(None);
+        }
+        let end = end.unwrap_or(committed);
+        ensure!(
+            start <= end && end <= committed,
+            "NRTMv3 journal range unavailable"
+        );
+        ensure!(
+            start > committed.saturating_sub(NRTM3_RETAINED_OPERATIONS),
+            "NRTMv3 journal range unavailable"
+        );
+        let count = usize::try_from(end - start + 1)?;
+        ensure!(count <= max_entries, "NRTMv3 journal entry limit exceeded");
+        let journal = read
+            .open_table(JOURNAL)
+            .context("NRTMv3 journal unavailable")?;
+        let mut operations = Vec::new();
+        let mut remaining_bytes = max_bytes;
+        for entry in journal.range((source.as_str(), start)..=(source.as_str(), end))? {
+            let (key, value) = entry?;
+            let (_, serial) = key.value();
+            ensure!(
+                serial == start + operations.len() as u64,
+                "NRTMv3 journal range unavailable"
+            );
+            let (is_add, class, key, text) = value.value();
+            remaining_bytes = remaining_bytes
+                .checked_sub(text.len())
+                .context("NRTMv3 journal byte limit exceeded")?;
+            operations.push(Operation {
+                kind: if is_add { Kind::Add } else { Kind::Delete },
+                serial,
+                object: Object {
+                    source: source.clone(),
+                    class: class.to_owned(),
+                    key: key.to_owned(),
+                    text: text.to_owned(),
+                },
+            });
+        }
+        ensure!(
+            operations.len() == count,
+            "NRTMv3 journal range unavailable"
+        );
+        Ok(Some((end, operations)))
     }
 
     /// Find up to `limit` objects by their key in the given source priority order.
@@ -571,7 +667,7 @@ impl Store {
         Ok(count)
     }
 
-    /// Check that the indexes cover the stored identities and attributes.
+    /// Check index coverage and retained journal metadata.
     pub fn verify(&self) -> Result<u64> {
         let read = self.db.begin_read()?;
         let records = read.open_table(OBJECTS)?;
@@ -652,8 +748,55 @@ impl Store {
             inverse.len()? == indexed_attributes,
             "unexpected inverse lookup index entries"
         );
+        verify_journal(&read)?;
         Ok(indexed)
     }
+}
+
+fn verify_journal(read: &ReadTransaction) -> Result<()> {
+    let journal = match read.open_table(JOURNAL) {
+        Ok(table) => table,
+        Err(redb::TableError::TableDoesNotExist(_)) => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    let serials = read.open_table(SERIALS)?;
+    let mut previous: Option<(String, u64, u64)> = None;
+    for entry in journal.iter()? {
+        let (key, _) = entry?;
+        let (source, serial) = key.value();
+        if let Some((previous_source, last, _)) = &mut previous
+            && previous_source == source
+        {
+            ensure!(
+                last.checked_add(1) == Some(serial),
+                "NRTMv3 journal has a serial gap for {source}"
+            );
+            *last = serial;
+            continue;
+        }
+        if let Some((previous_source, last, committed)) = previous {
+            ensure!(
+                last == committed,
+                "NRTMv3 journal does not end at the committed serial for {previous_source}"
+            );
+        }
+        let committed = serials
+            .get(source)?
+            .context("NRTMv3 journal has no corresponding source serial")?
+            .value();
+        ensure!(
+            serial > committed.saturating_sub(NRTM3_RETAINED_OPERATIONS),
+            "NRTMv3 journal exceeds retention for {source}"
+        );
+        previous = Some((source.to_owned(), serial, committed));
+    }
+    if let Some((source, last, committed)) = previous {
+        ensure!(
+            last == committed,
+            "NRTMv3 journal does not end at the committed serial for {source}"
+        );
+    }
+    Ok(())
 }
 
 struct WriteIndexes<'txn> {
@@ -1214,6 +1357,262 @@ mod tests {
         store.replace_source("TEST", [])?;
         assert_eq!(store.source_serial("TEST")?, None);
         assert_eq!(store.verify()?, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn nrtm3_journal_reopens_with_caps_and_rolls_back_with_source_changes() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("registry.redb");
+        let store = Store::open(&path)?;
+        let old = object("TEST", "aut-num", "AS64496");
+        let new = object("TEST", "aut-num", "AS64497");
+        store.replace_source("TEST", [Ok(old.clone())])?;
+        store.apply_nrtm3(
+            "TEST",
+            (2, 3),
+            Some(1),
+            [
+                Ok(Operation {
+                    kind: Kind::Add,
+                    serial: 2,
+                    object: new.clone(),
+                }),
+                Ok(Operation {
+                    kind: Kind::Delete,
+                    serial: 3,
+                    object: old.clone(),
+                }),
+            ],
+        )?;
+        let rollback = [
+            Ok(Operation {
+                kind: Kind::Delete,
+                serial: 4,
+                object: new.clone(),
+            }),
+            Err(String::from("invalid END")),
+        ];
+        assert!(store.apply_nrtm3("TEST", (4, 4), None, rollback).is_err());
+        assert!(
+            store
+                .replace_source("TEST", [Err(anyhow::anyhow!("failed snapshot"))])
+                .is_err()
+        );
+        drop(store);
+
+        let store = Store::open_existing(&path)?;
+        let bytes = old.text.len() + new.text.len();
+        let expected = [
+            Operation {
+                kind: Kind::Add,
+                serial: 2,
+                object: new,
+            },
+            Operation {
+                kind: Kind::Delete,
+                serial: 3,
+                object: old.clone(),
+            },
+        ];
+        let (end, operations) = store.nrtm3_journal("test", 2, None, 2, bytes)?.unwrap();
+        assert_eq!(end, 3);
+        assert_eq!(operations, expected);
+        assert_eq!(store.verify()?, 1);
+        assert_eq!(
+            store
+                .nrtm3_journal("TEST", 2, Some(2), 2, bytes)?
+                .unwrap()
+                .1,
+            expected[..1]
+        );
+        assert_eq!(store.nrtm3_journal("TEST", 4, None, 0, 0)?, None);
+        assert!(store.nrtm3_journal("TEST", 4, Some(4), 2, bytes).is_err());
+        assert!(store.nrtm3_journal("TEST", 2, Some(4), 2, bytes).is_err());
+        assert!(store.nrtm3_journal("TEST", 5, None, 2, bytes).is_err());
+        assert!(store.nrtm3_journal("TEST", 1, None, 3, bytes).is_err());
+        assert!(
+            store
+                .nrtm3_journal("TEST", 2, None, 1, bytes)
+                .unwrap_err()
+                .to_string()
+                .contains("entry limit")
+        );
+        assert!(
+            store
+                .nrtm3_journal("TEST", 2, None, 2, bytes - 1)
+                .unwrap_err()
+                .to_string()
+                .contains("byte limit")
+        );
+
+        // Reusing an earlier serial after replacement would collide with any stale history.
+        store.replace_source("TEST", [Ok(old.clone())])?;
+        store.apply_nrtm3(
+            "TEST",
+            (2, 2),
+            Some(1),
+            [Ok(Operation {
+                kind: Kind::Delete,
+                serial: 2,
+                object: old,
+            })],
+        )?;
+        assert_eq!(
+            store.nrtm3_journal("TEST", 2, None, 2, bytes)?.unwrap().1[0].kind,
+            Kind::Delete
+        );
+        store.replace_source("TEST", [])?;
+        assert!(store.nrtm3_journal("TEST", 2, None, 2, bytes).is_err());
+        let read = store.db.begin_read()?;
+        assert!(read.open_table(JOURNAL)?.is_empty()?);
+        Ok(())
+    }
+
+    #[test]
+    fn nrtm3_journal_expires_only_old_records_from_the_named_source() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("registry.redb");
+        let store = Store::open(&path)?;
+        let delete = |source, serial| {
+            Ok(Operation {
+                kind: Kind::Delete,
+                serial,
+                object: object(source, "aut-num", "AS64497"),
+            })
+        };
+        for source in ["TEST", "TEST2"] {
+            store.replace_source(source, [Ok(object(source, "aut-num", "AS64496"))])?;
+            store.apply_nrtm3(
+                source,
+                (1, 2),
+                Some(0),
+                [delete(source, 1), delete(source, 2)],
+            )?;
+        }
+        let end = NRTM3_RETAINED_OPERATIONS + 4;
+        store.apply_nrtm3(
+            "TEST",
+            (3, end),
+            None,
+            (3..=end).map(|serial| delete("TEST", serial)),
+        )?;
+        assert!(
+            store
+                .nrtm3_journal("TEST", 4, None, 4097, usize::MAX)
+                .is_err()
+        );
+        let (_, retained) = store
+            .nrtm3_journal("TEST", 5, None, 4096, usize::MAX)?
+            .unwrap();
+        assert_eq!(retained.len(), 4096);
+        assert_eq!(retained.first().unwrap().serial, 5);
+        assert_eq!(retained.last().unwrap().serial, end);
+        assert_eq!(
+            store
+                .nrtm3_journal("TEST2", 1, None, 2, usize::MAX)?
+                .unwrap()
+                .1
+                .len(),
+            2
+        );
+
+        assert_eq!(store.verify()?, 2);
+        let write = store.db.begin_write()?;
+        write.open_table(JOURNAL)?.remove(("TEST", 6))?;
+        write.commit()?;
+        assert!(
+            store
+                .nrtm3_journal("TEST", 5, Some(7), 3, usize::MAX)
+                .is_err()
+        );
+        assert!(
+            store
+                .verify()
+                .unwrap_err()
+                .to_string()
+                .contains("serial gap")
+        );
+
+        let write = store.db.begin_write()?;
+        let operation = &retained[1].object;
+        write.open_table(JOURNAL)?.insert(
+            ("TEST", 6),
+            (
+                false,
+                operation.class.as_str(),
+                operation.key.as_str(),
+                operation.text.as_str(),
+            ),
+        )?;
+        write.open_table(SERIALS)?.insert("TEST", end + 1)?;
+        // Remove the oldest row to keep this synthetic history within the retention window.
+        write.open_table(JOURNAL)?.remove(("TEST", 5))?;
+        write.commit()?;
+        assert!(
+            store
+                .verify()
+                .unwrap_err()
+                .to_string()
+                .contains("does not end at the committed serial")
+        );
+
+        let write = store.db.begin_write()?;
+        write.open_table(SERIALS)?.remove("TEST")?;
+        write.commit()?;
+        assert!(
+            store
+                .verify()
+                .unwrap_err()
+                .to_string()
+                .contains("no corresponding source serial")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn nrtm3_journal_without_backfill_reports_old_serial_as_unavailable() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("registry.redb");
+        let store = Store::open(&path)?;
+        let old = object("TEST", "aut-num", "AS64496");
+        store.replace_source("TEST", [Ok(old.clone())])?;
+        store.apply_nrtm3(
+            "TEST",
+            (9, 9),
+            Some(8),
+            [Ok(Operation {
+                kind: Kind::Delete,
+                serial: 9,
+                object: old.clone(),
+            })],
+        )?;
+        let write = store.db.begin_write()?;
+        assert!(write.delete_table(JOURNAL)?);
+        write.commit()?;
+        drop(store);
+        let store = Store::open_for_service(&path)?;
+        assert_eq!(store.source_serial("TEST")?, Some(9));
+        assert_eq!(store.verify()?, 0);
+        assert!(store.nrtm3_journal("TEST", 9, None, 1, usize::MAX).is_err());
+        assert_eq!(store.nrtm3_journal("TEST", 10, None, 1, usize::MAX)?, None);
+        store.apply_nrtm3(
+            "TEST",
+            (10, 10),
+            None,
+            [Ok(Operation {
+                kind: Kind::Add,
+                serial: 10,
+                object: old,
+            })],
+        )?;
+        assert_eq!(
+            store
+                .nrtm3_journal("TEST", 10, None, 1, usize::MAX)?
+                .unwrap()
+                .0,
+            10
+        );
         Ok(())
     }
 
