@@ -1,6 +1,29 @@
-# Rust IRRd
+# RIRRd
+
+**AI disclosure:** RIRRd is built with AI assistance. AI tools and agents are welcome contributors; submitted changes still require review, reproducible tests and license/provenance checks. AI authorship does not establish correctness, security or full IRRd parity. See [the disclosure](docs/AI_DISCLOSURE.md) and [contribution guide](CONTRIBUTING.md).
+
+Project code is [MIT-licensed](LICENSE). The repository remains private during development; a public open-source release is planned.
 
 This development branch contains a transactional embedded registry, local snapshot and incremental mirroring commands, a TCP WHOIS listener and an optional read-only GraphQL service. The compatibility baseline is IRRd v4.5.4 at commit `8e8080dab744a348b7d0e6efcb53f403301dd075`. See the [compatibility matrix](docs/compatibility/IRRD_FEATURE_MATRIX.md), [upstream issue backlog](docs/compatibility/IRRD_ISSUE_BACKLOG.md) and [development checkpoint](AUTONOMOUS_PROGRESS.md) for release blockers and evidence.
+
+RIRRd aims to provide the features of a self-hosted IRRd service on smaller Linux
+hosts, with a bundled dashboard, straightforward BIRD/FRR filter-generation
+workflows and a planned community directory of sponsored registry nodes.
+See [the project direction](docs/PROJECT_DIRECTION.md).
+
+## Dashboard and router integration
+
+With `http_listen` configured, open `/ui/` on that loopback listener. The bundled
+read-only dashboard queries the same local WHOIS/GraphQL APIs, shows source and
+replication status, and displays optional `[node]` name/location/sponsor labels.
+No Node process or external page assets are required. Missing freshness remains
+unreported; a configured source is not a freshness claim. Account/update UI is
+not implemented. The public site hosts a labeled synthetic preview, not a public
+registry API.
+
+Start with [the small-host profile](examples/small-host/irrd.toml),
+[small-host operation](docs/operations/SMALL_HOSTS.md), and the
+[tested BIRD/FRR guide](docs/operations/ROUTER_INTEGRATION.md).
 
 ## Local evaluation
 
@@ -38,6 +61,9 @@ Bare, route and inverse lookups return at most 16 objects. A single-AS origin lo
 | Configuration | Purpose |
 |---|---|
 | `database` | redb file. A relative path is resolved against the TOML file's parent. |
+| `database_cache_mib` | redb cache budget for daemon and offline commands; default 64 MiB, range 1–65536. This is not a total process-memory bound. |
+| `worker_threads` | Optional Tokio runtime worker count, 1–64. Omit to use automatic CPU detection. |
+| `max_blocking_threads` | Optional blocking-worker cap, 1–256. Omit for the runtime default. |
 | `sources` | Ordered allowlist for imports and WHOIS queries, with 1–256 distinct uppercase names. |
 | `listen` | TCP socket address. The example binds IPv4 loopback on port 4343. |
 | `http_listen` | Optional loopback HTTP address for GraphQL and HTTP WHOIS. |

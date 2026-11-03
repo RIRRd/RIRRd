@@ -1931,3 +1931,107 @@ fn maintainer_dummy_updates_rotate_hashes_only_after_authentication() {
     drop(server);
     successful(cli(&config).args(["database", "verify"]).output().unwrap());
 }
+
+#[test]
+fn small_host_controls_fail_before_open_and_persist_with_a_small_cache() {
+    let workspace = tempfile::tempdir().unwrap();
+    let config = workspace.path().join("small.toml");
+    let base = "database = \"small.redb\"\nsources = [\"TEST\"]\nlisten = \"127.0.0.1:0\"\nmax_connections = 4\nio_timeout_seconds = 2\nmax_snapshot_bytes = 65536\n";
+    for bad in [
+        "database_cache_mib = 0",
+        "database_cache_mib = 65537",
+        "worker_threads = 0",
+        "worker_threads = 65",
+        "max_blocking_threads = 0",
+        "max_blocking_threads = 257",
+        "[node]\nname = \"\"",
+        "[node]\nlocation = \"bad\\nlabel\"",
+    ] {
+        fs::write(&config, format!("{base}{bad}\n")).unwrap();
+        let denied = cli(&config).arg("server").output().unwrap();
+        assert!(!denied.status.success(), "{bad}");
+        assert!(!workspace.path().join("small.redb").exists());
+    }
+    fs::write(
+        &config,
+        format!("{base}database_cache_mib = 1\nworker_threads = 1\nmax_blocking_threads = 1\n"),
+    )
+    .unwrap();
+    let fixture = workspace.path().join("fixture.rpsl");
+    fs::write(&fixture, "aut-num: AS64496\nsource: TEST\n").unwrap();
+    successful(
+        cli(&config)
+            .args(["import", "snapshot", "--source", "TEST", "--file"])
+            .arg(&fixture)
+            .output()
+            .unwrap(),
+    );
+    for _ in 0..2 {
+        let (server, address) = Server::start(&config);
+        assert!(whois(address, b"!maut-num,AS64496\n").contains("AS64496"));
+        drop(server);
+    }
+    successful(cli(&config).args(["database", "verify"]).output().unwrap());
+}
+
+#[test]
+fn bundled_dashboard_serves_local_assets_metadata_and_uses_the_private_api() {
+    let workspace = tempfile::tempdir().unwrap();
+    let config = workspace.path().join("dashboard.toml");
+    fs::write(&config,"database = \"registry.redb\"\nsources = [\"TEST\"]\nlisten = \"127.0.0.1:0\"\nhttp_listen = \"127.0.0.1:0\"\nmax_connections = 4\nworker_threads = 1\nmax_blocking_threads = 2\ndatabase_cache_mib = 8\nio_timeout_seconds = 2\nmax_snapshot_bytes = 65536\n[node]\nname = \"Test node\"\nlocation = \"Documentation lab\"\nsponsor = \"Synthetic fixture\"\n").unwrap();
+    let fixture = workspace.path().join("fixture.rpsl");
+    fs::write(
+        &fixture,
+        "mntner: TEST-MNT\nauth: BCRYPT-PW hidden-dashboard-proof\nsource: TEST\n",
+    )
+    .unwrap();
+    successful(
+        cli(&config)
+            .args(["import", "snapshot", "--source", "TEST", "--file"])
+            .arg(&fixture)
+            .output()
+            .unwrap(),
+    );
+    let (server, address) = Server::start_listener(&config, "GraphQL listening");
+    let get = |path: &str, host: &str| {
+        whois(
+            address,
+            format!("GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n").as_bytes(),
+        )
+    };
+    let html = get("/ui/", "localhost");
+    assert!(html.starts_with("HTTP/1.1 200 ") && html.contains("Registry explorer"));
+    assert!(html.contains("script-src 'self'") && html.contains("frame-ancestors 'none'"));
+    for (path, content_type) in [
+        ("/ui/style.css", "text/css"),
+        ("/ui/app.js", "text/javascript"),
+        ("/ui/network.json", "application/json"),
+    ] {
+        let result = get(path, "localhost");
+        assert!(
+            result.starts_with("HTTP/1.1 200 ") && result.contains(content_type),
+            "{path}"
+        );
+        let denied = get(path, "untrusted.example");
+        assert!(denied.starts_with("HTTP/1.1 400 "), "{path}");
+    }
+    let data = get("/ui/meta.json", "localhost");
+    let meta: Value = serde_json::from_str(data.split_once("\r\n\r\n").unwrap().1).unwrap();
+    assert_eq!(meta["mode"], "live");
+    assert_eq!(meta["sources"], serde_json::json!(["TEST"]));
+    assert_eq!(meta["node"]["name"], "Test node");
+    assert_eq!(meta["node"]["sponsor"], "Synthetic fixture");
+    assert_eq!(meta["database_cache_mib"], 8);
+    assert_eq!(meta["max_connections"], 4);
+    assert!(!data.contains("registry.redb") && !data.contains("hidden-dashboard-proof"));
+    assert!(get("/ui", "localhost").starts_with("HTTP/1.1 308 "));
+    assert!(get("/", "localhost").starts_with("HTTP/1.1 302 "));
+    assert!(get("/ui/sample-results.json", "localhost").starts_with("HTTP/1.1 404 "));
+    let query = get("/v1/whois/?q=TEST-MNT", "localhost");
+    assert!(
+        query.contains("TEST-MNT")
+            && !query.contains("hidden-dashboard-proof")
+            && !query.contains("auth:")
+    );
+    drop(server);
+}

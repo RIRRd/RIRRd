@@ -104,14 +104,36 @@ pub struct Store {
 }
 
 impl Store {
+    #[cfg(test)]
     pub fn open(path: &Path) -> Result<Self> {
-        let db = Database::create(path).with_context(|| format!("open {}", path.display()))?;
+        Self::open_with_cache(
+            path,
+            crate::config::DEFAULT_DATABASE_CACHE_MIB * 1024 * 1024,
+        )
+    }
+
+    pub fn open_with_cache(path: &Path, cache_bytes: usize) -> Result<Self> {
+        let db = Database::builder()
+            .set_cache_size(cache_bytes)
+            .create(path)
+            .with_context(|| format!("open {}", path.display()))?;
         Self::initialize(db)
     }
 
     /// Open an existing registry database and upgrade its indexes before serving queries.
+    #[cfg(test)]
     pub fn open_for_service(path: &Path) -> Result<Self> {
-        let db = Database::open(path).with_context(|| format!("open {}", path.display()))?;
+        Self::open_for_service_with_cache(
+            path,
+            crate::config::DEFAULT_DATABASE_CACHE_MIB * 1024 * 1024,
+        )
+    }
+
+    pub fn open_for_service_with_cache(path: &Path, cache_bytes: usize) -> Result<Self> {
+        let db = Database::builder()
+            .set_cache_size(cache_bytes)
+            .open(path)
+            .with_context(|| format!("open {}", path.display()))?;
         {
             let read = db.begin_read()?;
             read.open_table(OBJECTS)
@@ -205,8 +227,19 @@ impl Store {
     }
 
     /// Open without creating the file or initializing its application tables.
+    #[cfg(test)]
     pub fn open_existing(path: &Path) -> Result<Self> {
-        let db = Database::open(path).with_context(|| format!("open {}", path.display()))?;
+        Self::open_existing_with_cache(
+            path,
+            crate::config::DEFAULT_DATABASE_CACHE_MIB * 1024 * 1024,
+        )
+    }
+
+    pub fn open_existing_with_cache(path: &Path, cache_bytes: usize) -> Result<Self> {
+        let db = Database::builder()
+            .set_cache_size(cache_bytes)
+            .open(path)
+            .with_context(|| format!("open {}", path.display()))?;
         Ok(Self::from_database(db))
     }
 

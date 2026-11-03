@@ -18,7 +18,7 @@ const HEADER_BYTES: u64 = 8 + 4 + 8;
 const CHECKSUM_BYTES: u64 = 32;
 
 /// Create a versioned backup and return the number of raw database bytes copied.
-pub fn create(database: &Path, output: &Path) -> Result<u64> {
+pub fn create(database: &Path, output: &Path, cache_bytes: usize) -> Result<u64> {
     require_absent(output)?;
     let mut raw = OpenOptions::new()
         .read(true)
@@ -33,7 +33,8 @@ pub fn create(database: &Path, output: &Path) -> Result<u64> {
 
     // A second open cannot read the locked bytes on Windows. Duplicate the
     // original handle and let redb acquire and retain its usual exclusive lock.
-    let store = lock_existing_file(&raw).context("locking existing registry for backup")?;
+    let store =
+        lock_existing_file(&raw, cache_bytes).context("locking existing registry for backup")?;
     store.verify().context("verifying registry before backup")?;
     raw.seek(SeekFrom::Start(0))?;
     let length = raw.metadata()?.len();
@@ -48,7 +49,7 @@ pub fn create(database: &Path, output: &Path) -> Result<u64> {
 }
 
 /// Validate and restore a backup into a new file, returning its raw payload size.
-pub fn restore(input: &Path, database: &Path) -> Result<u64> {
+pub fn restore(input: &Path, database: &Path, cache_bytes: usize) -> Result<u64> {
     require_absent(database)?;
     let mut archive = File::open(input).context("opening registry backup")?;
     let metadata = archive.metadata()?;
@@ -72,8 +73,8 @@ pub fn restore(input: &Path, database: &Path) -> Result<u64> {
     require_eof(&mut archive).context("backup contains trailing bytes")?;
     ensure!(checksum == expected, "backup checksum mismatch");
     {
-        let restored =
-            lock_existing_file(stage.as_file()).context("opening staged restored database")?;
+        let restored = lock_existing_file(stage.as_file(), cache_bytes)
+            .context("opening staged restored database")?;
         restored
             .verify()
             .context("verifying staged restored registry")?;
@@ -177,9 +178,11 @@ fn stage_for(path: &Path) -> Result<NamedTempFile> {
     NamedTempFile::new_in(directory_for(path)).context("creating private backup staging file")
 }
 
-fn lock_existing_file(file: &File) -> Result<Store> {
+fn lock_existing_file(file: &File, cache_bytes: usize) -> Result<Store> {
     ensure!(file.metadata()?.len() > 0, "empty database file");
-    let db = redb::Database::builder().create_file(file.try_clone()?)?;
+    let db = redb::Database::builder()
+        .set_cache_size(cache_bytes)
+        .create_file(file.try_clone()?)?;
     Ok(Store::from_database(db))
 }
 
@@ -258,16 +261,16 @@ mod tests {
         store.apply_authoritative("AUTH", vec![Change::Upsert(person.clone())], &passwords)?;
         store.apply_authoritative("AUTH", vec![Change::Delete(person.clone())], &passwords)?;
 
-        assert!(create(&database, &backup).is_err());
+        assert!(create(&database, &backup, 8 * 1024 * 1024).is_err());
         assert!(!backup.exists());
         drop(store);
 
-        let length = create(&database, &backup)?;
+        let length = create(&database, &backup, 8 * 1024 * 1024)?;
         assert_eq!(
             fs::metadata(&backup)?.len(),
             HEADER_BYTES + length + CHECKSUM_BYTES
         );
-        assert_eq!(restore(&backup, &restored)?, length);
+        assert_eq!(restore(&backup, &restored, 8 * 1024 * 1024)?, length);
         let store = Store::open_existing(&restored)?;
         assert_eq!(store.verify()?, 4);
         assert_eq!(
@@ -302,10 +305,10 @@ mod tests {
         let foreign = dir.path().join("foreign.redb");
         let empty = dir.path().join("empty.redb");
         drop(Store::open(&database)?);
-        create(&database, &archive)?;
+        create(&database, &archive, 8 * 1024 * 1024)?;
         fs::write(&existing, b"keep me")?;
-        assert!(create(&database, &existing).is_err());
-        assert!(restore(&archive, &existing).is_err());
+        assert!(create(&database, &existing, 8 * 1024 * 1024).is_err());
+        assert!(restore(&archive, &existing, 8 * 1024 * 1024).is_err());
         assert_eq!(fs::read(&existing)?, b"keep me");
 
         let valid = fs::read(&archive)?;
@@ -326,7 +329,7 @@ mod tests {
         ] {
             fs::write(&damaged, bytes)?;
             assert!(
-                restore(&damaged, &restored)
+                restore(&damaged, &restored, 8 * 1024 * 1024)
                     .unwrap_err()
                     .to_string()
                     .contains(message)
@@ -335,7 +338,7 @@ mod tests {
         }
 
         drop(redb::Database::create(&foreign)?);
-        assert!(create(&foreign, &restored).is_err());
+        assert!(create(&foreign, &restored, 8 * 1024 * 1024).is_err());
         assert!(!restored.exists());
         let payload = fs::read(&foreign)?;
         let mut foreign_archive = Vec::new();
@@ -343,11 +346,11 @@ mod tests {
         foreign_archive.extend_from_slice(&payload);
         foreign_archive.extend_from_slice(&Sha256::digest(&payload));
         fs::write(&damaged, foreign_archive)?;
-        assert!(restore(&damaged, &restored).is_err());
+        assert!(restore(&damaged, &restored, 8 * 1024 * 1024).is_err());
         assert!(!restored.exists());
 
         fs::write(&empty, [])?;
-        assert!(create(&empty, &restored).is_err());
+        assert!(create(&empty, &restored, 8 * 1024 * 1024).is_err());
         assert_eq!(fs::metadata(&empty)?.len(), 0);
         assert!(!restored.exists());
         Ok(())

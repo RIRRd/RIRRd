@@ -12,6 +12,8 @@ on:
       - 'examples/example.rpsl'
       - 'Cargo.*'
       - 'src/**'
+      - 'web/**'
+      - 'LICENSE'
 
 permissions:
   contents: read

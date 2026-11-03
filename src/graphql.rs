@@ -1036,15 +1036,27 @@ async fn execute(
     Json(schema.execute(request).await)
 }
 
+pub struct HttpServiceConfig {
+    pub sources: Vec<String>,
+    pub authoritative_sources: HashSet<String>,
+    pub update_sources: Option<HashSet<String>>,
+    pub timeout: Duration,
+    pub dashboard: crate::dashboard::Metadata,
+}
+
 pub async fn serve(
     listener: TcpListener,
     store: Arc<Store>,
-    sources: Vec<String>,
-    authoritative_sources: HashSet<String>,
-    update_sources: Option<HashSet<String>>,
-    timeout: Duration,
+    config: HttpServiceConfig,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> Result<()> {
+    let HttpServiceConfig {
+        sources,
+        authoritative_sources,
+        update_sources,
+        timeout,
+        dashboard,
+    } = config;
     let schema = make_schema(store.clone(), sources.clone(), authoritative_sources)?;
     let mut app = Router::new()
         .route("/graphql", post(execute))
@@ -1067,6 +1079,7 @@ pub async fn serve(
             timeout,
         ));
     }
+    app = app.merge(crate::dashboard::router(dashboard)?);
     app = app.layer(middleware::from_fn_with_state(
         listener.local_addr()?.ip(),
         bound_host,
@@ -1088,6 +1101,27 @@ mod tests {
     };
 
     use super::*;
+
+    fn test_http_config(
+        address: std::net::SocketAddr,
+        update_sources: Option<HashSet<String>>,
+    ) -> HttpServiceConfig {
+        HttpServiceConfig {
+            sources: vec!["TEST".into()],
+            authoritative_sources: HashSet::new(),
+            update_sources,
+            timeout: Duration::from_secs(2),
+            dashboard: crate::dashboard::Metadata {
+                mode: "live",
+                version: env!("CARGO_PKG_VERSION"),
+                node: Default::default(),
+                sources: vec!["TEST".into()],
+                whois_listen: address.to_string(),
+                max_connections: 8,
+                database_cache_mib: 64,
+            },
+        }
+    }
 
     fn test_schema() -> Result<(tempfile::TempDir, Schema)> {
         let directory = tempfile::tempdir()?;
@@ -1536,10 +1570,7 @@ mod tests {
         let server = tokio::spawn(serve(
             listener,
             store,
-            vec!["TEST".into()],
-            HashSet::new(),
-            Some(HashSet::from(["TEST".into()])),
-            Duration::from_secs(2),
+            test_http_config(address, Some(HashSet::from(["TEST".into()]))),
             async move {
                 let _ = stopped.await;
             },
@@ -1609,10 +1640,7 @@ mod tests {
         let server = tokio::spawn(serve(
             listener,
             store,
-            vec!["TEST".into()],
-            HashSet::new(),
-            None,
-            Duration::from_secs(2),
+            test_http_config(address, None),
             async move {
                 let _ = stopped.await;
             },

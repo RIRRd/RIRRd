@@ -6,12 +6,24 @@ use std::{
 };
 
 use anyhow::{Context, Result, ensure};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+
+pub const DEFAULT_DATABASE_CACHE_MIB: usize = 64;
+
+fn default_database_cache_mib() -> usize {
+    DEFAULT_DATABASE_CACHE_MIB
+}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
+    #[serde(default)]
+    pub node: NodeConfig,
     pub database: PathBuf,
+    #[serde(default = "default_database_cache_mib")]
+    pub database_cache_mib: usize,
+    pub worker_threads: Option<usize>,
+    pub max_blocking_threads: Option<usize>,
     pub sources: Vec<String>,
     #[serde(default)]
     pub authoritative_sources: HashSet<String>,
@@ -37,6 +49,27 @@ pub struct Config {
     pub max_snapshot_bytes: u64,
 }
 
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NodeConfig {
+    #[serde(default = "default_node_name")]
+    pub name: String,
+    pub location: Option<String>,
+    pub sponsor: Option<String>,
+}
+fn default_node_name() -> String {
+    "Local RIRRd".into()
+}
+impl Default for NodeConfig {
+    fn default() -> Self {
+        Self {
+            name: default_node_name(),
+            location: None,
+            sponsor: None,
+        }
+    }
+}
+
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MirrorConfig {
@@ -57,14 +90,45 @@ pub struct ScopeConfig {
 }
 
 impl Config {
+    pub fn database_cache_bytes(&self) -> usize {
+        self.database_cache_mib * 1024 * 1024
+    }
+
     pub fn load(path: &Path) -> Result<Self> {
         let contents = fs::read_to_string(path)
             .with_context(|| format!("reading config {}", path.display()))?;
         let mut config: Self = toml::from_str(&contents).context("invalid configuration")?;
+        for label in std::iter::once(&config.node.name)
+            .chain(config.node.location.iter())
+            .chain(config.node.sponsor.iter())
+        {
+            ensure!(
+                !label.trim().is_empty()
+                    && label.len() <= 128
+                    && !label.chars().any(char::is_control),
+                "node labels must contain 1–128 bytes without control characters"
+            );
+        }
         ensure!(
             !config.database.as_os_str().is_empty(),
             "database path is empty"
         );
+        ensure!(
+            (1..=65536).contains(&config.database_cache_mib),
+            "database_cache_mib must be between 1 and 65536"
+        );
+        if let Some(threads) = config.worker_threads {
+            ensure!(
+                (1..=64).contains(&threads),
+                "worker_threads must be between 1 and 64"
+            );
+        }
+        if let Some(threads) = config.max_blocking_threads {
+            ensure!(
+                (1..=256).contains(&threads),
+                "max_blocking_threads must be between 1 and 256"
+            );
+        }
         if let Some(http) = config.http_listen {
             ensure!(
                 http.ip().to_canonical().is_loopback(),

@@ -4,6 +4,7 @@ mod authoritative;
 mod authoritative_validation;
 mod backup;
 mod config;
+mod dashboard;
 mod graphql;
 mod import;
 mod legacy_md5;
@@ -346,26 +347,31 @@ fn main() -> Result<()> {
         Command::Database {
             command: DatabaseCommand::Verify,
         } => {
-            let objects = Store::open_existing(&config.database)?.verify()?;
+            let objects =
+                Store::open_existing_with_cache(&config.database, config.database_cache_bytes())?
+                    .verify()?;
             println!("{}", serde_json::json!({ "objects": objects }));
         }
         Command::Database {
             command: DatabaseCommand::Backup { file },
         } => {
-            let bytes = backup::create(&config.database, &file)?;
+            let bytes = backup::create(&config.database, &file, config.database_cache_bytes())?;
             println!("{}", serde_json::json!({ "database_bytes": bytes }));
         }
         Command::Database {
             command: DatabaseCommand::Restore { file },
         } => {
-            let bytes = backup::restore(&file, &config.database)?;
+            let bytes = backup::restore(&file, &config.database, config.database_cache_bytes())?;
             println!("{}", serde_json::json!({ "database_bytes": bytes }));
         }
         Command::Database {
             command: DatabaseCommand::Compact { yes },
         } => {
             ensure!(yes, "database compact requires --yes");
-            let mut store = Store::open_for_service(&config.database)?;
+            let mut store = Store::open_for_service_with_cache(
+                &config.database,
+                config.database_cache_bytes(),
+            )?;
             let before = fs::metadata(&config.database)?.len();
             let compacted = store.compact()?;
             let after = fs::metadata(&config.database)?.len();
@@ -392,7 +398,7 @@ fn main() -> Result<()> {
             );
             let start = Instant::now();
             let records = import::snapshot(&file, config.max_snapshot_bytes)?;
-            let store = Store::open(&config.database)?;
+            let store = Store::open_with_cache(&config.database, config.database_cache_bytes())?;
             let objects = if authoritative_restore {
                 store.replace_authoritative_source(&source, records, serial_floor)?
             } else {
@@ -408,11 +414,21 @@ fn main() -> Result<()> {
         Command::Server => {
             let route_policy = RoutePolicy::load(&config)?;
             let store = Arc::new(
-                Store::open_for_service(&config.database)?
-                    .with_legacy_md5_sources(config.legacy_md5_sources.clone())
-                    .with_route_policy(route_policy),
+                Store::open_for_service_with_cache(
+                    &config.database,
+                    config.database_cache_bytes(),
+                )?
+                .with_legacy_md5_sources(config.legacy_md5_sources.clone())
+                .with_route_policy(route_policy),
             );
-            tokio::runtime::Builder::new_multi_thread()
+            let mut runtime = tokio::runtime::Builder::new_multi_thread();
+            if let Some(threads) = config.worker_threads {
+                runtime.worker_threads(threads);
+            }
+            if let Some(threads) = config.max_blocking_threads {
+                runtime.max_blocking_threads(threads);
+            }
+            runtime
                 .enable_all()
                 .build()?
                 .block_on(serve(config, store))?;
@@ -427,7 +443,8 @@ fn main() -> Result<()> {
                 },
         } => {
             ensure!(config.sources.contains(&source), "source is not configured");
-            let store = Store::open_existing(&config.database)?;
+            let store =
+                Store::open_existing_with_cache(&config.database, config.database_cache_bytes())?;
             let report = if public {
                 let (objects, serial) =
                     export(&file, |output| store.export_public_source(&source, output))?;
@@ -635,9 +652,9 @@ fn open_nrtm4_source(config: &Config, source: &str) -> Result<Store> {
         "source is not configured"
     );
     if config.database.exists() {
-        Store::open_for_service(&config.database)
+        Store::open_for_service_with_cache(&config.database, config.database_cache_bytes())
     } else {
-        Store::open(&config.database)
+        Store::open_with_cache(&config.database, config.database_cache_bytes())
     }
 }
 
@@ -646,8 +663,10 @@ fn open_source(config: &Config, source: &str) -> Result<Store> {
         config.sources.iter().any(|configured| configured == source),
         "source is not configured"
     );
-    Ok(Store::open_for_service(&config.database)?
-        .with_legacy_md5_sources(config.legacy_md5_sources.clone()))
+    Ok(
+        Store::open_for_service_with_cache(&config.database, config.database_cache_bytes())?
+            .with_legacy_md5_sources(config.legacy_md5_sources.clone()),
+    )
 }
 
 fn apply_nrtm3(
@@ -703,10 +722,21 @@ async fn serve(config: Config, store: Arc<Store>) -> Result<()> {
         services.spawn(graphql::serve(
             http,
             store,
-            sources,
-            config.authoritative_sources.clone(),
-            update_sources,
-            timeout,
+            graphql::HttpServiceConfig {
+                sources: sources.clone(),
+                authoritative_sources: config.authoritative_sources.clone(),
+                update_sources,
+                timeout,
+                dashboard: dashboard::Metadata {
+                    mode: "live",
+                    version: env!("CARGO_PKG_VERSION"),
+                    node: config.node.clone(),
+                    sources,
+                    whois_listen: whois.local_addr()?.to_string(),
+                    max_connections: config.max_connections,
+                    database_cache_mib: config.database_cache_mib,
+                },
+            },
             async move {
                 let _ = stopped.changed().await;
             },

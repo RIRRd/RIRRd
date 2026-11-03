@@ -1,0 +1,18 @@
+# Evaluation profile: same daemon/features, smaller explicit resource budgets.
+database = "registry.redb"
+database_cache_mib = 16
+worker_threads = 1
+max_blocking_threads = 4
+sources = ["EXAMPLE"]
+listen = "127.0.0.1:4343"
+http_listen = "127.0.0.1:8080"
+max_connections = 8
+max_connections_per_ip = 8
+io_timeout_seconds = 5
+max_snapshot_bytes = 16777216
+
+[node]
+name = "Local RIRRd"
+# Set your own public-facing labels; these are returned by the read-only UI.
+# location = "Your city, country"
+# sponsor = "Your confirmed infrastructure sponsor"
