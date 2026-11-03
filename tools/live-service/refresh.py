@@ -84,10 +84,17 @@ def main():
                 if inputs['catalog_sha256'] != digest or loaded != expected or report['binary_sha256'] != inputs['binary_sha256']:
                     raise ValueError('Prepared candidate has inconsistent or changed inputs')
                 subprocess.run([BINARY, '--config', str(destination / 'irrd.toml'), 'config', 'check'], check=True, capture_output=True)
-                verification = subprocess.run([BINARY, '--config', str(destination / 'irrd.toml'), 'database', 'verify'],
-                                              check=True, capture_output=True, text=True, timeout=1800)
-                if json.loads(verification.stdout)['objects'] != report['total_objects']:
-                    raise ValueError('Prepared generation count changed before activation')
+                with open(BINARY, 'rb') as binary:
+                    same_runtime = hashlib.file_digest(binary, 'sha256').hexdigest() == report.get('runtime_binary_sha256')
+                if same_runtime and report.get('database_sha256'):
+                    with (destination / 'registry.redb').open('rb') as database:
+                        if hashlib.file_digest(database, 'sha256').hexdigest() != report['database_sha256']:
+                            raise ValueError('Prepared generation bytes changed after full verification')
+                else:
+                    verification = subprocess.run([BINARY, '--config', str(destination / 'irrd.toml'), 'database', 'verify'],
+                                                  check=True, capture_output=True, text=True, timeout=1800)
+                    if json.loads(verification.stdout)['objects'] != report['total_objects']:
+                        raise ValueError('Prepared generation count changed before activation')
             before = json.loads((previous / 'sources.json').read_text())
             baseline = {row['source']: row['objects'] for row in before['sources'] if row['state'] == 'loaded'}
             loaded = {row['source']: row['objects'] for row in report['sources'] if row['state'] == 'loaded'}

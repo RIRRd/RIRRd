@@ -1,7 +1,7 @@
 //! One-shot NRTMv3 client transport for an explicitly configured peer.
 
 use std::{
-    io::{self, BufRead, BufReader, Cursor, Read, Write},
+    io::{self, BufRead, BufReader, Cursor, Read, Seek, SeekFrom, Write},
     net::{SocketAddr, TcpStream},
     time::{Duration, Instant},
 };
@@ -11,6 +11,30 @@ use anyhow::{Context, Result, ensure};
 const MAX_PREAMBLE_BYTES: u64 = 8 * 1024;
 const NO_UPDATES: &[u8] = b"% Warning: there are no newer updates available";
 const NO_UPDATES_NUMBERED: &[u8] = b"% Warning (1): there are no newer updates available";
+
+/// Finish the bounded network transfer before taking a database write lock.
+/// The transport deadline must not expire while a valid batch is being indexed.
+pub fn fetch_staged(
+    endpoint: SocketAddr,
+    source: &str,
+    start: u64,
+    timeout: Duration,
+    max_bytes: u64,
+) -> Result<Option<BufReader<std::fs::File>>> {
+    let max_bytes = max_bytes.min(64 * 1024 * 1024);
+    let Some(response) = fetch(endpoint, source, start, timeout, max_bytes)? else {
+        return Ok(None);
+    };
+    let mut stage = tempfile::tempfile().context("creating private NRTMv3 staging file")?;
+    let bytes = io::copy(&mut response.take(max_bytes + 1), &mut stage)
+        .context("staging complete NRTMv3 response")?;
+    ensure!(
+        bytes <= max_bytes,
+        "NRTMv3 response exceeds staging byte limit"
+    );
+    stage.seek(SeekFrom::Start(0))?;
+    Ok(Some(BufReader::new(stage)))
+}
 
 /// Fetch the finite stream beginning at `start` from the exact TCP endpoint.
 /// Returns `None` for a complete, recognized no-updates response. The transport
@@ -187,6 +211,28 @@ mod tests {
         let mut received = Vec::new();
         reader.read_to_end(&mut received)?;
         assert_eq!(received, response);
+        worker.join().unwrap()?;
+        Ok(())
+    }
+
+    #[test]
+    fn staged_transfer_keeps_its_budget_and_has_no_network_deadline_during_local_apply()
+    -> Result<()> {
+        let response = b"%START Version: 3 TEST 10-10\n\nADD 10\n\naut-num: AS64496\nsource: TEST\n\n%END TEST\n";
+        let (address, worker) = peer(move |mut stream| stream.write_all(response))?;
+        let mut staged = fetch_staged(address, "TEST", 10, Duration::from_secs(1), 4096)?
+            .context("expected a staged response")?;
+        worker.join().unwrap()?;
+        // Indexing starts after the download deadline and must still read every byte.
+        thread::sleep(Duration::from_millis(1050));
+        let mut bytes = Vec::new();
+        staged.read_to_end(&mut bytes)?;
+        assert_eq!(bytes, response);
+        let (address, worker) = peer(move |mut stream| {
+            stream.write_all(response)?;
+            stream.write_all(&[b' '; 256])
+        })?;
+        assert!(fetch_staged(address, "TEST", 10, Duration::from_secs(2), 128).is_err());
         worker.join().unwrap()?;
         Ok(())
     }

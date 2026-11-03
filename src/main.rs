@@ -180,6 +180,9 @@ enum SourceCommand {
         /// Serial of the imported snapshot, required on the first sync.
         #[arg(long)]
         base_serial: Option<u64>,
+        /// Network-only deadline, separate from local indexing time.
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..=300))]
+        timeout_seconds: Option<u64>,
     },
     /// Remove one source's stored objects and indexes.
     Purge {
@@ -209,6 +212,8 @@ enum ExportCommand {
 #[derive(Subcommand)]
 enum DatabaseCommand {
     Verify,
+    /// Read the committed object count; this does not verify index integrity.
+    Count,
     /// Write a private, versioned backup of the offline database.
     Backup {
         #[arg(long)]
@@ -351,6 +356,16 @@ fn main() -> Result<()> {
                 Store::open_existing_with_cache(&config.database, config.database_cache_bytes())?
                     .verify()?;
             println!("{}", serde_json::json!({ "objects": objects }));
+        }
+        Command::Database {
+            command: DatabaseCommand::Count,
+        } => {
+            let store =
+                Store::open_existing_with_cache(&config.database, config.database_cache_bytes())?;
+            println!(
+                "{}",
+                serde_json::json!({"objects": store.object_count()?, "integrity_verified": false})
+            );
         }
         Command::Database {
             command: DatabaseCommand::Backup { file },
@@ -522,6 +537,7 @@ fn main() -> Result<()> {
                     source,
                     endpoint,
                     base_serial,
+                    timeout_seconds,
                 },
         } => {
             ensure!(
@@ -545,11 +561,11 @@ fn main() -> Result<()> {
                     mirror.endpoint == endpoint && !mirror.object_class_filter.is_empty()
                 })
                 .map(|mirror| &mirror.object_class_filter);
-            match nrtm_client::fetch(
+            match nrtm_client::fetch_staged(
                 endpoint,
                 &source,
                 start,
-                Duration::from_secs(config.io_timeout_seconds),
+                Duration::from_secs(timeout_seconds.unwrap_or(config.io_timeout_seconds)),
                 config.max_snapshot_bytes,
             )? {
                 Some(input) => {

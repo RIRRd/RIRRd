@@ -218,13 +218,18 @@ def run(args):
     enabled = [row for row in catalog['sources'] if row['state'] == 'enabled']
     if shutil.disk_usage(args.output.parent).free < 12 * 1024**3:
         raise ValueError('At least 12 GiB free staging space is required')
-    inputs = {'schema_version': 2, 'catalog_sha256': sha256(args.catalog), 'binary_sha256': sha256(args.binary)}
+    runtime_digest = sha256(args.binary)
+    previous_binary = getattr(args, 'previous_binary', None)
+    if previous_binary and not args.resume:
+        raise ValueError('A compatible previous build requires an explicit private resume')
+    inputs = {'schema_version': 2, 'catalog_sha256': sha256(args.catalog),
+              'binary_sha256': sha256(previous_binary) if previous_binary else runtime_digest}
     completed = {}
     if args.resume:
         if args.output.is_symlink() or json.loads((args.output / 'build-inputs.json').read_text()) != inputs:
             raise ValueError('Resume requires the same private candidate, binary and source catalog')
         completed = json.loads((args.output / 'progress.json').read_text())['completed']
-        subprocess.run([str(args.binary), '--config', str(args.output / 'irrd.toml'), 'database', 'verify'],
+        subprocess.run([str(args.binary), '--config', str(args.output / 'irrd.toml'), 'database', 'count'],
                        check=True, capture_output=True, text=True, timeout=1800)
     else:
         args.output.mkdir(mode=0o700)
@@ -256,6 +261,7 @@ name = "RIRRd public test registry"
         config.write_text(config_text)
     report = {'schema_version': 1, 'built_at': now(), 'refresh_mode': catalog['refresh'],
               'binary_sha256': inputs['binary_sha256'],
+              'runtime_binary_sha256': runtime_digest,
               'classes': catalog['classes'], 'sources': [], 'total_objects': 0}
     for entry in catalog['sources']:
         if entry['state'] != 'enabled':
@@ -329,11 +335,11 @@ name = "RIRRd public test registry"
         report['total_objects'] += imported['objects']
         print(json.dumps({'source': source, 'objects': imported['objects'],
                           'import_seconds': row['import_seconds']}), flush=True)
-    verified = subprocess.run([str(args.binary), '--config', str(config), 'database', 'verify'],
+    verified = subprocess.run([str(args.binary), '--config', str(config), 'database', 'count'],
                               capture_output=True, text=True, check=True, timeout=1800)
     if config.read_text() == config_text and json.loads(verified.stdout)['objects'] != report['total_objects']:
         raise ValueError('Complete candidate integrity/count check failed')
-    if sha256(args.binary) != report['binary_sha256']:
+    if sha256(args.binary) != runtime_digest:
         raise ValueError('Binary changed during snapshot build; candidate not published')
     report['verified_at'] = now()
     config.write_text(config_text + mirror_schedule(report['sources'], catalog['classes']))
@@ -346,7 +352,7 @@ name = "RIRRd public test registry"
                                 check=True, capture_output=True, text=True)
         initial = json.loads(status.stdout)['serial'] is None
         result = subprocess.run([str(args.binary), '--config', str(config), 'source', 'sync-nrtm3',
-                                 '--source', row['source'], '--endpoint', mirror['endpoint']]
+                                 '--source', row['source'], '--endpoint', mirror['endpoint'], '--timeout-seconds', '60']
                                 + (['--base-serial', str(mirror['snapshot_serial'])] if initial else []),
                                 capture_output=True, text=True, timeout=120)
         if result.returncode:
@@ -359,8 +365,11 @@ name = "RIRRd public test registry"
                            check=True, capture_output=True, text=True, timeout=1800)
     report['snapshot_total_objects'] = report['total_objects']
     report['total_objects'] = json.loads(final.stdout)['objects']
+    if sha256(args.binary) != runtime_digest or sha256(args.catalog) != inputs['catalog_sha256']:
+        raise ValueError('Runtime or catalog changed during verification; candidate not published')
     report['verified_at'] = now()
     report['database_bytes'] = database.stat().st_size
+    report['database_sha256'] = sha256(database)
     write_json(args.output / 'sources.json', report)
     print(json.dumps({'verified_objects': report['total_objects'], 'database_bytes': report['database_bytes']}))
 
@@ -371,4 +380,6 @@ if __name__ == '__main__':
     parser.add_argument('--binary', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True, help='New private generation directory')
     parser.add_argument('--resume', action='store_true', help='Resume a private candidate with identical catalog and binary inputs')
+    parser.add_argument('--previous-binary', type=Path,
+                        help='Explicit compatible upgrade: verify this original build fingerprint when resuming with a new runtime')
     run(parser.parse_args())
