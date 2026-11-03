@@ -211,7 +211,7 @@
     el('query-kind').value = origin ? 'origin' : set ? 'set' : name === 'recursive' ? 'recursive' : 'object';
     el('query-family').value = name.endsWith('6') ? '6' : '4';
     el('query-value').value = set || name === 'recursive' ? sampleSet() : sampleASN();
-    el('query-source').value = sourceDefault(); updateCommand(); location.hash = 'query';
+    el('query-source').value = ''; updateCommand(); location.hash = 'query';
     if (run) el('query-form').requestSubmit(); else el('query-value').focus();
   }
   async function copy(value, button) {

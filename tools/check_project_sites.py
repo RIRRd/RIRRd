@@ -45,6 +45,7 @@ with tempfile.TemporaryDirectory(prefix='rirrd-two-sites-browser-') as profile:
         browser.wait('document.getElementById("query-submit") && !document.getElementById("query-submit").disabled')
         assert browser.js('document.getElementById("query-kind").value')=='origin'
         assert browser.js('document.getElementById("query-family").value')=='6'
+        assert browser.js('document.getElementById("query-source").value')==''
         assert browser.js('document.getElementById("query-value").value')=='AS3333'
         browser.wait('document.getElementById("query-status").textContent.includes("Ready to copy")')
         assert 'run=1' not in browser.js('location.search')

@@ -242,8 +242,12 @@ impl RoaTable {
         origin: u32,
         route_length: u8,
     ) -> Option<Validation> {
-        let upper = rows.partition_point(|entry| {
-            (entry.network, entry.length, entry.origin) <= (network, length, origin)
+        // Most search probes differ in network; compare the narrower key only
+        // when the address matches. Keep the same lexicographic sort order.
+        let upper = rows.partition_point(|entry| match entry.network.cmp(&network) {
+            std::cmp::Ordering::Less => true,
+            std::cmp::Ordering::Greater => false,
+            std::cmp::Ordering::Equal => (entry.length, entry.origin) <= (length, origin),
         });
         if let Some(entry) = upper.checked_sub(1).and_then(|n| rows.get(n))
             && (entry.network, entry.length) == (network, length)
