@@ -89,7 +89,11 @@ jobs:
         run: |
           packages=( "$RUNNER_TEMP"/native-packages/dist/*.deb )
           sudo apt-get install -y --no-install-recommends "${packages[0]}"
-          sudo bash deploy/packages/test-install.sh --systemd "$GITHUB_WORKSPACE/examples/example.rpsl"
+          if ! sudo bash deploy/packages/test-install.sh --systemd "$GITHUB_WORKSPACE/examples/example.rpsl"; then
+            sudo systemctl status --no-pager rust-irrd.service || true
+            sudo journalctl --no-pager -u rust-irrd.service -n 50 || true
+            exit 1
+          fi
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: native-linux-${{ matrix.rpm }}

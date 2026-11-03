@@ -20,6 +20,7 @@ state=/var/lib/rust-irrd/state
 binary=/usr/bin/rust-irrd
 pid_file=$state/package-smoke.pid
 launcher=
+bootstrap=
 started=0
 
 cleanup() {
@@ -32,6 +33,9 @@ cleanup() {
         fi
         wait "$launcher" 2>/dev/null || true
     fi
+    if [[ -n $bootstrap ]]; then
+        rm -f -- "$bootstrap"
+    fi
 }
 trap cleanup EXIT
 
@@ -43,9 +47,11 @@ test "$(systemctl --root=/ is-enabled rust-irrd.service 2>/dev/null || true)" = 
 test ! -e "$state/irrd.redb"
 systemd-analyze verify /usr/lib/systemd/system/rust-irrd.service
 runuser -u rust-irrd -- "$binary" --config "$config" config check
+bootstrap=$(mktemp "$state/package-smoke.XXXXXXXX")
+install -m 0600 -o rust-irrd -g rust-irrd -- "$fixture" "$bootstrap"
 runuser -u rust-irrd -- sh -c 'umask 077
     exec "$1" --config "$2" import snapshot --source EXAMPLE --file "$3"
-' sh "$binary" "$config" "$fixture"
+' sh "$binary" "$config" "$bootstrap"
 test "$(stat -c '%U:%G:%a' "$state/irrd.redb")" = rust-irrd:rust-irrd:600
 
 if (( supervised )); then
