@@ -1,3 +1,50 @@
+# Expanded live verification — 3 November 2026, 15:20 UTC
+
+Current static-content commit: `9b946f0bbeee938e394fb1e084bbfd7dac73e451`.
+Current HTML SHA-256: `0638d2ea112571bcb10d3ec5538ad4d5e8ce5ad00a6a4f1885d87857c9f57854`.
+
+The current service contains **2,610,758 routing objects across twelve sources**:
+RIPE, RIPE-NONAUTH, ARIN, AFRINIC, LACNIC, RADB, ALTDB, BELL, REACH, BBOI, TC and
+CANARIE. The previous five-source evidence below is historical. Five feeds remain
+pending: APNIC, IDNIC, JPIRR, NTTCOM and LEVEL3, with their exact access/connectivity
+actions listed on the dashboard and in the core source catalog.
+
+The expanded candidate stopped on unsafe TC member records without changing the
+live generation. It resumed six completed imports, withheld/reported 14 unsafe TC
+records and 32 RADB records, verified every index/count, and activated successfully
+at 15:17:18 UTC. The serving executable was subsequently updated to the verified
+15-profile build. Public submission/admin routes remain disabled. Source hashes
+are recorded; FTP relay data is explicitly labeled unauthenticated rather than
+presented as authenticated or near-real-time. Missing provider timestamps remain
+unreported. ARIN remains TCP-only and excluded from all HTTP queries.
+
+Current code evidence: 139 unit/17 integration/two client tests, same release tests
+under ARM64 QEMU, formatting/strict Clippy/RustSec pass; 71 pinned authoritative
+HTTP decisions, 45 TCP and 45 HTTP WHOIS cases, 16 new AS-block/domain schema cases.
+New class tests include maintainer proof, zone-contact references, deletion guards,
+source isolation, rollback and redaction. Full parity remains incomplete.
+
+The updated public browser passed all five views at 320/390/1440px and normal
+object/prefix/origin/set queries without third-party requests or JS exceptions.
+Every new source returned a real object. TCP queries to RADB AS3 passed both
+advertised addresses. External trusted-TLS HTTP WHOIS probes returned AS3/RADB:
+
+- [Buffalo IPv4](https://api.globalping.io/v1/measurements/2GSmK1tFe8aLzffCE00021R8a)
+- [Singapore IPv6](https://api.globalping.io/v1/measurements/2BGE4qjs1Bv83oBVu00021R8a)
+
+Earlier exact-object probes for RADB AS13335 correctly returned 204: that source
+has routes originated by AS13335 but no matching aut-num object. Its actual origin
+expansion generated 685 IPv4 and 270 IPv6 prefixes through bgpq4; BIRD and FRR
+accepted the complete generated candidates in isolated parser containers. No
+router was reconfigured. Benchmarks remain separately scoped synthetic results.
+
+MIT/AI disclosures, TLS maintenance, services, firewall and private runtime paths
+are unchanged from the deployment details below. No DNS action remains. Both the
+source repository and main remain private/unchanged respectively; new Actions
+results remain unavailable through the deploy key.
+
+---
+
 # Live deployment verification — 3 November 2026
 
 Public URL: https://rirrd.co.uk/ · [Live dashboard](https://rirrd.co.uk/dashboard/)
