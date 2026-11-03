@@ -79,6 +79,8 @@ On opening an existing registry database, the server adds missing lookup indexes
 
 Stop the daemon before purging a source. Use `source purge --source EXAMPLE --yes` with the same configuration to remove that source's objects and their index entries. A repeated purge succeeds. Remove the source from configuration separately if it should no longer be selectable. Purge is logical removal from the registry and database indexes.
 
+Run `database compact --yes` with the daemon stopped to reclaim free storage where the database engine can do so. The command verifies application indexes and journal history before and after compaction and prints the before and after file lengths.
+
 ## Offline NRTMv3 mirroring
 
 Import the source's full snapshot first and record its published serial. Stop the daemon before applying a transcript or syncing with a peer. For a snapshot whose serial was 41, use one of the following:
@@ -100,6 +102,18 @@ EXAMPLE = ["127.0.0.1", "::1"]
 ```
 
 Peers can request `-g EXAMPLE:3:42-LAST` or give an explicit end serial. Responses allow at most 1,024 operations and 4 MiB of raw object text per request. Use an explicit range when catching up in chunks. The server checks the source-specific peer list independently of the connection's WHOIS source selection. Journal text uses the same credential redaction as public WHOIS. Snapshot replacement and source purge clear retained journal history.
+
+## Offline NRTMv4 verification
+
+Provide an independently obtained P-256 public key in SPKI PEM format, the compact ES256 notification, and optionally a local snapshot or delta:
+
+```sh
+rust-irrd source verify-nrtm4 --source EXAMPLE \
+  --public-key peer.pem --notification update-notification-file.jose \
+  --snapshot snapshot.json.gz
+```
+
+Use `--delta updates.json.gz --delta-version 42` to select a signed delta reference. Verification follows the pinned IRRd 4.5.4 profile and checks the signed metadata, timestamp, source, session, version, SHA-256 hash and JSON Text Sequence framing. This command uses local files and a trusted key supplied by the operator. Database application, persistent replay protection, automated key rotation and HTTPS mirroring remain open.
 
 ## Offline route origin validation
 

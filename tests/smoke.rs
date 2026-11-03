@@ -518,6 +518,22 @@ TEST = ["127.0.0.1"]
             .output()
             .unwrap(),
     );
+    assert!(
+        !cli(&config)
+            .args(["database", "compact"])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    let compacted = successful(
+        cli(&config)
+            .args(["database", "compact", "--yes"])
+            .output()
+            .unwrap(),
+    );
+    assert!(serde_json::from_slice::<Value>(&compacted).unwrap()["file_bytes_after"].is_u64());
+    assert_eq!(status(), 44);
 
     let (_server, address) = Server::start(&config);
     let journal = whois(address, b"-g test:3:42-LAST\n");
@@ -618,5 +634,112 @@ max_snapshot_bytes = 4096
             state
         );
     }
+    assert!(!workspace.path().join("test.redb").exists());
+}
+
+#[test]
+fn nrtm4_cli_verifies_signed_metadata_and_the_same_compressed_file_it_parses() {
+    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+    use p256::{
+        ecdsa::{Signature, SigningKey, signature::Signer},
+        pkcs8::{EncodePublicKey, LineEnding},
+    };
+    use sha2::{Digest, Sha256};
+
+    let workspace = tempfile::tempdir().unwrap();
+    let config = workspace.path().join("irrd.toml");
+    fs::write(
+        &config,
+        r#"database = "test.redb"
+sources = ["TEST"]
+listen = "127.0.0.1:0"
+max_connections = 4
+io_timeout_seconds = 2
+max_snapshot_bytes = 4096
+"#,
+    )
+    .unwrap();
+    let session = "123e4567-e89b-42d3-a456-426614174000";
+    let header = serde_json::json!({
+        "nrtm_version": 4, "type": "snapshot", "source": "TEST", "session_id": session, "version": 7
+    });
+    let object = serde_json::json!({ "object": "aut-num: AS64496\nsource: TEST\n" });
+    let mut gzip = GzEncoder::new(Vec::new(), Compression::fast());
+    writeln!(gzip, "\x1e{header}\n\x1e{object}").unwrap();
+    let mut compressed = gzip.finish().unwrap();
+    let hash: String = Sha256::digest(&compressed)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    let file = workspace.path().join("snapshot.gz");
+    fs::write(&file, &compressed).unwrap();
+
+    let now = time::OffsetDateTime::now_utc();
+    let timestamp = format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+        now.year(),
+        u8::from(now.month()),
+        now.day(),
+        now.hour(),
+        now.minute(),
+        now.second()
+    );
+    let payload = serde_json::json!({
+        "nrtm_version": 4, "type": "notification", "source": "TEST", "session_id": session,
+        "version": 7, "timestamp": timestamp, "deltas": [],
+        "snapshot": { "version": 7, "url": "snapshot.json.gz", "hash": hash }
+    });
+    let signing_key = SigningKey::from_slice(&[7; 32]).unwrap();
+    let signing_input = format!(
+        "{}.{}",
+        URL_SAFE_NO_PAD.encode(br#"{"alg":"ES256"}"#),
+        URL_SAFE_NO_PAD.encode(serde_json::to_vec(&payload).unwrap())
+    );
+    let signature: Signature = signing_key.sign(signing_input.as_bytes());
+    let notification = workspace.path().join("update-notification-file.jose");
+    fs::write(
+        &notification,
+        format!(
+            "{signing_input}.{}",
+            URL_SAFE_NO_PAD.encode(signature.to_bytes())
+        ),
+    )
+    .unwrap();
+    let public_key = workspace.path().join("public.pem");
+    fs::write(
+        &public_key,
+        signing_key
+            .verifying_key()
+            .to_public_key_pem(LineEnding::LF)
+            .unwrap(),
+    )
+    .unwrap();
+
+    let verify = || {
+        let mut command = cli(&config);
+        command
+            .args([
+                "source",
+                "verify-nrtm4",
+                "--source",
+                "TEST",
+                "--notification",
+            ])
+            .arg(&notification)
+            .arg("--public-key")
+            .arg(&public_key)
+            .arg("--snapshot")
+            .arg(&file);
+        command
+    };
+    let result = successful(verify().output().unwrap());
+    let result: Value = serde_json::from_slice(&result).unwrap();
+    assert_eq!(result["file"]["version"], 7);
+    assert_eq!(result["file"]["objects"], 1);
+    compressed.push(0);
+    fs::write(&file, compressed).unwrap();
+    let tampered = verify().output().unwrap();
+    assert!(!tampered.status.success());
+    assert!(String::from_utf8_lossy(&tampered.stderr).contains("hash does not match"));
     assert!(!workspace.path().join("test.redb").exists());
 }

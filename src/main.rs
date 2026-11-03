@@ -4,6 +4,9 @@ mod config;
 mod graphql;
 mod import;
 mod nrtm3;
+mod nrtm4;
+mod nrtm4_local;
+mod nrtm4_records;
 mod nrtm_client;
 mod rpki;
 mod rpsl;
@@ -12,7 +15,7 @@ mod storage;
 mod whois;
 
 use std::{
-    fs::File,
+    fs::{self, File},
     io::{BufRead, BufReader, BufWriter, Write},
     net::SocketAddr,
     path::{Path, PathBuf},
@@ -81,6 +84,21 @@ enum RpkiCommand {
 
 #[derive(Subcommand)]
 enum SourceCommand {
+    /// Verify a signed NRTMv4 notification and optionally a referenced local file.
+    VerifyNrtm4 {
+        #[arg(long)]
+        source: String,
+        #[arg(long)]
+        notification: PathBuf,
+        #[arg(long)]
+        public_key: PathBuf,
+        #[arg(long, conflicts_with = "delta")]
+        snapshot: Option<PathBuf>,
+        #[arg(long, requires = "delta_version")]
+        delta: Option<PathBuf>,
+        #[arg(long, requires = "delta")]
+        delta_version: Option<u64>,
+    },
     /// Report the last committed incremental serial for one source.
     Status {
         #[arg(long)]
@@ -131,6 +149,11 @@ enum ExportCommand {
 #[derive(Subcommand)]
 enum DatabaseCommand {
     Verify,
+    /// Reclaim unused space in the offline registry.
+    Compact {
+        #[arg(long, required = true)]
+        yes: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -159,6 +182,36 @@ fn main() -> Result<()> {
         .init();
     let config = Config::load(&cli.config)?;
     match cli.command {
+        Command::Source {
+            command:
+                SourceCommand::VerifyNrtm4 {
+                    source,
+                    notification,
+                    public_key,
+                    snapshot,
+                    delta,
+                    delta_version,
+                },
+        } => {
+            ensure!(config.sources.contains(&source), "source is not configured");
+            let selected = snapshot
+                .as_deref()
+                .map(nrtm4_local::SelectedFile::Snapshot)
+                .or_else(|| {
+                    delta
+                        .as_deref()
+                        .zip(delta_version)
+                        .map(|(path, version)| nrtm4_local::SelectedFile::Delta(path, version))
+                });
+            let result = nrtm4_local::verify(
+                &source,
+                &notification,
+                &public_key,
+                selected,
+                config.max_snapshot_bytes,
+            )?;
+            println!("{result}");
+        }
         Command::Config {
             command: ConfigCommand::Check,
         } => println!("configuration valid"),
@@ -167,6 +220,21 @@ fn main() -> Result<()> {
         } => {
             let objects = Store::open_existing(&config.database)?.verify()?;
             println!("{}", serde_json::json!({ "objects": objects }));
+        }
+        Command::Database {
+            command: DatabaseCommand::Compact { yes },
+        } => {
+            ensure!(yes, "database compact requires --yes");
+            let mut store = Store::open_for_service(&config.database)?;
+            let before = fs::metadata(&config.database)?.len();
+            let compacted = store.compact()?;
+            let after = fs::metadata(&config.database)?.len();
+            println!(
+                "{}",
+                serde_json::json!({
+                    "compacted": compacted, "file_bytes_before": before, "file_bytes_after": after,
+                })
+            );
         }
         Command::Import {
             command: ImportCommand::Snapshot { source, file },

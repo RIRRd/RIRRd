@@ -34,3 +34,7 @@ The release build at `e215aa5` was measured on the same host with the same comma
 | 32 | 5,579 | 1,280 | 4.46–6.06 ms |
 
 Fresh import took 0.268–0.369 s, plain replacement 0.541–0.674 s, and gzip replacement 0.459–0.478 s. Observed file lengths were unchanged. The 32-client run was slower than the foundation checkpoint. Repeat alternating builds on an isolated host and profile the client and server before attributing the difference to a code path.
+
+## Offline compaction experiment
+
+The [raw compaction report](windows-compaction-2026-11-03.json) records one debug-build run with the same 10,000-object input. Two plain imports produced a 135,278,592-byte file. With the daemon stopped, `database compact --yes` reduced its length to 11,837,440 bytes in about one second, including logical verification. A separate `database verify` process reopened the file and confirmed all 10,000 objects. The 91.25% reduction applies to this single synthetic file. Replacement still has the same peak file length in this run.

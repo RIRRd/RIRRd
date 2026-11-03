@@ -132,6 +132,22 @@ impl Store {
         Ok(Self { db })
     }
 
+    /// Compact an offline registry after validating its application indexes and metadata.
+    pub fn compact(&mut self) -> Result<bool> {
+        let before = self
+            .verify()
+            .context("verifying registry before compaction")?;
+        let compacted = self.db.compact().context("compacting registry database")?;
+        let after = self
+            .verify()
+            .context("verifying registry after compaction")?;
+        ensure!(
+            before == after,
+            "compaction changed the registry object count"
+        );
+        Ok(compacted)
+    }
+
     /// Publish a source's replacement snapshot and its index in one durable commit.
     /// Readers continue to see the previous committed state while records are processed.
     /// An empty iterator clears the named source.
@@ -1617,6 +1633,63 @@ mod tests {
     }
 
     #[test]
+    fn compaction_preserves_sources_and_journal_after_reopen() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("registry.redb");
+        let route = object("TEST", "route", "192.0.2.0/24AS64496");
+        let other = object("TEST2", "aut-num", "AS64497");
+        let sources = [String::from("TEST"), String::from("TEST2")];
+        let store = Store::open(&path)?;
+        let remarks = "x".repeat(8192);
+        store.replace_source(
+            "TEST",
+            (1..=128).map(|asn| {
+                let mut record = object("TEST", "aut-num", &format!("AS{asn}"));
+                record.text.push_str(&format!("remarks: {remarks}\n"));
+                Ok(record)
+            }),
+        )?;
+        store.replace_source("TEST2", [Ok(other.clone())])?;
+        store.replace_source("TEST", [Ok(object("TEST", "aut-num", "AS64496"))])?;
+        store.apply_nrtm3(
+            "TEST",
+            (10, 10),
+            Some(9),
+            [Ok(Operation {
+                kind: Kind::Add,
+                serial: 10,
+                object: route.clone(),
+            })],
+        )?;
+        drop(store);
+
+        let mut store = Store::open_existing(&path)?;
+        store.compact()?;
+        drop(store);
+        let store = Store::open_existing(&path)?;
+        assert_eq!(store.verify()?, 3);
+        assert_eq!(store.exact("AS64497", &sources, 2)?, [other]);
+        assert_eq!(
+            store.routes_at_prefix("route", "192.0.2.0/24", &sources, 2)?,
+            std::slice::from_ref(&route)
+        );
+        assert_eq!(store.source_serial("TEST")?, Some(10));
+        let (end, journal) = store
+            .nrtm3_journal("TEST", 10, None, 1, route.text.len())?
+            .unwrap();
+        assert_eq!(end, 10);
+        assert_eq!(
+            journal,
+            [Operation {
+                kind: Kind::Add,
+                serial: 10,
+                object: route
+            }]
+        );
+        Ok(())
+    }
+
+    #[test]
     fn verifies_index_coverage_and_dangling_references() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("registry.redb");
@@ -1626,6 +1699,13 @@ mod tests {
         drop(Database::create(&path)?);
         assert!(Store::open_for_service(&path).is_err());
         assert!(Store::open_existing(&path)?.verify().is_err());
+        assert!(
+            Store::open_existing(&path)?
+                .compact()
+                .unwrap_err()
+                .to_string()
+                .contains("verifying registry before compaction")
+        );
 
         let store = Store::open(&path)?;
         store.replace_source("TEST", [Ok(object("TEST", "aut-num", "AS64496"))])?;
