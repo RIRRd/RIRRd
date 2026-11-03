@@ -12,7 +12,7 @@ practical on smaller hosts. Resource profiles tune budgets; they are not a
 separate product with fewer features. Authentication, source isolation, durable
 updates and correct routing policy take priority over benchmark gains.
 
-Use a focused `codex/` or contributor branch, preserve local work and submit
+Use a focused `feature/`, `fix/` or `release/` branch, preserve local work and submit
 reviewable changes. Do not push directly to main or force-push shared branches.
 Read the compatibility matrix and checkpoint before claiming a feature works.
 Use the pinned official IRRd oracle for behavior comparisons and record exact

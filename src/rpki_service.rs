@@ -316,9 +316,19 @@ fn validator(
         let started = Instant::now();
         history.mark_update_start();
         let run = (|| -> Result<()> {
-            let (report, metrics) =
-                routinator::payload::ValidationReport::process(&engine, &settings, initial)
-                    .map_err(|_| anyhow::anyhow!("RPKI validation run failed"))?;
+            let first = routinator::payload::ValidationReport::process(&engine, &settings, initial);
+            // A cached quick pass can encounter a newly published repository.
+            // Fall back to full validation immediately, rather than spending
+            // the ordinary failure retry interval with no initial dataset.
+            let (report, metrics) = match first {
+                Ok(report) => report,
+                Err(_) if initial && !*shutdown.borrow() => {
+                    tracing::info!("RPKI cached quick pass incomplete; starting full validation");
+                    routinator::payload::ValidationReport::process(&engine, &settings, false)
+                        .map_err(|_| anyhow::anyhow!("RPKI validation run failed"))?
+                }
+                Err(_) => return Err(anyhow::anyhow!("RPKI validation run failed")),
+            };
             let anchor_count = metrics
                 .tals
                 .iter()

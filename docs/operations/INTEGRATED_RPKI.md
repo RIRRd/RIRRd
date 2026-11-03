@@ -31,7 +31,9 @@ accepting all five anchors does not establish complete repository coverage.
 The engine rejects payloads covered by unsafe resources, rather than ignoring
 that protection to increase its count.
 
-The first cache pass can be incomplete. Until a complete usable run publishes,
+The first cached quick pass can be incomplete. In that case the beta immediately
+falls back to a full validation pass instead of waiting the ordinary sixty-second
+retry interval. Until a complete usable run publishes,
 `GET /v1/rpki/validate` returns HTTP 503. A successful run atomically replaces
 the origin-validation index and RTR history. Failed refreshes retain only a
 still-fresh prior dataset. Expired or failed publication state is unavailable,

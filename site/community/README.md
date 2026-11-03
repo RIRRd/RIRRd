@@ -12,26 +12,30 @@ This is a separate product/deployment from the self-hosted Rust daemon.
   in the United Kingdom by HYEHOST LLC. Hosting metadata was supplied by the owner;
   no city or financial sponsorship is inferred.
 
+The public community domain is **irrd.tools**. **rirrd.co.uk** is the separate
+project showcase, built from `site/project/`. Both have distinct SVG identities.
+
 ## Build and deploy
 
 From a clean source checkout, run:
 
 ```sh
+python3 site/project/build.py
 python3 site/community/build.py
-sudo sh site/community/deploy.sh
+sudo sh site/deploy.sh
 ```
 
 The build requires the distribution's Python Markdown package. Local previews
 can use `--allow-dirty --output /private/preview`; published builds record a clean
 commit in `build.json`. Only generated static assets are copied to the web root.
 Caddy configuration is validated before reload and the existing config/site is
-backed up under `/var/backups/rirrd-community/`. The registry daemon is not
+backed up under `/var/backups/rirrd-web/`. The registry daemon is not
 restarted by website deployment. The existing read-only gateway supplies live
 queries and telemetry on loopback; internal addresses are not public examples.
 
 Services and paths:
 
-- `caddy.service`: `/var/www/rirrd-community`, public HTTPS and HTTP redirect.
+- `caddy.service`: `/var/www/irrd-tools`, public HTTPS and HTTP redirect.
 - `rirrd-live-gateway.service`: existing public query gateway on loopback 9281.
 - `rirrd-community.service`: separate submission service on loopback 9282, under
   the unprivileged `rirrd-community` account, 64 MiB / 20% CPU ceiling.
@@ -74,7 +78,7 @@ There is no payment integration or sponsorship contract implied by the form.
 
 ```sh
 python3 -m unittest discover -s site/community -p 'test_*.py'
-python3 tools/check_community_ui.py --url https://rirrd.co.uk/
+python3 tools/check_community_ui.py --url https://irrd.tools/
 ```
 
 The browser's `--submit-preview` option is only for an isolated temporary queue.

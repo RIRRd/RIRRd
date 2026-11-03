@@ -5,8 +5,8 @@ the earlier static-only deployment restriction for **read-only queries**. No pub
 authoritative submission, account administration, journal or mirroring endpoint
 is enabled. Full IRRd parity and production qualification remain incomplete.
 
-- Dashboard: https://rirrd.co.uk/dashboard/
-- WHOIS/bgpq4: `rirrd.co.uk`, TCP port 43, IPv4 and IPv6.
+- Dashboard: https://irrd.tools/dashboard/
+- WHOIS/bgpq4: `irrd.tools`, TCP port 43, IPv4 and IPv6.
 - HTTP WHOIS: `GET /v1/whois/?q=AS3333`.
 - GraphQL: `POST /graphql/`, JSON body, bounded read-only schema.
 - Aggregate live telemetry: `GET /dashboard/live.json`.
@@ -65,12 +65,14 @@ without copying a multi-gigabyte serving database during downtime.
 
 ## Isolation and limits
 
-Distribution Caddy terminates TLS, retains automatic renewal and serves project
-the separate community site from `/var/www/rirrd-community` (an atomic static
-release symlink). Its source, reviewed node directory and private submission service
-are in [`site/community/`](../../site/community/README.md). The reusable
-self-hosted console is independently bundled from `web/dashboard/`. Its narrow query allowlist proxies to a
-loopback-only Python gateway on port 9281; all other registry routes remain 404.
+Distribution Caddy terminates TLS and retains automatic renewal for both domains.
+`rirrd.co.uk` serves the project from `/var/www/rirrd-project`; `irrd.tools` serves
+the community network from `/var/www/irrd-tools`. Both are atomic release symlinks.
+Sources and the backed-up deployment helper are under `site/`. The community form
+has its own loopback service; it cannot submit registry updates. Legacy project
+query endpoints remain read-only compatibility aliases, while dashboard navigation
+redirects to the community domain. Its narrow query allowlist proxies to the
+loopback gateway on 9281; all other registry routes remain 404.
 The Rust HTTP service stays on loopback port 9280 and validates Host. The gateway
 uses a literal loopback backend, never an arbitrary user-supplied URL.
 
@@ -213,3 +215,14 @@ activation can reuse that verification only if both the runtime fingerprint and
 complete database and configuration fingerprints still match. If the runtime differs, it must run
 a full integrity/count verification before switching. Daily bootstrap downloads
 use a 60-second network-only CLI deadline; local indexing starts after staging.
+
+## Observed chart history
+
+The gateway's `/dashboard/history.json` retains up to 1,440 one-minute aggregate
+samples for 24 hours. It includes actual process RSS/CPU, committed object counts,
+HTTP gateway rate/recent p95 and usable validated VRP counts. No visitor addresses,
+query text or operator contacts are stored. The private history file is
+`/var/lib/rirrd-telemetry/history.json`, mode 0600 under a 0700 StateDirectory.
+A restart preserves observations but resets gateway counters; the first new rate
+is unavailable rather than a negative or fabricated sample. Missing observations
+remain gaps. This is monitoring, not a throughput benchmark or whole-VM sizing.
