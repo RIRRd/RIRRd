@@ -8,8 +8,10 @@ mod import;
 mod maintainer_auth;
 mod nrtm3;
 mod nrtm4;
+mod nrtm4_apply;
 mod nrtm4_local;
 mod nrtm4_records;
+mod nrtm4_state;
 mod nrtm_client;
 mod rpki;
 mod rpsl;
@@ -99,6 +101,19 @@ enum RpkiCommand {
 
 #[derive(Subcommand)]
 enum SourceCommand {
+    /// Apply a signed NRTMv4 snapshot or delta chain from local files.
+    ApplyNrtm4 {
+        #[arg(long)]
+        source: String,
+        #[arg(long)]
+        notification: PathBuf,
+        /// Independently trusted P-256 public key, required for the first apply.
+        #[arg(long)]
+        public_key: Option<PathBuf>,
+        /// Supply each selected file in snapshot-then-delta order.
+        #[arg(long = "file")]
+        files: Vec<PathBuf>,
+    },
     /// Read committed authoritative changes, newest first.
     History {
         #[arg(long)]
@@ -207,6 +222,35 @@ fn main() -> Result<()> {
         .init();
     let config = Config::load(&cli.config)?;
     match cli.command {
+        Command::Source {
+            command:
+                SourceCommand::ApplyNrtm4 {
+                    source,
+                    notification,
+                    public_key,
+                    files,
+                },
+        } => {
+            ensure!(
+                !config.authoritative_sources.contains(&source),
+                "source is authoritative"
+            );
+            ensure!(config.sources.contains(&source), "source is not configured");
+            let store = if config.database.exists() {
+                Store::open_for_service(&config.database)?
+            } else {
+                Store::open(&config.database)?
+            };
+            let result = nrtm4_apply::apply(
+                &store,
+                &source,
+                &notification,
+                public_key.as_deref(),
+                &files,
+                config.max_snapshot_bytes,
+            )?;
+            println!("{result}");
+        }
         Command::Source {
             command:
                 SourceCommand::VerifyNrtm4 {
@@ -325,7 +369,15 @@ fn main() -> Result<()> {
         } => {
             let store = open_source(&config, &source)?;
             let serial = store.source_serial(&source)?;
-            print_serial(&source, serial);
+            let nrtm4 = store.nrtm4_state(&source)?.map(|state| {
+                serde_json::json!({
+                    "session_id": state.session_id, "version": state.version,
+                })
+            });
+            println!(
+                "{}",
+                serde_json::json!({ "source": source, "serial": serial, "nrtm4": nrtm4 })
+            );
         }
         Command::Source {
             command: SourceCommand::History { source, limit },

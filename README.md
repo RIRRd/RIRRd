@@ -113,7 +113,17 @@ rust-irrd source verify-nrtm4 --source EXAMPLE \
   --snapshot snapshot.json.gz
 ```
 
-Use `--delta updates.json.gz --delta-version 42` to select a signed delta reference. Verification follows the pinned IRRd 4.5.4 profile and checks the signed metadata, timestamp, source, session, version, SHA-256 hash and JSON Text Sequence framing. This command uses local files and a trusted key supplied by the operator. Database application, persistent replay protection, automated key rotation and HTTPS mirroring remain open.
+Use `--delta updates.json.gz --delta-version 42` to select a signed delta reference. Verification follows the pinned IRRd 4.5.4 profile and checks the signed metadata, timestamp, source, session, version, SHA-256 hash and JSON Text Sequence framing.
+
+To mirror from local files, stop the daemon and use `source apply-nrtm4`. Supply `--public-key` on the first application only. Repeat `--file` in the order required by the signed plan, starting with the snapshot if the plan requires one, then deltas in ascending version order:
+
+```sh
+rust-irrd source apply-nrtm4 --source EXAMPLE \
+  --public-key peer.pem --notification update-notification-file.jose \
+  --file snapshot.json.gz --file delta.json.gz
+```
+
+Objects, indexes and trust state commit together. Later applications use the persisted key and support an authenticated successor key and a new session snapshot. Old sessions and keys are rejected. Supply no files when the notification is already current. Source status shows the NRTMv4 session and version. Generic purge, snapshot replacement and NRTMv3 updates reject NRTMv4-managed sources to preserve their replay protection. HTTPS retrieval, online scheduling and server publication remain open.
 
 ## Offline route origin validation
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare IRRd-style exact-key WHOIS responses from two explicit TCP endpoints."""
+"""Compare IRRd-style WHOIS responses from two explicit TCP endpoints."""
 
 import argparse
 import math
@@ -24,7 +24,20 @@ DEFAULT_CASES = (
     ("A", "!mroute6,2001:DB8::/32-AS64496"),
     ("D", "!mroute6,2001:db8::/32AS64497"),
     ("A", "!mmntner,DIFFERENTIAL-MNT"),
+    ("A", "!r192.0.2.0/24"),
+    ("A", "!r192.0.2.0/24,o"),
+    ("D", "!r192.0.2.0/25"),
+    ("D", "!r192.0.2.0/25,o"),
+    ("A", "!r2001:db8::/32"),
+    ("A", "!r2001:db8::/32,o"),
+    ("D", "!r2001:db8:1::/48"),
+    ("D", "!r2001:db8:1::/48,o"),
+    ("A", "!gAS64496"),
+    ("D", "!gAS64497"),
+    ("A", "!6AS64496"),
+    ("D", "!6AS64497"),
 )
+QUERY_PREFIXES = ("!m", "!r", "!g", "!6")
 MAX_RESPONSE_BYTES = 256 * 1024
 ATTRIBUTE_PADDING = re.compile(rb"^([a-zA-Z][a-zA-Z0-9-]*:)[ \t]*")
 AUTH_PLACEHOLDER = re.compile(
@@ -64,11 +77,11 @@ def read_cases(path):
         if (
             not separator
             or expected not in {"A", "C", "D", "F"}
-            or not query.startswith("!m")
+            or not query.startswith(QUERY_PREFIXES)
             or not 2 <= len(query) <= 510
             or any(not 32 <= ord(char) <= 126 for char in query)
         ):
-            raise ValueError(f"corpus line {number}: expected STATUS<TAB>!mquery")
+            raise ValueError(f"corpus line {number}: expected STATUS<TAB>!m/!r/!g/!6 query")
         cases.append((expected, query))
     if not cases:
         raise ValueError("corpus contains no queries")
@@ -130,11 +143,15 @@ def normalise(body, attribute_padding, auth_placeholder):
     return b"\n".join(result)
 
 
+def returns_objects(query):
+    return query.startswith("!m") or (query.startswith("!r") and not query.endswith(",o"))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--reference", type=endpoint, required=True, help="pinned upstream HOST:PORT")
     parser.add_argument("--candidate", type=endpoint, required=True, help="Rust daemon HOST:PORT")
-    parser.add_argument("--corpus", type=Path, help="ASCII STATUS<TAB>!mquery file")
+    parser.add_argument("--corpus", type=Path, help="ASCII STATUS<TAB>!m/!r/!g/!6 query file")
     parser.add_argument("--timeout", type=timeout_seconds, default=5.0, help="seconds per endpoint and case")
     parser.add_argument(
         "--normalize-attribute-padding",
@@ -164,7 +181,7 @@ def main():
             if status != expected:
                 print(f"{query!r}: {role} returned {status}, expected {expected}", file=sys.stderr)
                 continue
-            if status == "A":
+            if status == "A" and returns_objects(query):
                 body = normalise(body, args.normalize_attribute_padding, args.allow_filtered_auth_omission)
             results.append(body)
 

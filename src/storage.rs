@@ -21,6 +21,8 @@ use tokio::sync::RwLock;
 use crate::{
     authoritative::{Change, authorize},
     nrtm3::{Kind, Operation},
+    nrtm4_records::Record as Nrtm4Record,
+    nrtm4_state::CommittedState,
     rpsl::{Object, lookup_attributes},
 };
 
@@ -54,6 +56,8 @@ const INETNUM_COVER: TableDefinition<InetnumCoverKey<'static>, ()> =
 // A row is (source, field, normalized value, class, object key).
 const INVERSE: TableDefinition<InverseKey, ()> = TableDefinition::new("inverse_v1");
 const SERIALS: TableDefinition<&str, u64> = TableDefinition::new("source_serials_v1");
+const NRTM4_STATE: TableDefinition<&str, &str> = TableDefinition::new("nrtm4_state_v1");
+const MAX_NRTM4_STATE_BYTES: usize = 16 * 1024 * 1024;
 // The journal value is (is_add, object class, object key, raw object text).
 const JOURNAL: TableDefinition<JournalKey, JournalValue> = TableDefinition::new("nrtm3_journal_v1");
 // Keyed by source and sequence. The value is (timestamp, class, key, action).
@@ -126,6 +130,7 @@ impl Store {
             let mut inverse = write.open_table(INVERSE)?;
             let mut inetnum_cover = write.open_table(INETNUM_COVER)?;
             write.open_table(SERIALS)?;
+            write.open_table(NRTM4_STATE)?;
             write.open_table(JOURNAL)?;
             let audit = write.open_table(AUTH_AUDIT)?;
             let mut protected = write.open_table(PROTECTED_NAMES)?;
@@ -220,6 +225,7 @@ impl Store {
         let mut count = 0;
         let mut skipped_lookup_values = 0;
         {
+            reject_nrtm4_source(&write, &source)?;
             let mut records = write.open_table(OBJECTS)?;
             let mut indexes = WriteIndexes::open(&write)?;
             write.open_table(SERIALS)?.remove(source.as_str())?;
@@ -228,26 +234,10 @@ impl Store {
                 |_, _| false,
             )?;
 
-            // Appending the smallest character gives the exclusive end of this source's range.
-            let next_source = format!("{source}\0");
-            let old_records = records.extract_from_if(
-                (source.as_str(), "", "")..(next_source.as_str(), "", ""),
-                |_, _| true,
-            )?;
-            for entry in old_records {
-                let (identity, text) = entry?;
-                indexes.remove(identity.value(), text.value())?;
-            }
-
+            clear_source_objects(&mut records, &mut indexes, &source)?;
             for object in objects {
-                let object = object?;
-                let identity = validate_identity(&source, &object)?;
-                let (_, class, key) = identity;
-                ensure!(
-                    records.insert(identity, object.text.as_str())?.is_none(),
-                    "duplicate {class} object {key} in {source}"
-                );
-                skipped_lookup_values += indexes.insert(&object)?;
+                skipped_lookup_values +=
+                    insert_snapshot_object(&mut records, &mut indexes, &source, &object?)?;
                 count += 1;
             }
         }
@@ -272,6 +262,7 @@ impl Store {
         let expire_through = end.saturating_sub(NRTM3_RETAINED_OPERATIONS);
         let mut skipped_lookup_values = 0;
         {
+            reject_nrtm4_source(&write, &source)?;
             let mut serials = write.open_table(SERIALS)?;
             let mut journal = write.open_table(JOURNAL)?;
             let mut records = write.open_table(OBJECTS)?;
@@ -366,6 +357,138 @@ impl Store {
         Ok(serials.get(source.as_str())?.map(|serial| serial.value()))
     }
 
+    /// Read the committed NRTMv4 trust and session state for a source.
+    pub fn nrtm4_state(&self, source: &str) -> Result<Option<CommittedState>> {
+        let source = canonical_source(source)?;
+        let read = self.db.begin_read()?;
+        read.open_table(OBJECTS)
+            .context("missing or invalid registry objects table")?;
+        let state = match read.open_table(NRTM4_STATE) {
+            Ok(table) => table,
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        state
+            .get(source.as_str())?
+            .map(|value| decode_nrtm4_state(&source, value.value()))
+            .transpose()
+    }
+
+    /// Apply a verified snapshot and/or ordered deltas with the associated trust transition.
+    /// The caller verifies every selected file, and the iterator must report any trailing error.
+    pub fn apply_nrtm4(
+        &self,
+        source: &str,
+        expected: Option<&CommittedState>,
+        next: &CommittedState,
+        replace: bool,
+        records: impl IntoIterator<Item = Result<Nrtm4Record>>,
+    ) -> Result<u64> {
+        let source = canonical_source(source)?;
+        ensure!(next.source == source, "NRTMv4 next state source mismatch");
+        next.validate().context("validating NRTMv4 next state")?;
+        let encoded = serde_json::to_string(next).context("encoding NRTMv4 next state")?;
+        ensure!(
+            encoded.len() <= MAX_NRTM4_STATE_BYTES,
+            "NRTMv4 state exceeds byte limit"
+        );
+
+        let _gate = self.query_gate.blocking_write();
+        let mut write = self.db.begin_write()?;
+        write.set_durability(Durability::Immediate);
+        let mut count = 0;
+        let mut skipped_lookup_values = 0;
+        {
+            let mut state = write.open_table(NRTM4_STATE)?;
+            let current = state
+                .get(source.as_str())?
+                .map(|value| decode_nrtm4_state(&source, value.value()))
+                .transpose()?;
+            ensure!(
+                current.as_ref() == expected,
+                "NRTMv4 state changed after planning"
+            );
+            let serials = write.open_table(SERIALS)?;
+            ensure!(
+                serials.get(source.as_str())?.is_none(),
+                "cannot apply NRTMv4 to a source with a committed NRTM serial"
+            );
+            let audit = write.open_table(AUTH_AUDIT)?;
+            ensure!(
+                audit
+                    .range((source.as_str(), 0)..=(source.as_str(), u64::MAX))?
+                    .next()
+                    .transpose()?
+                    .is_none(),
+                "cannot apply NRTMv4 to a source with authoritative history"
+            );
+
+            let mut metadata_only = false;
+            if let Some(current) = current {
+                if current.session_id == next.session_id {
+                    ensure!(next.version >= current.version, "NRTMv4 version regression");
+                    metadata_only = next.version == current.version;
+                    ensure!(
+                        !metadata_only || !replace,
+                        "cannot replace an unchanged NRTMv4 version"
+                    );
+                } else {
+                    ensure!(replace, "new NRTMv4 session requires a snapshot");
+                }
+            } else {
+                ensure!(replace, "initial NRTMv4 apply requires a snapshot");
+            }
+
+            let mut objects = write.open_table(OBJECTS)?;
+            let mut indexes = WriteIndexes::open(&write)?;
+            if replace {
+                clear_source_objects(&mut objects, &mut indexes, &source)?;
+            }
+            let mut snapshot_phase = replace;
+            for record in records {
+                let record = record?;
+                ensure!(
+                    !metadata_only,
+                    "unchanged NRTMv4 version cannot apply records"
+                );
+                match record {
+                    Nrtm4Record::Snapshot(object) => {
+                        ensure!(
+                            snapshot_phase,
+                            "NRTMv4 snapshot record follows a delta or appears in a delta apply"
+                        );
+                        skipped_lookup_values +=
+                            insert_snapshot_object(&mut objects, &mut indexes, &source, &object)?;
+                    }
+                    Nrtm4Record::AddModify(object) => {
+                        snapshot_phase = false;
+                        let identity = validate_identity(&source, &object)?;
+                        let (_, skipped) =
+                            upsert_object(&mut objects, &mut indexes, identity, &object)?;
+                        skipped_lookup_values += skipped;
+                    }
+                    Nrtm4Record::Delete { class, key } => {
+                        snapshot_phase = false;
+                        ensure!(
+                            !class.is_empty() && !key.is_empty(),
+                            "empty NRTMv4 delete identity"
+                        );
+                        delete_object(&mut objects, &mut indexes, (&source, &class, &key))?;
+                    }
+                }
+                count += 1;
+            }
+            ensure!(
+                replace || metadata_only || count > 0,
+                "NRTMv4 version advance has no delta records"
+            );
+            state.insert(source.as_str(), encoded.as_str())?;
+        }
+        write.commit()?;
+        warn_skipped_lookup_values(&source, skipped_lookup_values);
+        Ok(count)
+    }
+
     /// Authorize and commit a submission against the same registry write transaction.
     pub fn apply_authoritative(
         &self,
@@ -392,6 +515,7 @@ impl Store {
         write.set_durability(Durability::Immediate);
         let mut actions = Vec::new();
         {
+            reject_nrtm4_source(&write, &source)?;
             let serials = write.open_table(SERIALS)?;
             ensure!(
                 serials.get(source.as_str())?.is_none(),
@@ -986,8 +1110,63 @@ impl Store {
             );
         }
         verify_journal(&read)?;
+        verify_nrtm4_state(&read)?;
         Ok(indexed)
     }
+}
+
+fn verify_nrtm4_state(read: &ReadTransaction) -> Result<()> {
+    let states = match read.open_table(NRTM4_STATE) {
+        Ok(table) => table,
+        Err(redb::TableError::TableDoesNotExist(_)) => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    let serials = read.open_table(SERIALS)?;
+    let audit = read.open_table(AUTH_AUDIT)?;
+    for entry in states.iter()? {
+        let (source, state) = entry?;
+        let source = source.value();
+        decode_nrtm4_state(source, state.value())?;
+        ensure!(
+            serials.get(source)?.is_none(),
+            "NRTMv4 source also has a committed NRTM serial"
+        );
+        ensure!(
+            audit
+                .range((source, 0)..=(source, u64::MAX))?
+                .next()
+                .transpose()?
+                .is_none(),
+            "NRTMv4 source also has authoritative history"
+        );
+    }
+    Ok(())
+}
+
+fn decode_nrtm4_state(source: &str, encoded: &str) -> Result<CommittedState> {
+    ensure!(
+        encoded.len() <= MAX_NRTM4_STATE_BYTES,
+        "NRTMv4 state exceeds byte limit"
+    );
+    let state: CommittedState =
+        serde_json::from_str(encoded).context("decoding committed NRTMv4 state")?;
+    ensure!(
+        state.source == source,
+        "committed NRTMv4 state source mismatch"
+    );
+    state
+        .validate()
+        .context("validating committed NRTMv4 state")?;
+    Ok(state)
+}
+
+fn reject_nrtm4_source(write: &WriteTransaction, source: &str) -> Result<()> {
+    let states = write.open_table(NRTM4_STATE)?;
+    ensure!(
+        states.get(source)?.is_none(),
+        "source has committed NRTMv4 state; explicit reset is required"
+    );
+    Ok(())
 }
 
 fn verify_journal(read: &ReadTransaction) -> Result<()> {
@@ -1273,6 +1452,39 @@ fn upsert_object(
         indexes.remove(identity, text.value())?;
     }
     Ok((previous.is_some(), indexes.insert(object)?))
+}
+
+fn clear_source_objects(
+    records: &mut ObjectWriteTable<'_>,
+    indexes: &mut WriteIndexes<'_>,
+    source: &str,
+) -> Result<()> {
+    // Appending the smallest character gives the exclusive end of this source's range.
+    let next_source = format!("{source}\0");
+    let old_records = records
+        .extract_from_if((source, "", "")..(next_source.as_str(), "", ""), |_, _| {
+            true
+        })?;
+    for entry in old_records {
+        let (identity, text) = entry?;
+        indexes.remove(identity.value(), text.value())?;
+    }
+    Ok(())
+}
+
+fn insert_snapshot_object(
+    records: &mut ObjectWriteTable<'_>,
+    indexes: &mut WriteIndexes<'_>,
+    source: &str,
+    object: &Object,
+) -> Result<usize> {
+    let identity = validate_identity(source, object)?;
+    let (_, class, key) = identity;
+    ensure!(
+        records.insert(identity, object.text.as_str())?.is_none(),
+        "duplicate {class} object {key} in {source}"
+    );
+    indexes.insert(object)
 }
 
 fn delete_object(
@@ -2042,6 +2254,253 @@ mod tests {
         assert_eq!(store.verify()?, 2);
         assert!(store.apply_nrtm3("TEST", (42, 43), None, []).is_err());
         assert!(store.apply_nrtm3("TEST", (44, 44), Some(43), []).is_err());
+        Ok(())
+    }
+
+    const NRTM4_SESSION_A: &str = "c86f0f62-447e-4bdf-8cb6-18f861bc3532";
+    const NRTM4_SESSION_B: &str = "06c2a859-f39a-48f4-9913-e111985a7476";
+
+    #[test]
+    fn nrtm4_applies_snapshot_and_deltas_with_committed_state_across_reopen() -> Result<()> {
+        use crate::nrtm4_state::fixture_state;
+
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("registry.redb");
+        let store = Store::open(&path)?;
+        let sources = [String::from("TEST")];
+        let initial = fixture_state("TEST", NRTM4_SESSION_A, 2);
+        let next = fixture_state("TEST", NRTM4_SESSION_A, 3);
+        let snapshot = object("TEST", "route", "192.0.2.0/24AS64496");
+        let mut delta = object("TEST", "route", "198.51.100.0/24AS64496");
+        delta.text.push_str("mnt-by: TEST-MNT\n");
+        store.replace_source("TEST", [Ok(object("TEST", "aut-num", "AS64500"))])?;
+        store.replace_source("OTHER", [Ok(object("OTHER", "aut-num", "AS64500"))])?;
+        assert!(
+            store
+                .apply_nrtm4("TEST", None, &initial, false, [])
+                .is_err()
+        );
+        assert_eq!(
+            store.apply_nrtm4(
+                "TEST",
+                None,
+                &initial,
+                true,
+                [
+                    Ok(Nrtm4Record::Snapshot(snapshot.clone())),
+                    Ok(Nrtm4Record::AddModify(delta.clone())),
+                    Ok(Nrtm4Record::Delete {
+                        class: snapshot.class,
+                        key: snapshot.key
+                    }),
+                ]
+            )?,
+            3
+        );
+        assert!(store.exact("AS64500", &sources, 2)?.is_empty());
+        assert_eq!(
+            store.exact("AS64500", &[String::from("OTHER")], 2)?.len(),
+            1
+        );
+        assert_eq!(
+            store.origin_prefixes("route", "AS64496", &sources, 2)?,
+            ["198.51.100.0/24"]
+        );
+        assert_eq!(
+            store.inverse("mnt-by", "TEST-MNT", &sources, 2)?,
+            std::slice::from_ref(&delta)
+        );
+        drop(store);
+
+        let store = Store::open_existing(&path)?;
+        assert_eq!(store.nrtm4_state("test")?.as_ref(), Some(&initial));
+        assert_eq!(store.source_serial("TEST")?, None);
+        let deletion = || {
+            Ok(Nrtm4Record::Delete {
+                class: delta.class.clone(),
+                key: delta.key.clone(),
+            })
+        };
+        assert_eq!(
+            store.apply_nrtm4("TEST", Some(&initial), &next, false, [deletion()])?,
+            1
+        );
+        assert!(
+            store
+                .apply_nrtm4("TEST", Some(&initial), &next, false, [deletion()])
+                .is_err()
+        );
+        assert!(
+            store
+                .apply_nrtm4("TEST", Some(&next), &initial, false, [deletion()])
+                .is_err()
+        );
+        assert!(
+            store
+                .apply_nrtm4("TEST", Some(&next), &next, false, [deletion()])
+                .is_err()
+        );
+        assert_eq!(store.apply_nrtm4("TEST", Some(&next), &next, false, [])?, 0);
+        assert_eq!(store.nrtm4_state("TEST")?.as_ref(), Some(&next));
+        assert!(store.inverse("mnt-by", "TEST-MNT", &sources, 2)?.is_empty());
+        assert_eq!(store.verify()?, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn nrtm4_rolls_back_late_errors_and_requires_snapshot_for_new_session() -> Result<()> {
+        use crate::nrtm4_state::fixture_state;
+
+        let dir = tempfile::tempdir()?;
+        let store = Store::open(&dir.path().join("registry.redb"))?;
+        let sources = [String::from("TEST")];
+        let initial = fixture_state("TEST", NRTM4_SESSION_A, 7);
+        let next = fixture_state("TEST", NRTM4_SESSION_B, 1);
+        let old = object("TEST", "aut-num", "AS64496");
+        let new = object("TEST", "aut-num", "AS64497");
+        store.apply_nrtm4(
+            "TEST",
+            None,
+            &initial,
+            true,
+            [Ok(Nrtm4Record::Snapshot(old.clone()))],
+        )?;
+        assert!(
+            store
+                .apply_nrtm4(
+                    "TEST",
+                    Some(&initial),
+                    &next,
+                    false,
+                    [Ok(Nrtm4Record::AddModify(new.clone()))]
+                )
+                .is_err()
+        );
+        for records in [
+            [
+                Ok(Nrtm4Record::Snapshot(new.clone())),
+                Err(anyhow::anyhow!("invalid terminal record")),
+            ],
+            [
+                Ok(Nrtm4Record::AddModify(new.clone())),
+                Ok(Nrtm4Record::Snapshot(old.clone())),
+            ],
+            [
+                Ok(Nrtm4Record::Snapshot(new.clone())),
+                Ok(Nrtm4Record::Snapshot(new.clone())),
+            ],
+            [
+                Ok(Nrtm4Record::Snapshot(new.clone())),
+                Ok(Nrtm4Record::AddModify(object(
+                    "OTHER", "aut-num", "AS64498",
+                ))),
+            ],
+        ] {
+            assert!(
+                store
+                    .apply_nrtm4("TEST", Some(&initial), &next, true, records)
+                    .is_err()
+            );
+            assert_eq!(store.nrtm4_state("TEST")?.as_ref(), Some(&initial));
+            assert_eq!(
+                store.exact("AS64496", &sources, 2)?,
+                std::slice::from_ref(&old)
+            );
+            assert!(store.exact("AS64497", &sources, 2)?.is_empty());
+        }
+        assert_eq!(
+            store.apply_nrtm4(
+                "TEST",
+                Some(&initial),
+                &next,
+                true,
+                [Ok(Nrtm4Record::Snapshot(new))]
+            )?,
+            1
+        );
+        assert_eq!(store.nrtm4_state("TEST")?.as_ref(), Some(&next));
+        assert!(store.exact("AS64496", &sources, 2)?.is_empty());
+        assert_eq!(store.verify()?, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn nrtm4_state_excludes_other_write_modes_and_rejects_corrupt_metadata() -> Result<()> {
+        use crate::nrtm4_state::fixture_state;
+
+        let dir = tempfile::tempdir()?;
+        let store = Store::open(&dir.path().join("registry.redb"))?;
+        let state = fixture_state("TEST", NRTM4_SESSION_A, 1);
+        let test_object = object("TEST", "aut-num", "AS64496");
+        store.apply_nrtm4(
+            "TEST",
+            None,
+            &state,
+            true,
+            [Ok(Nrtm4Record::Snapshot(test_object.clone()))],
+        )?;
+        assert!(
+            store
+                .replace_source("TEST", [Ok(test_object.clone())])
+                .is_err()
+        );
+        assert!(store.replace_source("TEST", []).is_err());
+        assert!(
+            store
+                .apply_nrtm3(
+                    "TEST",
+                    (1, 1),
+                    Some(0),
+                    [Ok(Operation {
+                        kind: Kind::Add,
+                        serial: 1,
+                        object: test_object.clone()
+                    })]
+                )
+                .is_err()
+        );
+        assert!(
+            store
+                .apply_authoritative("TEST", vec![Change::Upsert(test_object)], &[])
+                .is_err()
+        );
+        assert_eq!(store.nrtm4_state("TEST")?.as_ref(), Some(&state));
+
+        let legacy = object("LEGACY", "aut-num", "AS64496");
+        store.replace_source("LEGACY", [Ok(legacy.clone())])?;
+        store.apply_nrtm3(
+            "LEGACY",
+            (1, 1),
+            Some(0),
+            [Ok(Operation {
+                kind: Kind::Add,
+                serial: 1,
+                object: legacy,
+            })],
+        )?;
+        let legacy_state = fixture_state("LEGACY", NRTM4_SESSION_A, 1);
+        let error = store
+            .apply_nrtm4("LEGACY", None, &legacy_state, true, [])
+            .unwrap_err();
+        assert!(error.to_string().contains("committed NRTM serial"));
+
+        let write = store.db.begin_write()?;
+        write
+            .open_table(AUTH_AUDIT)?
+            .insert(("AUTH", 1), (1, "person", "EO1-AUTH", "delete"))?;
+        write.commit()?;
+        let auth_state = fixture_state("AUTH", NRTM4_SESSION_A, 1);
+        let error = store
+            .apply_nrtm4("AUTH", None, &auth_state, true, [])
+            .unwrap_err();
+        assert!(error.to_string().contains("authoritative history"));
+
+        let write = store.db.begin_write()?;
+        write.open_table(NRTM4_STATE)?.insert("TEST", "{}")?;
+        write.commit()?;
+        assert!(store.nrtm4_state("TEST").is_err());
+        assert!(store.verify().is_err());
+        assert!(store.replace_source("TEST", []).is_err());
         Ok(())
     }
 

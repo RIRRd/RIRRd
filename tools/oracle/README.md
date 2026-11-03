@@ -54,6 +54,13 @@ In another terminal, run the [differential check](../../docs/benchmarks/METHODOL
 python tools/differential_whois.py --reference 127.0.0.1:8043 --candidate 127.0.0.1:9043 --allow-filtered-auth-omission
 ```
 
+The default corpus includes exact object keys (`!m`), exact IPv4 and IPv6
+route searches with and without origins-only output (`!r`, `!r...,o`), and
+IPv4 and IPv6 origin searches (`!g`, `!6`). Route misses include a prefix
+covered by a fixture route, to check that exact matching does not return
+the covering object. Formatting allowances apply only to object text.
+Origins-only and prefix-list payloads are compared byte for byte.
+
 If the oracle does not become healthy, inspect its project-specific logs.
 
 ```sh
@@ -68,6 +75,9 @@ docker compose -p irrd-454-oracle -f tools/oracle/compose.yaml down --volumes
 ```
 
 On the initial Windows development host, `docker compose config --quiet`
-passed. The `desktop-linux` Docker Engine returned no response to
-`docker info` within the probe deadline, so image build, container startup
-and live upstream comparison remain to be verified on a running engine.
+passed and the `desktop-linux` Docker Engine timed out. The first Linux CI
+run built and started the pinned upstream stack, loaded five fixture
+objects into the Rust candidate and matched all 13 exact-key WHOIS
+cases. The comparison checked framing before applying the documented
+attribute-padding and filtered-auth placeholder allowances.
+[Linux CI run](https://github.com/Peravix/Rirrd/actions/runs/41612205799)

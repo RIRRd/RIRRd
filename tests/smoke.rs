@@ -909,21 +909,24 @@ max_snapshot_bytes = 4096
         "snapshot": { "version": 7, "url": "snapshot.json.gz", "hash": hash }
     });
     let signing_key = SigningKey::from_slice(&[7; 32]).unwrap();
-    let signing_input = format!(
-        "{}.{}",
-        URL_SAFE_NO_PAD.encode(br#"{"alg":"ES256"}"#),
-        URL_SAFE_NO_PAD.encode(serde_json::to_vec(&payload).unwrap())
-    );
-    let signature: Signature = signing_key.sign(signing_input.as_bytes());
     let notification = workspace.path().join("update-notification-file.jose");
-    fs::write(
-        &notification,
-        format!(
-            "{signing_input}.{}",
-            URL_SAFE_NO_PAD.encode(signature.to_bytes())
-        ),
-    )
-    .unwrap();
+    let sign = |payload: &Value| {
+        let signing_input = format!(
+            "{}.{}",
+            URL_SAFE_NO_PAD.encode(br#"{"alg":"ES256"}"#),
+            URL_SAFE_NO_PAD.encode(serde_json::to_vec(payload).unwrap())
+        );
+        let signature: Signature = signing_key.sign(signing_input.as_bytes());
+        fs::write(
+            &notification,
+            format!(
+                "{signing_input}.{}",
+                URL_SAFE_NO_PAD.encode(signature.to_bytes())
+            ),
+        )
+        .unwrap();
+    };
+    sign(&payload);
     let public_key = workspace.path().join("public.pem");
     fs::write(
         &public_key,
@@ -956,9 +959,106 @@ max_snapshot_bytes = 4096
     assert_eq!(result["file"]["version"], 7);
     assert_eq!(result["file"]["objects"], 1);
     compressed.push(0);
-    fs::write(&file, compressed).unwrap();
+    fs::write(&file, &compressed).unwrap();
     let tampered = verify().output().unwrap();
     assert!(!tampered.status.success());
     assert!(String::from_utf8_lossy(&tampered.stderr).contains("hash does not match"));
     assert!(!workspace.path().join("test.redb").exists());
+    compressed.pop();
+    fs::write(&file, &compressed).unwrap();
+    let apply = || {
+        let mut command = cli(&config);
+        command
+            .args([
+                "source",
+                "apply-nrtm4",
+                "--source",
+                "TEST",
+                "--notification",
+            ])
+            .arg(&notification);
+        command
+    };
+    let initial = successful(
+        apply()
+            .arg("--public-key")
+            .arg(&public_key)
+            .arg("--file")
+            .arg(&file)
+            .output()
+            .unwrap(),
+    );
+    let initial: Value = serde_json::from_slice(&initial).unwrap();
+    assert_eq!(initial["version"], 7);
+    assert_eq!(initial["replaced_snapshot"], true);
+
+    let delta = workspace.path().join("delta.json");
+    let delta_header = serde_json::json!({
+        "nrtm_version":4,"type":"delta","source":"TEST","session_id":session,"version":8,
+    });
+    let add =
+        serde_json::json!({"action":"add_modify","object":"aut-num: AS64497\nsource: TEST\n"});
+    let delete =
+        serde_json::json!({"action":"delete","object_class":"aut-num","primary_key":"AS64496"});
+    let body = format!("\x1e{delta_header}\n\x1e{add}\n\x1e{delete}\n");
+    let write_delta = |contents: &str| {
+        fs::write(&delta, contents).unwrap();
+        let hash: String = Sha256::digest(contents.as_bytes())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        let mut updated = payload.clone();
+        updated["version"] = 8.into();
+        updated["deltas"] = serde_json::json!([{"version":8,"url":"delta.json","hash":hash}]);
+        sign(&updated);
+    };
+    write_delta(&format!("{body}\x1e{{\n"));
+    assert!(
+        !apply()
+            .arg("--file")
+            .arg(&delta)
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    let status = successful(
+        cli(&config)
+            .args(["source", "status", "--source", "TEST"])
+            .output()
+            .unwrap(),
+    );
+    assert_eq!(
+        serde_json::from_slice::<Value>(&status).unwrap()["nrtm4"]["version"],
+        7
+    );
+    let verified = successful(cli(&config).args(["database", "verify"]).output().unwrap());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&verified).unwrap()["objects"],
+        1
+    );
+    write_delta(&body);
+    let applied = successful(apply().arg("--file").arg(&delta).output().unwrap());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&applied).unwrap()["version"],
+        8
+    );
+    let replay = successful(apply().output().unwrap());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&replay).unwrap()["records"],
+        0
+    );
+    sign(&payload);
+    assert!(
+        !apply()
+            .arg("--file")
+            .arg(&file)
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    let (_server, address) = Server::start(&config);
+    assert_eq!(whois(address, b"!maut-num,AS64496\n"), "D\n");
+    assert!(whois(address, b"!maut-num,AS64497\n").contains("aut-num: AS64497"));
 }

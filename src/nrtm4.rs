@@ -38,8 +38,8 @@ pub struct Notification {
     kind: String,
     pub source: String,
     pub session_id: String,
-    version: u64,
-    timestamp: String,
+    pub(crate) version: u64,
+    pub(crate) timestamp: String,
     pub snapshot: FileReference,
     pub deltas: Vec<FileReference>,
     #[serde(
@@ -47,12 +47,12 @@ pub struct Notification {
         deserialize_with = "deserialize_next_signing_key",
         skip_serializing_if = "Option::is_none"
     )]
-    next_signing_key: Option<String>,
+    pub(crate) next_signing_key: Option<String>,
     #[serde(default, skip_serializing, rename = "metadata")]
     _metadata: Option<IgnoredAny>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct FileReference {
     pub version: u64,
@@ -138,7 +138,7 @@ pub fn verify(
     Ok(notification)
 }
 
-fn parse_public_key(pem: &str) -> Result<PublicKey> {
+pub(crate) fn parse_public_key(pem: &str) -> Result<PublicKey> {
     ensure!(
         pem.len() <= MAX_PUBLIC_KEY_BYTES,
         "public key exceeds size limit"

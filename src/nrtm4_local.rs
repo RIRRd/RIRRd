@@ -1,9 +1,11 @@
 //! Offline verification of signed metadata and an explicitly supplied mirror file.
 
 use std::{
+    cell::Cell,
     fs::File,
-    io::{BufRead, BufReader, Read, Seek, Write},
+    io::{self, BufRead, BufReader, Read, Seek, Write},
     path::Path,
+    rc::Rc,
     time::SystemTime,
 };
 
@@ -62,7 +64,7 @@ pub fn verify(
     Ok(json!({ "notification": notification, "file": records }))
 }
 
-fn read_small(path: &Path, limit: usize) -> Result<Vec<u8>> {
+pub fn read_small(path: &Path, limit: usize) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
     File::open(path)
         .with_context(|| format!("opening {}", path.display()))?
@@ -83,6 +85,46 @@ fn verify_file(
     session: &str,
     max_bytes: u64,
 ) -> Result<Value> {
+    let (records, _) = open_verified_file(
+        path,
+        reference,
+        kind,
+        source,
+        session,
+        max_bytes,
+        Rc::new(Cell::new(max_bytes)),
+    )?;
+    let mut objects = 0_u64;
+    let mut deletions = 0_u64;
+    let mut identity_bytes = 0_u64;
+    for record in records {
+        match record? {
+            Record::Snapshot(object) | Record::AddModify(object) => {
+                objects += 1;
+                identity_bytes += (object.class.len() + object.key.len()) as u64;
+            }
+            Record::Delete { class, key } => {
+                deletions += 1;
+                identity_bytes += (class.len() + key.len()) as u64;
+            }
+        }
+    }
+    Ok(
+        json!({ "version": reference.version, "objects": objects, "deletions": deletions, "identity_bytes": identity_bytes }),
+    )
+}
+
+pub type VerifiedRecords = Reader<Box<dyn BufRead>>;
+
+pub fn open_verified_file(
+    path: &Path,
+    reference: &FileReference,
+    kind: FileKind,
+    source: &str,
+    session: &str,
+    max_bytes: u64,
+    decoded_budget: Rc<Cell<u64>>,
+) -> Result<(VerifiedRecords, u64)> {
     let mut input = File::open(path).context("opening referenced NRTMv4 file")?;
     let mut staged = tempfile::tempfile().context("creating private verification file")?;
     let mut hasher = Sha256::new();
@@ -114,27 +156,44 @@ fn verify_file(
         gzip == reference.url.ends_with(".gz"),
         "NRTMv4 compression does not match the signed filename"
     );
-    let input: Box<dyn BufRead> = if gzip {
-        Box::new(BufReader::new(MultiGzDecoder::new(input)))
+    let input: Box<dyn Read> = if gzip {
+        Box::new(MultiGzDecoder::new(input))
     } else {
         Box::new(input)
     };
-    let mut objects = 0_u64;
-    let mut deletions = 0_u64;
-    let mut identity_bytes = 0_u64;
-    for record in Reader::new(input, kind, source, session, reference.version, max_bytes)? {
-        match record? {
-            Record::Snapshot(object) | Record::AddModify(object) => {
-                objects += 1;
-                identity_bytes += (object.class.len() + object.key.len()) as u64;
-            }
-            Record::Delete { class, key } => {
-                deletions += 1;
-                identity_bytes += (class.len() + key.len()) as u64;
-            }
+    let max_decoded = decoded_budget.get();
+    let reader: Box<dyn BufRead> = Box::new(BufReader::new(BudgetReader {
+        input,
+        remaining: decoded_budget,
+    }));
+    let records = Reader::new(
+        reader,
+        kind,
+        source,
+        session,
+        reference.version,
+        max_decoded,
+    )?;
+    Ok((records, max_bytes - remaining))
+}
+
+struct BudgetReader {
+    input: Box<dyn Read>,
+    remaining: Rc<Cell<u64>>,
+}
+
+impl Read for BudgetReader {
+    fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+        let remaining = self.remaining.get();
+        let probe = usize::try_from(remaining.saturating_add(1)).unwrap_or(usize::MAX);
+        let capacity = bytes.len().min(probe);
+        let count = self.input.read(&mut bytes[..capacity])?;
+        if count as u64 > remaining {
+            return Err(io::Error::other(
+                "NRTMv4 aggregate decoded byte limit exceeded",
+            ));
         }
+        self.remaining.set(remaining - count as u64);
+        Ok(count)
     }
-    Ok(
-        json!({ "version": reference.version, "objects": objects, "deletions": deletions, "identity_bytes": identity_bytes }),
-    )
 }
