@@ -13,6 +13,7 @@ Source5:        copyright
 Source6:        LICENSE
 Source7:        ROUTINATOR-BSD-3-CLAUSE.txt
 Source8:        THIRD_PARTY_NOTICES.md
+Source9:        THIRD_PARTY_LICENSES.txt
 Requires:       systemd
 Requires:       ca-certificates
 Requires(post): systemd
@@ -38,6 +39,7 @@ install -D -m 0644 "%{SOURCE6}" "%{buildroot}%{_datadir}/licenses/%{name}/LICENS
 
 install -D -m 0644 "%{SOURCE7}" "%{buildroot}%{_datadir}/licenses/%{name}/licenses/ROUTINATOR-BSD-3-CLAUSE.txt"
 install -D -m 0644 "%{SOURCE8}" "%{buildroot}%{_datadir}/licenses/%{name}/THIRD_PARTY_NOTICES.md"
+install -D -m 0644 "%{SOURCE9}" "%{buildroot}%{_datadir}/licenses/%{name}/THIRD_PARTY_LICENSES.txt"
 
 %post
 set -e
@@ -72,3 +74,5 @@ fi
 
 %license %{_datadir}/licenses/%{name}/licenses/ROUTINATOR-BSD-3-CLAUSE.txt
 %license %{_datadir}/licenses/%{name}/THIRD_PARTY_NOTICES.md
+
+%license %{_datadir}/licenses/%{name}/THIRD_PARTY_LICENSES.txt

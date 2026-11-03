@@ -99,6 +99,7 @@ class GatewayChecks(unittest.TestCase):
             self.assertIsNone(restored.samples()['samples'][-1]['http_qps'])
             restored.sample(sample,204,now=now+86401)
             self.assertEqual(len(restored.samples()['samples']),1)
+            self.assertIsNone(restored.samples()['samples'][0]['http_p95_ms'])
             self.assertNotIn('prefix',path.read_text())
             self.assertNotIn('client',path.read_text())
 

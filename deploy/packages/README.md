@@ -93,3 +93,18 @@ release notice/SBOM qualification remain separate requirements.
 - Debian binary package archives and maintainer scripts. [dpkg-deb](https://manpages.debian.org/bookworm/dpkg/dpkg-deb.1.en.html) · [Debian Policy](https://www.debian.org/doc/debian-policy/ch-maintainerscripts.html)
 - RPM metadata and binary packaging. [RPM spec](https://rpm.org/docs/latest/manual/spec.html)
 - Declarative system account and filesystem permissions. [sysusers.d](https://manpages.debian.org/bookworm/systemd/sysusers.d.5.en.html) · [tmpfiles.d](https://www.freedesktop.org/software/systemd/man/latest/tmpfiles.d.html)
+
+## Beta versions and binary ABI
+
+Semver `0.1.0-beta.1` becomes Debian `0.1.0~beta.1-1` and RPM
+`0.1.0-0.1.beta.1`, sorting below the stable release. The Debian libc dependency
+uses the actual ELF GLIBC symbol requirements, with a supported floor of 2.36.
+A binary built on Debian 13 must not advertise compatibility with Debian 12 when
+it needs newer symbols. The native CI builds inside the Debian 12 baseline.
+
+Package builds require Cargo and Python 3 in addition to the native archive tools.
+`tools/release/license-notices.py` collects locked, target-specific dependency
+license texts into both archives; build dependencies are included for completeness.
+Repeated texts are deduplicated. Inflector 0.11.4 omits a separate license file, so
+its declared authors and BSD-2-Clause license are recorded with the explicitly
+labeled SPDX reference text. No upstream copyright year is invented.

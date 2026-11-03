@@ -27,6 +27,7 @@ class State:
         self.clients = collections.OrderedDict()
         self.requests = self.errors = 0
         self.durations = collections.deque(maxlen=512)
+        self.interval_durations = collections.deque(maxlen=512)
         self.started = time.monotonic()
         self.telemetry = {}
         self.previous_cpu = None
@@ -60,7 +61,8 @@ class State:
                 if elapsed > 0:
                     qps = (self.requests - self.previous_sample[1]) / elapsed
             self.previous_sample = (now, self.requests)
-            durations = sorted(self.durations)
+            durations = sorted(self.interval_durations)
+            self.interval_durations.clear()
             self.history.append({'timestamp': now, 'objects': snapshot.get('total_objects'),
                 'rss_bytes': snapshot.get('process_rss_bytes'), 'cpu_percent': snapshot.get('cpu_percent_one_core'),
                 'http_qps': qps, 'http_p95_ms': durations[max(0, math.ceil(len(durations) * .95) - 1)] if durations else None,
@@ -102,6 +104,7 @@ class State:
             self.requests += 1
             self.errors += int(error)
             self.durations.append(elapsed * 1000)
+            self.interval_durations.append(elapsed * 1000)
 
     def collect(self):
         try:

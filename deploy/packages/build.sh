@@ -19,7 +19,7 @@ if [[ ${1-} == --arch ]]; then
 fi
 [[ $# -eq 2 ]] || die "$usage"
 [[ $(uname -s) = Linux ]] || die "package builds require Linux"
-for tool in dpkg-deb readelf rpmbuild; do
+for tool in dpkg-deb readelf rpmbuild python3 cargo; do
     command -v "$tool" >/dev/null || die "required tool missing: $tool"
 done
 case $package_machine in
@@ -57,6 +57,13 @@ output=$(realpath -- "$2")
 
 work=$(mktemp -d)
 trap 'rm -rf -- "$work"' EXIT
+# The artifact records its real ABI floor; a host-built beta must not advertise
+# Debian 12 support when linked against a newer libc.
+glibc_floor=$(LC_ALL=C readelf --version-info "$binary" | sed -nE 's/.*Name: GLIBC_([0-9]+\.[0-9]+).*/\1/p' | sort -V | tail -1)
+[[ $glibc_floor =~ ^[0-9]+\.[0-9]+$ ]] || die "cannot determine binary glibc requirement"
+if dpkg --compare-versions "$glibc_floor" lt 2.36; then glibc_floor=2.36; fi
+license_target="$package_machine-unknown-linux-gnu"
+python3 "$package_dir/../../tools/release/license-notices.py" --target "$license_target" --output "$work/THIRD_PARTY_LICENSES.txt"
 sed 's|/usr/local/bin/rust-irrd|/usr/bin/rust-irrd|g' \
     "$package_dir/../rust-irrd.service" > "$work/rust-irrd.service"
 sed 's/^listen = .*/listen = "127.0.0.1:4343"/' \
@@ -74,6 +81,7 @@ install -D -m 0644 "$package_dir/copyright" "$stage/usr/share/doc/rust-irrd/copy
 install -D -m 0644 "$package_dir/../../LICENSE" "$stage/usr/share/doc/rust-irrd/LICENSE"
 install -D -m 0644 "$package_dir/../../licenses/ROUTINATOR-BSD-3-CLAUSE.txt" "$stage/usr/share/doc/rust-irrd/licenses/ROUTINATOR-BSD-3-CLAUSE.txt"
 install -D -m 0644 "$package_dir/../../THIRD_PARTY_NOTICES.md" "$stage/usr/share/doc/rust-irrd/THIRD_PARTY_NOTICES.md"
+install -D -m 0644 "$work/THIRD_PARTY_LICENSES.txt" "$stage/usr/share/doc/rust-irrd/THIRD_PARTY_LICENSES.txt"
 for script in postinst prerm postrm; do
     install -m 0755 "$package_dir/debian/$script" "$stage/DEBIAN/$script"
 done
@@ -85,7 +93,7 @@ Section: net
 Priority: optional
 Architecture: $deb_arch
 Maintainer: Rirrd packaging <noreply@github.com>
-Depends: libc6 (>= 2.36), libgcc-s1, ca-certificates, systemd, init-system-helpers
+Depends: libc6 (>= $glibc_floor), libgcc-s1, ca-certificates, systemd, init-system-helpers
 Homepage: https://github.com/Peravix/Rirrd
 Description: Rust Internet Routing Registry daemon
  The service requires an operator-provided snapshot and explicit startup.
@@ -99,6 +107,7 @@ install -m 0644 "$work/rust-irrd.service" "$work/irrd.toml" \
     "$package_dir/rust-irrd.sysusers.conf" "$package_dir/rust-irrd.tmpfiles.conf" \
     "$package_dir/copyright" "$package_dir/../../LICENSE" "$top/SOURCES/"
 install -m 0644 "$package_dir/../../licenses/ROUTINATOR-BSD-3-CLAUSE.txt" "$package_dir/../../THIRD_PARTY_NOTICES.md" "$top/SOURCES/"
+install -m 0644 "$work/THIRD_PARTY_LICENSES.txt" "$top/SOURCES/"
 rpmbuild -bb --target "$rpm_arch" "${rpm_cross_args[@]}" \
     --define "_topdir $top" \
     --define "package_version $version" \
