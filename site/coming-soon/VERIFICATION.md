@@ -1,7 +1,9 @@
 ## Continuous mirror console — 3 November 2026, 16:12 UTC
 
 The published dashboard uses core UI revision
-`c5aa9727c268573ab7a2f274dc2fc103cf3c3a13`; the live daemon uses that runtime too.
+`c684c3fb169067560234f50078238cf72968bc12`; the separately deployed daemon remains at
+`c5aa9727c268573ab7a2f274dc2fc103cf3c3a13`. Source details precede the status table, and navigation
+returns to the page heading so the class breakdown is immediately discoverable.
 The source dataset activated at 16:10:22 UTC. RADB, ALTDB, BELL, REACH and BBOI
 passed two automatic polls 60 seconds apart with committed cursors. Seven other
 loaded feeds remain daily snapshots, and five tracked feeds remain pending.
