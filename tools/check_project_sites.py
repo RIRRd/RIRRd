@@ -69,7 +69,7 @@ with tempfile.TemporaryDirectory(prefix='rirrd-two-sites-browser-') as profile:
         browser.wait('!document.getElementById("query-submit").disabled')
         assert browser.js('document.getElementById("query-result").textContent')=='192.0.2.0/24\n198.51.100.0/24'
         browser.js("window.fetch=originalFetch")
-        browser.js('location.hash="overview"')
+        browser.js('location.hash="not-a-page"')
         browser.wait('Number(document.getElementById("source-chart")?.dataset.points)===19')
         assert not [event for event in browser.events if event.get('method')=='Runtime.exceptionThrown']
         print('Separate project/network identities, recorded benchmark graphs, live source graphs, mobile layouts, cross-site navigation and IPv6 search flow passed')

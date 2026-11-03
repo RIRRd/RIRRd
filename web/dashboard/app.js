@@ -8,6 +8,7 @@
   let metadata, latest, rpkiData, loading = false, currentResult = '', command = '', cursor = null, queryController;
   let historyData, historyFetched = 0;
   const publicMode = () => metadata?.public_service === true;
+  const selectedPage = () => pages.includes(location.hash.slice(1)) ? location.hash.slice(1) : 'overview';
   const sampleASN = () => metadata?.sources?.includes('EXAMPLE') ? 'AS64496' : 'AS3333';
   const sampleSet = () => metadata?.sources?.includes('EXAMPLE') ? 'AS64496:AS-DOCS' : 'AS-RIPENCC';
   const sourceDefault = () => metadata?.sources?.includes('RIPE') ? 'RIPE' : metadata?.sources?.[0] || '';
@@ -27,7 +28,7 @@
   function page() {
     let key = location.hash.slice(1) || 'overview';
     if (key === 'network' && publicMode()) { location.href = '/#nodes'; return; }
-    if (!pages.includes(key)) key = 'overview';
+    key = selectedPage();
     pages.forEach(name => { el('page-' + name).hidden = key !== name; });
     document.querySelectorAll('[data-page]').forEach(link => {
       if (link.dataset.page === key) link.setAttribute('aria-current', 'page'); else link.removeAttribute('aria-current');
@@ -108,7 +109,7 @@
     const cutoff = Date.now() / 1000 - Number(el('history-range').value);
     const samples = historyData.samples.filter(p => p.timestamp >= cutoff);
     const charts = window.RIRRdCharts;
-    const selected=location.hash.slice(1)||'overview';
+    const selected=selectedPage();
     if(selected==='overview'){
     charts.line(el('query-chart'), samples, 'http_qps', 'Public HTTP queries per second', v => v.toFixed(2) + '/s');
     charts.line(el('latency-chart'), samples, 'http_p95_ms', 'Recent HTTP p95 response time', v => v.toFixed(1) + ' ms');
@@ -132,7 +133,7 @@
   }
   async function refresh(force = false) {
     if (!metadata || loading || document.hidden) return;
-    const selected = location.hash.slice(1) || 'overview';
+    const selected = selectedPage();
     if (!force && !['overview', 'sources', 'system', 'rpki'].includes(selected)) return;
     loading = true;
     try {
