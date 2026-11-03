@@ -110,6 +110,13 @@ and open source receipts. The independent loopback console is checked separately
 HTTPS/public RPKI checks use the normal exposed read-only entry points. Private
 preview/fixture processes and benchmark databases are never deployed publicly.
 
+External HTTPS probes also returned 200 with the new menu markup from Helsinki
+(project IPv4), Montréal (project IPv6), São Paulo (community IPv4) and Newcastle
+(community IPv6), resolving to the intended VM addresses. Globalping measurement
+IDs are `2gM1Ww3GLWrMIS6tS00021RCp`, `2co47nlzG01ZhYJgM00021RCp`,
+`2JOtpRGoHnuCB8Jj300021RCp` and `2mVIDDEKG1BAhLpcw00021RCp` respectively.
+This verifies those observations, rather than universal reachability.
+
 Commands to reproduce bounded comparisons:
 
 ```sh
