@@ -52,7 +52,7 @@ def main():
                 elapsed=time.monotonic()-started;pipe.send('end');observed=pipe.recv();rows.append({'round':repetition,'implementation':name,'requests':len(sizes),'wall_seconds':elapsed,'response_bytes':sizes[0],**observed})
         # Response shape and observation values are unchanged; timestamps differ
         # because each isolated fixture is created in its own process.
-        args.output.write_text(json.dumps({'kind':'loopback HTTP history; 1440 synthetic samples, four clients; server CPU excludes client','baseline_commit':commit,'candidate_commit':subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip(),'candidate_source_sha256':hashlib.sha256((work/'candidate.py').read_bytes()).hexdigest(),'cpu':cpu,'samples':rows},indent=2)+'\n')
+        args.output.write_text(json.dumps({'kind':'loopback HTTP history; 1440 synthetic samples, four clients; server CPU excludes client','baseline_commit':commit,'candidate_commit':subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip(),'driver_sha256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),'candidate_source_sha256':hashlib.sha256((work/'candidate.py').read_bytes()).hexdigest(),'cpu':cpu,'samples':rows},indent=2)+'\n')
         before=sum(r['cpu_seconds'] for r in rows if r['implementation']=='baseline');after=sum(r['cpu_seconds'] for r in rows if r['implementation']=='candidate');print('Server CPU reduction:',round(100*(1-after/before),1),'percent');print('Results:',args.output)
     finally:
         for process,pipe,port in servers.values():

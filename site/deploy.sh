@@ -15,12 +15,28 @@ for path in /var/www/rirrd-project /var/www/irrd-tools; do
     if [ -e "$path" ]; then cp -a "$path" "$backup/"; fi
 done
 if ! getent passwd rirrd-community >/dev/null; then useradd --system --home-dir /var/lib/rirrd-community --shell /usr/sbin/nologin rirrd-community; fi
-install -d -m 755 /usr/local/lib/rirrd-community
-install -m 644 site/community/service.py /usr/local/lib/rirrd-community/service.py
-install -m 644 site/community/rirrd-community.service /etc/systemd/system/rirrd-community.service
-install -m 644 tools/live-service/gateway.py tools/live-service/node.json /usr/local/lib/rirrd-live/
-install -d -m 755 /etc/systemd/system/rirrd-live-gateway.service.d
-cat > /etc/systemd/system/rirrd-live-gateway.service.d/telemetry.conf <<'EOFUNIT'
+queue_changed=0
+gateway_changed=0
+units_changed=0
+queue_active=0
+if systemctl is-active --quiet rirrd-community.service; then queue_active=1; fi
+install -d -m 755 /usr/local/lib/rirrd-community /etc/systemd/system/rirrd-live-gateway.service.d
+if ! cmp -s site/community/service.py /usr/local/lib/rirrd-community/service.py; then
+    install -m 644 site/community/service.py /usr/local/lib/rirrd-community/service.py
+    queue_changed=1
+fi
+if ! cmp -s site/community/rirrd-community.service /etc/systemd/system/rirrd-community.service; then
+    install -m 644 site/community/rirrd-community.service /etc/systemd/system/rirrd-community.service
+    queue_changed=1
+    units_changed=1
+fi
+for name in gateway.py node.json; do
+    if ! cmp -s "tools/live-service/$name" "/usr/local/lib/rirrd-live/$name"; then
+        install -m 644 "tools/live-service/$name" "/usr/local/lib/rirrd-live/$name"
+        gateway_changed=1
+    fi
+done
+cat > "$backup/telemetry-candidate.conf" <<'EOFUNIT'
 [Service]
 StateDirectory=rirrd-telemetry
 StateDirectoryMode=0700
@@ -28,9 +44,15 @@ UMask=0077
 ExecStart=
 ExecStart=/usr/bin/python3 /usr/local/lib/rirrd-live/gateway.py --generation /var/lib/rirrd-live/current --history-file /var/lib/rirrd-telemetry/history.json
 EOFUNIT
-systemctl daemon-reload
+if ! cmp -s "$backup/telemetry-candidate.conf" /etc/systemd/system/rirrd-live-gateway.service.d/telemetry.conf; then
+    install -m 644 "$backup/telemetry-candidate.conf" /etc/systemd/system/rirrd-live-gateway.service.d/telemetry.conf
+    gateway_changed=1
+    units_changed=1
+fi
+if [ "$units_changed" -eq 1 ]; then systemctl daemon-reload; fi
 systemctl enable --now rirrd-community.service
-systemctl restart rirrd-community.service rirrd-live-gateway.service
+if [ "$queue_changed" -eq 1 ] && [ "$queue_active" -eq 1 ]; then systemctl restart rirrd-community.service; fi
+if [ "$gateway_changed" -eq 1 ] || ! systemctl is-active --quiet rirrd-live-gateway.service; then systemctl restart rirrd-live-gateway.service; fi
 curl --fail --silent --max-time 5 --retry 5 --retry-connrefused --retry-delay 1 http://127.0.0.1:9282/health >/dev/null
 python3 - <<'PYDEPLOY'
 from pathlib import Path
@@ -54,6 +76,8 @@ for product,source,allowed in [('rirrd-project',Path('site/project/public'),proj
 for root,release in prepared:
     pending=root.with_name('.'+root.name+'-next');pending.unlink(missing_ok=True);pending.symlink_to(release);os.replace(pending,root)
 PYDEPLOY
-install -m 644 site/Caddyfile /etc/caddy/Caddyfile
-caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
-systemctl reload caddy
+if ! cmp -s site/Caddyfile /etc/caddy/Caddyfile; then
+    install -m 644 site/Caddyfile /etc/caddy/Caddyfile
+    caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+    systemctl reload caddy
+fi
