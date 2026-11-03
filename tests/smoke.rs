@@ -47,7 +47,7 @@ max_snapshot_bytes = 4096
     fs::write(
         &snapshot,
         format!(
-            "{}\n{}\n{}",
+            "{}\n{}\n{}\ninetnum: 192.0.2.0 - 192.0.2.255\nmnt-by: ROOT-MNT\nsource: TEST\n",
             mntner("ROOT-MNT", &root_hash.to_string(), "ROOT-MNT"),
             person("Test Admin", "ADMIN-TEST", "ROOT-MNT"),
             mntner("NEW-MNT", &new_hash.to_string(), "NEW-MNT")
@@ -106,7 +106,7 @@ max_snapshot_bytes = 4096
     let verification = successful(cli(&config).args(["database", "verify"]).output().unwrap());
     assert_eq!(
         serde_json::from_slice::<Value>(&verification).unwrap()["objects"],
-        3
+        4
     );
     successful(submit("TEST", &contact, "root test secret\n", false));
     let unprovisioned = mntner("UNPROVISIONED-MNT", &new_hash.to_string(), "ROOT-MNT");
@@ -191,6 +191,43 @@ max_snapshot_bytes = 4096
     );
     assert_eq!(
         request("POST", "/v1/submit/", payload)["summary"]["failed"],
+        1
+    );
+    let route = "route: 192.0.2.128/25\norigin: AS64496\nmnt-by: NEW-MNT\nsource: TEST\n";
+    let route_payload = |passwords: &[&str], body: &str| serde_json::json!({"objects":[{"object_text":body}],"passwords":passwords});
+    assert_eq!(
+        request(
+            "POST",
+            "/v1/submit/",
+            route_payload(&["new test secret"], route)
+        )["summary"]["failed"],
+        1
+    );
+    assert_eq!(
+        request(
+            "POST",
+            "/v1/submit/",
+            route_payload(
+                &["root test secret", "new test secret"],
+                &route.replace("192.0.2.128", "192.00.2.128")
+            ),
+        )["summary"]["failed"],
+        1
+    );
+    assert_eq!(
+        request(
+            "POST",
+            "/v1/submit/",
+            route_payload(&["root test secret", "new test secret"], route)
+        )["summary"]["successful_create"],
+        1
+    );
+    assert_eq!(
+        request(
+            "DELETE",
+            "/v1/submit/",
+            route_payload(&["new test secret"], route)
+        )["summary"]["successful_delete"],
         1
     );
 }

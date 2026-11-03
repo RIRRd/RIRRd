@@ -1,6 +1,7 @@
 //! Durable, indexed storage for locally imported source snapshots.
 
 use std::{
+    cmp::Ordering,
     collections::HashSet,
     io::Write,
     net::{Ipv4Addr, Ipv6Addr},
@@ -26,6 +27,7 @@ use crate::{
 type Identity<'a> = (&'a str, &'a str, &'a str);
 type ExactKey = (&'static str, &'static str);
 type PrefixKey<'a> = (&'a str, &'a str, u128, u8, u32);
+type InetnumCoverKey<'a> = (&'a str, u32, u8, u32, &'a str);
 type InverseKey = (
     &'static str,
     &'static str,
@@ -46,6 +48,9 @@ const ORIGINS: MultimapTableDefinition<Identity<'static>, &str> =
     MultimapTableDefinition::new("origins_v1");
 // Per-source order by network address permits one range scan for all descendants.
 const PREFIXES: TableDefinition<PrefixKey<'static>, ()> = TableDefinition::new("route_prefixes_v1");
+// Keyed by source, block network, block length, allocation size minus one and object key.
+const INETNUM_COVER: TableDefinition<InetnumCoverKey<'static>, ()> =
+    TableDefinition::new("inetnum_cover_v1");
 // A row is (source, field, normalized value, class, object key).
 const INVERSE: TableDefinition<InverseKey, ()> = TableDefinition::new("inverse_v1");
 const SERIALS: TableDefinition<&str, u64> = TableDefinition::new("source_serials_v1");
@@ -115,9 +120,11 @@ impl Store {
                 .collect();
             let backfill_prefixes = !tables.contains(PREFIXES.name());
             let backfill_inverse = !tables.contains(INVERSE.name());
+            let backfill_inetnum = !tables.contains(INETNUM_COVER.name());
             let mut origins = write.open_multimap_table(ORIGINS)?;
             let mut prefixes = write.open_table(PREFIXES)?;
             let mut inverse = write.open_table(INVERSE)?;
+            let mut inetnum_cover = write.open_table(INETNUM_COVER)?;
             write.open_table(SERIALS)?;
             write.open_table(JOURNAL)?;
             let audit = write.open_table(AUTH_AUDIT)?;
@@ -127,12 +134,14 @@ impl Store {
                     let (identity, metadata) = entry?;
                     let (source, _) = identity.value();
                     let (_, class, key, action) = metadata.value();
-                    if action == "delete" {
-                        protected.insert(protected_name((source, class, key)), ())?;
+                    if action == "delete"
+                        && let Some(name) = protected_name((source, class, key))
+                    {
+                        protected.insert(name, ())?;
                     }
                 }
             }
-            if backfill_origins || backfill_prefixes || backfill_inverse {
+            if backfill_origins || backfill_prefixes || backfill_inverse || backfill_inetnum {
                 for entry in records.iter()? {
                     let (identity, text) = entry?;
                     let (source, class, key) = identity.value();
@@ -150,6 +159,11 @@ impl Store {
                             lookup_attributes(class, text.value()).map_err(anyhow::Error::msg)?;
                         for (field, value) in attributes.inverse_entries() {
                             inverse.insert((source, field, value.as_ref(), class, key), ())?;
+                        }
+                    }
+                    if backfill_inetnum && class == "inetnum" {
+                        for entry in inetnum_cover_keys(source, key)? {
+                            inetnum_cover.insert(entry, ())?;
                         }
                     }
                 }
@@ -391,6 +405,7 @@ impl Store {
                 passwords,
                 |class, key| read_object(&records, &source, class, key),
                 |class, key| indexes.has_strong_reference(&source, class, key),
+                |route| indexes.route_parent(&records, route),
             )?;
 
             let mut audit = write.open_table(AUTH_AUDIT)?;
@@ -399,7 +414,7 @@ impl Store {
                 .iter()
                 .filter_map(|change| match change {
                     Change::Delete(object) => {
-                        Some(protected_name((&object.source, &object.class, &object.key)))
+                        protected_name((&object.source, &object.class, &object.key))
                     }
                     Change::Upsert(_) => None,
                 })
@@ -417,8 +432,9 @@ impl Store {
                 let (identity, audit_action, report_action) = match change {
                     Change::Upsert(object) => {
                         let identity = validate_identity(&source, object)?;
-                        let name = protected_name(identity);
-                        if pending_deletions.contains(&name) || protected.get(name)?.is_some() {
+                        if let Some(name) = protected_name(identity)
+                            && (pending_deletions.contains(&name) || protected.get(name)?.is_some())
+                        {
                             ensure!(
                                 records.get(identity)?.is_some(),
                                 "authoritative object name is protected after deletion"
@@ -442,7 +458,9 @@ impl Store {
                             delete_object(&mut records, &mut indexes, identity)?,
                             "object to delete does not exist"
                         );
-                        protected.insert(protected_name(identity), ())?;
+                        if let Some(name) = protected_name(identity) {
+                            protected.insert(name, ())?;
+                        }
                         (identity, "delete", "delete")
                     }
                 };
@@ -871,6 +889,11 @@ impl Store {
         let origins = read.open_multimap_table(ORIGINS)?;
         let prefixes = read.open_table(PREFIXES)?;
         let inverse = read.open_table(INVERSE)?;
+        let inetnum_cover = match read.open_table(INETNUM_COVER) {
+            Ok(table) => Some(table),
+            Err(redb::TableError::TableDoesNotExist(_)) => None,
+            Err(error) => return Err(error.into()),
+        };
         let mut indexed = 0;
         let mut routes = 0;
         for entry in exact.iter()? {
@@ -926,9 +949,21 @@ impl Store {
             "some routes are missing from the route prefix index"
         );
         let mut indexed_attributes = 0;
+        let mut indexed_inetnum_blocks = 0;
         for entry in records.iter()? {
             let (identity, text) = entry?;
             let (source, class, key) = identity.value();
+            if class == "inetnum"
+                && let Some(inetnum_cover) = &inetnum_cover
+            {
+                for entry in inetnum_cover_keys(source, key)? {
+                    ensure!(
+                        inetnum_cover.get(entry)?.is_some(),
+                        "object is missing from the inetnum cover index"
+                    );
+                    indexed_inetnum_blocks += 1;
+                }
+            }
             let attributes = lookup_attributes(class, text.value()).map_err(anyhow::Error::msg)?;
             for (field, value) in attributes.inverse_entries().collect::<HashSet<_>>() {
                 ensure!(
@@ -944,6 +979,12 @@ impl Store {
             inverse.len()? == indexed_attributes,
             "unexpected inverse lookup index entries"
         );
+        if let Some(inetnum_cover) = inetnum_cover {
+            ensure!(
+                inetnum_cover.len()? == indexed_inetnum_blocks,
+                "unexpected inetnum cover index entries"
+            );
+        }
         verify_journal(&read)?;
         Ok(indexed)
     }
@@ -1000,6 +1041,7 @@ struct WriteIndexes<'txn> {
     origins: MultimapTable<'txn, Identity<'static>, &'static str>,
     prefixes: Table<'txn, PrefixKey<'static>, ()>,
     inverse: Table<'txn, InverseKey, ()>,
+    inetnum_cover: Table<'txn, InetnumCoverKey<'static>, ()>,
 }
 
 impl<'txn> WriteIndexes<'txn> {
@@ -1009,6 +1051,7 @@ impl<'txn> WriteIndexes<'txn> {
             origins: write.open_multimap_table(ORIGINS)?,
             prefixes: write.open_table(PREFIXES)?,
             inverse: write.open_table(INVERSE)?,
+            inetnum_cover: write.open_table(INETNUM_COVER)?,
         })
     }
 
@@ -1033,6 +1076,79 @@ impl<'txn> WriteIndexes<'txn> {
         Ok(false)
     }
 
+    fn route_parent(
+        &self,
+        records: &ObjectWriteTable<'_>,
+        route: &Object,
+    ) -> Result<Option<Object>> {
+        let source = route.source.as_str();
+        let class = route.class.as_str();
+        let (prefix, _) = route_index_parts(class, &route.key)?
+            .context("parent lookup requires a route object")?;
+        let prefix = RoutePrefix::parse(class, prefix)?;
+
+        if class == "route" {
+            if let Some(key) = self.inetnum_parent_key(source, &prefix)? {
+                let parent = read_object(records, source, "inetnum", &key)?
+                    .context("inetnum cover index points to a missing allocation")?;
+                return Ok(Some(parent));
+            }
+        } else {
+            for length in (0..=prefix.length).rev() {
+                let network = Ipv6Addr::from(prefix.network_at(length));
+                let key = format!("{network}/{length}").to_ascii_uppercase();
+                if let Some(parent) = read_object(records, source, "inet6num", &key)? {
+                    return Ok(Some(parent));
+                }
+            }
+        }
+
+        for length in (0..prefix.length).rev() {
+            let network = prefix.network_at(length);
+            let first = (source, class, network, length, 0);
+            let last = (source, class, network, length, u32::MAX);
+            let mut candidates = self.prefixes.range(first..=last)?;
+            if let Some((entry, _)) = candidates.next().transpose()? {
+                ensure!(
+                    candidates.next().transpose()?.is_none(),
+                    "ambiguous covering route parent"
+                );
+                let (_, _, network, length, origin) = entry.value();
+                let key = route_key(class, network, length, origin)?;
+                let parent = read_object(records, source, class, &key)?
+                    .context("route prefix index points to a missing parent")?;
+                return Ok(Some(parent));
+            }
+        }
+        Ok(None)
+    }
+
+    fn inetnum_parent_key(&self, source: &str, prefix: &RoutePrefix) -> Result<Option<String>> {
+        let mut best = None::<(u32, String)>;
+        let mut tied = false;
+        for length in (0..=prefix.length).rev() {
+            let network = u32::try_from(prefix.network_at(length))?;
+            let first = (source, network, length, 0, "");
+            let last = (source, network, length + 1, 0, "");
+            // A canonical query CIDR contained by an allocation lies in one of
+            // its maximal aligned blocks. Candidates in each block sort by size.
+            for entry in self.inetnum_cover.range(first..last)?.take(2) {
+                let (key, _) = entry?;
+                let (_, _, _, size, object_key) = key.value();
+                match best.as_ref().map(|(best_size, _)| size.cmp(best_size)) {
+                    None | Some(Ordering::Less) => {
+                        best = Some((size, object_key.to_owned()));
+                        tied = false;
+                    }
+                    Some(Ordering::Equal) => tied = true,
+                    Some(Ordering::Greater) => break,
+                }
+            }
+        }
+        ensure!(!tied, "ambiguous covering inetnum parent");
+        Ok(best.map(|(_, key)| key))
+    }
+
     fn insert(&mut self, object: &Object) -> Result<usize> {
         let source = object.source.as_str();
         let class = object.class.as_str();
@@ -1052,6 +1168,14 @@ impl<'txn> WriteIndexes<'txn> {
                     .is_none(),
                 "unexpected duplicate entry in the route prefix index"
             );
+        }
+        if class == "inetnum" {
+            for entry in inetnum_cover_keys(source, key)? {
+                ensure!(
+                    self.inetnum_cover.insert(entry, ())?.is_none(),
+                    "duplicate inetnum cover index entry"
+                );
+            }
         }
         let attributes = object.lookup_attributes().map_err(anyhow::Error::msg)?;
         for (field, value) in attributes.inverse_entries() {
@@ -1078,6 +1202,14 @@ impl<'txn> WriteIndexes<'txn> {
                 "object is missing from the route prefix index"
             );
         }
+        if class == "inetnum" {
+            for entry in inetnum_cover_keys(source, key)? {
+                ensure!(
+                    self.inetnum_cover.remove(entry)?.is_some(),
+                    "object is missing from the inetnum cover index"
+                );
+            }
+        }
         let attributes = lookup_attributes(class, text).map_err(anyhow::Error::msg)?;
         for (field, value) in attributes.inverse_entries().collect::<HashSet<_>>() {
             ensure!(
@@ -1089,6 +1221,45 @@ impl<'txn> WriteIndexes<'txn> {
         }
         Ok(())
     }
+}
+
+fn inetnum_cover_keys<'a>(
+    source: &'a str,
+    key: &'a str,
+) -> Result<impl Iterator<Item = InetnumCoverKey<'a>>> {
+    let address_number = |value: &str| -> Result<u32> {
+        let ip = value.split_once('/').map_or(value, |(ip, _)| ip);
+        Ok(u32::from(
+            ip.parse::<Ipv4Addr>()
+                .context("invalid stored inetnum address")?,
+        ))
+    };
+    let (first, last) = if let Some((first, last)) = key.split_once(" - ") {
+        (address_number(first)?, address_number(last)?)
+    } else if key.contains('/') {
+        let prefix = RoutePrefix::parse("route", key)?;
+        (
+            u32::try_from(prefix.network)?,
+            u32::try_from(prefix.network | prefix.host_mask(prefix.length))?,
+        )
+    } else {
+        let address = address_number(key)?;
+        (address, address)
+    };
+    let size = last
+        .checked_sub(first)
+        .context("reversed stored inetnum range")?;
+    let mut next = u64::from(first);
+    let end = u64::from(last);
+    Ok(std::iter::from_fn(move || {
+        if next > end {
+            return None;
+        }
+        let network = next as u32;
+        let host_bits = network.trailing_zeros().min((end - next + 1).ilog2());
+        next += 1_u64 << host_bits;
+        Some((source, network, (32 - host_bits) as u8, size, key))
+    }))
 }
 
 fn upsert_object(
@@ -1136,13 +1307,13 @@ fn validate_identity<'a>(source: &str, object: &'a Object) -> Result<Identity<'a
     Ok((&object.source, &object.class, &object.key))
 }
 
-fn protected_name((source, class, key): Identity<'_>) -> Identity<'_> {
-    let category = if matches!(class, "person" | "role") {
-        "contact"
-    } else {
-        class
+fn protected_name((source, class, key): Identity<'_>) -> Option<Identity<'_>> {
+    let category = match class {
+        "person" | "role" => "contact",
+        "mntner" => "mntner",
+        _ => return None,
     };
-    (source, category, key)
+    Some((source, category, key))
 }
 
 fn warn_skipped_lookup_values(source: &str, skipped_lookup_values: usize) {
@@ -1517,6 +1688,111 @@ mod tests {
             store.apply_authoritative_report("TEST", vec![Change::Upsert(person)], &passwords)?,
             ["modify"]
         );
+        Ok(())
+    }
+
+    fn route_parent(store: &Store, route: &Object) -> Result<Option<Object>> {
+        let write = store.db.begin_write()?;
+        let records = write.open_table(OBJECTS)?;
+        let indexes = WriteIndexes::open(&write)?;
+        indexes.route_parent(&records, route)
+    }
+
+    #[test]
+    fn authoritative_route_parent_prefers_smallest_same_source_allocation() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("registry.redb");
+        let store = Store::open(&path)?;
+        let route = object("TEST", "route", "192.0.2.0/24AS64496");
+        let broader = object("TEST", "inetnum", "192.0.0.0/16");
+        let smaller = object("TEST", "inetnum", "192.0.1.252 - 192.0.3.4");
+        let exact = object("TEST", "inetnum", "192.0.2.0 - 192.0.2.255");
+        let fallback = object("TEST", "route", "192.0.2.0/23AS64497");
+        let foreign = object("OTHER", "inetnum", &exact.key);
+        store.replace_source("OTHER", [Ok(foreign)])?;
+        store.replace_source(
+            "TEST",
+            [
+                Ok(broader.clone()),
+                Ok(smaller.clone()),
+                Ok(fallback.clone()),
+            ],
+        )?;
+        assert_eq!(route_parent(&store, &route)?.as_ref(), Some(&smaller));
+        store.replace_source(
+            "TEST",
+            [
+                Ok(broader),
+                Ok(smaller),
+                Ok(exact.clone()),
+                Ok(fallback.clone()),
+            ],
+        )?;
+        assert_eq!(route_parent(&store, &route)?.as_ref(), Some(&exact));
+
+        let write = store.db.begin_write()?;
+        assert!(write.delete_table(INETNUM_COVER)?);
+        write.commit()?;
+        drop(store);
+        let store = Store::open_for_service(&path)?;
+        assert_eq!(route_parent(&store, &route)?.as_ref(), Some(&exact));
+        assert_eq!(store.verify()?, 5);
+
+        let partial = object("TEST", "inetnum", "192.0.2.0 - 192.0.2.254");
+        let same_prefix = object("TEST", "route", "192.0.2.0/24AS64498");
+        store.replace_source("TEST", [Ok(partial), Ok(fallback.clone()), Ok(same_prefix)])?;
+        assert_eq!(route_parent(&store, &route)?.as_ref(), Some(&fallback));
+        assert_eq!(store.verify()?, 4);
+        store.replace_source("TEST", [])?;
+        assert!(route_parent(&store, &route)?.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn authoritative_route_parent_rejects_equal_allocation_and_route_candidates() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = Store::open(&dir.path().join("registry.redb"))?;
+        let route = object("TEST", "route", "192.0.2.0/25AS64496");
+        let left = object("TEST", "inetnum", "192.0.1.255 - 192.0.2.128");
+        let right = object("TEST", "inetnum", "192.0.2.0 - 192.0.2.129");
+        store.replace_source("TEST", [Ok(left), Ok(right)])?;
+        assert!(
+            route_parent(&store, &route)
+                .unwrap_err()
+                .to_string()
+                .contains("ambiguous covering inetnum")
+        );
+
+        let broad = object("TEST", "route", "192.0.2.0/23AS64497");
+        let near1 = object("TEST", "route", "192.0.2.0/24AS64497");
+        let near2 = object("TEST", "route", "192.0.2.0/24AS64498");
+        store.replace_source("TEST", [Ok(broad), Ok(near1), Ok(near2)])?;
+        assert!(
+            route_parent(&store, &route)
+                .unwrap_err()
+                .to_string()
+                .contains("ambiguous covering route")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn authoritative_route6_parent_prefers_exact_then_smallest_inet6num() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = Store::open(&dir.path().join("registry.redb"))?;
+        let route = object("TEST", "route6", "2001:DB8:1::/48AS64496");
+        let exact = object("TEST", "inet6num", "2001:DB8:1::/48");
+        let parent = object("TEST", "inet6num", "2001:DB8::/32");
+        let fallback = object("TEST", "route6", "2001:DB8::/47AS64497");
+        store.replace_source("TEST", [Ok(parent.clone()), Ok(fallback.clone())])?;
+        assert_eq!(route_parent(&store, &route)?.as_ref(), Some(&parent));
+        store.replace_source(
+            "TEST",
+            [Ok(exact.clone()), Ok(parent), Ok(fallback.clone())],
+        )?;
+        assert_eq!(route_parent(&store, &route)?.as_ref(), Some(&exact));
+        store.replace_source("TEST", [Ok(fallback.clone())])?;
+        assert_eq!(route_parent(&store, &route)?.as_ref(), Some(&fallback));
         Ok(())
     }
 

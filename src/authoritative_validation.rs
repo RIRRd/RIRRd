@@ -1,4 +1,4 @@
-//! Authoritative submission checks for the initial contact and maintainer profile.
+//! Schema checks for supported authoritative RPSL classes.
 
 use std::borrow::Cow;
 use std::collections::HashSet;
@@ -10,6 +10,16 @@ use time::{Date, Month};
 use crate::rpsl::{Object, parse};
 
 const MAX_MAINTAINERS: usize = 64;
+const ROUTE_OPTIONAL: &[&str] = &[
+    "descr",
+    "holes",
+    "member-of",
+    "admin-c",
+    "tech-c",
+    "remarks",
+    "notify",
+    "changed",
+];
 
 struct Attribute<'a> {
     name: String,
@@ -37,6 +47,8 @@ pub fn validate(object: &Object) -> Result<()> {
             &["mntner", "admin-c", "upd-to", "auth", "mnt-by", "source"],
             &["descr", "tech-c", "mnt-nfy", "remarks", "notify", "changed"],
         ),
+        "route" => (&["route", "origin", "mnt-by", "source"], ROUTE_OPTIONAL),
+        "route6" => (&["route6", "origin", "mnt-by", "source"], ROUTE_OPTIONAL),
         _ => {
             return Err(anyhow!(
                 "object class is outside the authoritative submission profile"
@@ -53,6 +65,9 @@ pub fn validate(object: &Object) -> Result<()> {
         "control character in authoritative object"
     );
     let mut seen = HashSet::new();
+    let mut route = None;
+    let mut holes = Vec::new();
+    let ipv6 = object.class == "route6";
     for attribute in &fields {
         let name = attribute.name.as_str();
         ensure!(
@@ -60,11 +75,48 @@ pub fn validate(object: &Object) -> Result<()> {
             "unrecognised or operator-managed attribute in authoritative object"
         );
         let first = seen.insert(name);
-        if !first && matches!(name, "person" | "role" | "mntner" | "nic-hdl" | "source") {
+        if !first
+            && matches!(
+                name,
+                "person" | "role" | "mntner" | "nic-hdl" | "source" | "route" | "route6" | "origin"
+            )
+        {
             return Err(anyhow!("duplicate {name} attribute"));
         }
         match name {
             "mnt-by" => {} // Validate the full list after collecting all occurrences.
+            "route" | "route6" => {
+                let network = Network::parse(
+                    scalar(attribute).ok_or_else(|| anyhow!("invalid {name} prefix"))?,
+                    ipv6,
+                )?;
+                ensure!(
+                    network.bits != 0 || network.length != if ipv6 { 128 } else { 32 },
+                    "unspecified host route is prohibited"
+                );
+                route = Some(network);
+            }
+            "origin" => ensure!(
+                scalar(attribute)
+                    .and_then(asn)
+                    .is_some_and(|number| number != 0),
+                "origin must be a nonzero AS number"
+            ),
+            "holes" => {
+                let mut values = list_values(attribute).peekable();
+                ensure!(values.peek().is_some(), "empty holes attribute");
+                for value in values {
+                    holes.push(Network::parse(value, ipv6)?);
+                }
+            }
+            "member-of" => {
+                let mut values = list_values(attribute).peekable();
+                ensure!(values.peek().is_some(), "empty member-of attribute");
+                ensure!(
+                    values.all(route_set_name),
+                    "invalid route-set reference in member-of"
+                );
+            }
             "mntner" | "nic-hdl" | "source" | "admin-c" | "tech-c" => {
                 ensure!(
                     scalar(attribute).is_some_and(valid_name),
@@ -99,6 +151,12 @@ pub fn validate(object: &Object) -> Result<()> {
 
     for &name in required {
         ensure!(seen.contains(name), "missing {name} attribute");
+    }
+    if let Some(route) = route {
+        ensure!(
+            holes.iter().all(|hole| route.strictly_contains(*hole)),
+            "holes must be more-specific prefixes within the route"
+        );
     }
     extract_maintainers(&fields, true)?;
     Ok(())
@@ -186,36 +244,124 @@ fn scalar<'a>(attribute: &'a Attribute<'_>) -> Option<&'a str> {
     parts.next().is_none().then_some(value)
 }
 
+fn list_values<'a>(attribute: &'a Attribute<'_>) -> impl Iterator<Item = &'a str> {
+    let mut lines = parts(&attribute.raw).peekable();
+    std::iter::from_fn(move || {
+        let line = lines.next()?;
+        let line = if lines.peek().is_some() {
+            line.strip_suffix(',').unwrap_or(line)
+        } else {
+            line
+        };
+        Some(line.split(',').map(str::trim))
+    })
+    .flatten()
+}
+
 fn extract_maintainers(fields: &[Attribute<'_>], strict: bool) -> Result<Vec<String>> {
     let mut maintainers = Vec::new();
     let mut seen = HashSet::new();
     for attribute in fields.iter().filter(|attribute| attribute.name == "mnt-by") {
-        let mut lines = parts(&attribute.raw).peekable();
-        ensure!(lines.peek().is_some(), "empty mnt-by attribute");
-        while let Some(mut line) = lines.next() {
-            if lines.peek().is_some() {
-                line = line.strip_suffix(',').unwrap_or(line);
-            }
-            for value in line.split(',').map(str::trim) {
-                let valid = if strict {
-                    valid_name(value)
-                } else {
-                    generic_name(value)
-                };
-                ensure!(valid, "invalid maintainer reference in mnt-by");
-                let value = value.to_ascii_uppercase();
-                if seen.insert(value.clone()) {
-                    ensure!(
-                        maintainers.len() < MAX_MAINTAINERS,
-                        "too many distinct maintainer references"
-                    );
-                    maintainers.push(value);
-                }
+        let mut values = list_values(attribute).peekable();
+        ensure!(values.peek().is_some(), "empty mnt-by attribute");
+        for value in values {
+            let valid = if strict {
+                valid_name(value)
+            } else {
+                generic_name(value)
+            };
+            ensure!(valid, "invalid maintainer reference in mnt-by");
+            let value = value.to_ascii_uppercase();
+            if seen.insert(value.clone()) {
+                ensure!(
+                    maintainers.len() < MAX_MAINTAINERS,
+                    "too many distinct maintainer references"
+                );
+                maintainers.push(value);
             }
         }
     }
     ensure!(!maintainers.is_empty(), "missing mnt-by attribute");
     Ok(maintainers)
+}
+
+#[derive(Clone, Copy)]
+struct Network {
+    // IPv4 addresses occupy the most significant 32 bits. The source class
+    // fixes the family for both the route and all of its holes.
+    bits: u128,
+    length: u8,
+}
+
+impl Network {
+    fn parse(value: &str, ipv6: bool) -> Result<Self> {
+        let (address, length) = value
+            .split_once('/')
+            .ok_or_else(|| anyhow!("expected a route CIDR prefix"))?;
+        ensure!(
+            length.bytes().all(|byte| byte.is_ascii_digit()),
+            "invalid route prefix length"
+        );
+        let length = length
+            .parse::<u8>()
+            .map_err(|_| anyhow!("invalid route prefix length"))?;
+        let ip: IpAddr = address
+            .parse()
+            .map_err(|_| anyhow!("invalid route prefix address"))?;
+        let (bits, width) = match ip {
+            IpAddr::V4(ip) if !ipv6 => (u128::from(u32::from(ip)) << 96, 32),
+            IpAddr::V6(ip) if ipv6 && !address.contains('.') => (u128::from(ip), 128),
+            _ => return Err(anyhow!("route prefix address family or notation mismatch")),
+        };
+        ensure!(
+            (1..=width).contains(&length),
+            "route prefix length is zero or out of range"
+        );
+        let network = Self { bits, length };
+        ensure!(
+            network.bits & !network.mask() == 0,
+            "route prefix contains host bits"
+        );
+        Ok(network)
+    }
+
+    fn mask(self) -> u128 {
+        u128::MAX << (128 - self.length)
+    }
+
+    fn strictly_contains(self, other: Self) -> bool {
+        other.length > self.length && other.bits & self.mask() == self.bits
+    }
+}
+
+fn asn(value: &str) -> Option<u32> {
+    let (prefix, digits) = value.split_at_checked(2)?;
+    if !prefix.eq_ignore_ascii_case("AS") || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse().ok()
+}
+
+fn route_set_name(value: &str) -> bool {
+    let mut has_set_name = false;
+    for (index, component) in value.split(':').enumerate() {
+        if index == 5 {
+            return false;
+        }
+        if asn(component).is_some() {
+            continue;
+        }
+        if !generic_name(component)
+            || !component
+                .get(..3)
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("RS-"))
+            || component.eq_ignore_ascii_case("RS-ANY")
+        {
+            return false;
+        }
+        has_set_name = true;
+    }
+    has_set_name
 }
 
 fn generic_name(value: &str) -> bool {
@@ -376,8 +522,8 @@ mod tests {
             assert!(validate(&object(&malformed)).is_err(), "{malformed}");
         }
 
-        let route = object("route: 192.0.2.0/24\norigin: AS64496\nsource: EXAMPLE\n");
-        assert!(validate(&route).is_err());
+        let unsupported = object("aut-num: AS64496\nsource: EXAMPLE\n");
+        assert!(validate(&unsupported).is_err());
     }
 
     #[test]
@@ -410,5 +556,82 @@ mod tests {
         forged.key = "DIFFERENT-EXAMPLE".into();
         assert!(maintainers(&forged).is_err());
         Ok(())
+    }
+
+    const ROUTE: &str = concat!(
+        "route: 192.0.2.0/24\n",
+        "origin: as64496\n",
+        "descr: Example route\n",
+        "holes: 192.0.2.0/26,\n",
+        "+ 192.0.2.128/26\n",
+        "member-of: AS64496:rs-example\n",
+        "tech-c: TEST1-EXAMPLE\n",
+        "mnt-by: EXAMPLE-MNT\n",
+        "source: EXAMPLE\n",
+    );
+
+    #[test]
+    fn validates_route_schema_references_and_contained_holes() -> Result<()> {
+        let route = object(ROUTE);
+        validate(&route)?;
+        assert_eq!(maintainers(&route)?, ["EXAMPLE-MNT"]);
+        assert_eq!(contacts(&route)?, ["TEST1-EXAMPLE"]);
+        let route6 = object(
+            "route6: 2001:0DB8::/32\norigin: AS64497\nholes: 2001:db8:8000::/33\n\
+            member-of: RS-PARENT:RS-EXAMPLE\nmnt-by: EXAMPLE-MNT\nsource: EXAMPLE\n",
+        );
+        validate(&route6)?;
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_incomplete_route_schema_and_unsupported_policy_fields() {
+        for malformed in [
+            ROUTE.replace("mnt-by: EXAMPLE-MNT\n", ""),
+            ROUTE.replace("descr: Example route", "components: {192.0.2.0/24^-}"),
+            ROUTE.replace("descr: Example route", "inject: upon static"),
+            ROUTE.replace("descr: Example route", "roa-uri: https://example.net/"),
+            ROUTE.replace("descr: Example route", "rpki-ov-state: valid"),
+            ROUTE.replace("AS64496:rs-example", "AS64496:AS-EXAMPLE"),
+            ROUTE.replace("AS64496:rs-example", "RS-ANY"),
+            ROUTE.replace("AS64496:rs-example", "RS-A:RS-B:RS-C:RS-D:RS-E:RS-F"),
+            ROUTE.replace("TEST1-EXAMPLE", "invalid contact"),
+            ROUTE.replace("192.0.2.128/26", "192.0.2.0/24"),
+            ROUTE.replace("192.0.2.128/26", "198.51.100.0/26"),
+            ROUTE.replace("192.0.2.128/26", "192.0.2.129/26"),
+            ROUTE.replace("192.0.2.128/26", "192.00.02.128/26"),
+            ROUTE.replace("192.0.2.128/26", "2001:db8::/32"),
+        ] {
+            assert!(validate(&object(&malformed)).is_err(), "{malformed}");
+        }
+    }
+
+    #[test]
+    fn rejects_non_routable_identities_and_ambiguous_prefix_syntax() {
+        for (class, prefix, origin) in [
+            ("route", "192.00.02.0/24", "AS64496"),
+            ("route", "0.0.0.0/0", "AS64496"),
+            ("route6", "::/0", "AS64496"),
+            ("route", "0.0.0.0/32", "AS64496"),
+            ("route6", "::/128", "AS64496"),
+            ("route", "192.0.2.0/24", "AS0"),
+            ("route6", "2001:db8::/32", "AS0"),
+        ] {
+            let text = format!(
+                "{class}: {prefix}\norigin: {origin}\nmnt-by: EXAMPLE-MNT\nsource: EXAMPLE\n"
+            );
+            assert!(validate(&object(&text)).is_err(), "{text}");
+        }
+        for (class, prefix) in [
+            ("route", "192.0.2.0"),
+            ("route", "192.0.2.1/24"),
+            ("route6", "2001:db8::1/32"),
+            ("route6", "2001:db8::/129"),
+        ] {
+            let text = format!(
+                "{class}: {prefix}\norigin: AS64496\nmnt-by: EXAMPLE-MNT\nsource: EXAMPLE\n"
+            );
+            assert!(parse(&text).is_err(), "{text}");
+        }
     }
 }

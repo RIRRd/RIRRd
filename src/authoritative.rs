@@ -31,6 +31,7 @@ pub fn authorize(
     passwords: &[String],
     existing: impl Fn(&str, &str) -> Result<Option<Object>>,
     referenced: impl Fn(&str, &str) -> Result<bool>,
+    route_parent: impl Fn(&Object) -> Result<Option<Object>>,
 ) -> Result<()> {
     ensure!(
         (1..=MAX_CHANGES).contains(&changes.len()),
@@ -44,7 +45,10 @@ pub fn authorize(
             "authoritative object source mismatch"
         );
         ensure!(
-            matches!(object.class.as_str(), "person" | "role" | "mntner"),
+            matches!(
+                object.class.as_str(),
+                "person" | "role" | "mntner" | "route" | "route6"
+            ),
             "unsupported authoritative object class"
         );
         ensure!(
@@ -113,6 +117,25 @@ pub fn authorize(
             )?,
             "maintainer authentication failed"
         );
+        if previous.is_none()
+            && matches!(object.class.as_str(), "route" | "route6")
+            && let Some(parent) = route_parent(object)?
+        {
+            ensure!(
+                exists_after(&parent.class, &parent.key)?,
+                "route parent would be deleted by this submission"
+            );
+            ensure!(
+                any_maintainer(
+                    &parent,
+                    &existing,
+                    passwords,
+                    &mut budget,
+                    &mut authenticated
+                )?,
+                "route parent authentication failed"
+            );
+        }
         for maintainer in maintainers(object)? {
             ensure!(
                 exists_after("mntner", &maintainer)?,
