@@ -67,7 +67,7 @@ class Browser:
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--url',required=True,help='fixture-loaded live /ui/ or synthetic preview /dashboard/')
-    parser.add_argument('--mode',choices=['live','preview'],required=True)
+    parser.add_argument('--mode',choices=['live','preview','public'],required=True)
     parser.add_argument('--browser',default=shutil.which('chromium') or shutil.which('google-chrome'))
     parser.add_argument('--screenshots',type=Path)
     args=parser.parse_args()
@@ -79,19 +79,34 @@ def main():
             browser.call('Emulation.setDeviceMetricsOverride',{'width':1440,'height':1100,'deviceScaleFactor':1,'mobile':False},True)
             browser.call('Page.navigate',{'url':args.url},True)
             browser.wait('document.getElementById("query-submit") && !document.getElementById("query-submit").disabled')
-            assert browser.js('document.getElementById("mode-badge").textContent')==('Synthetic preview' if args.mode=='preview' else 'Private instance')
-            def query(value,kind='object',family='4',source='EXAMPLE'):
+            assert browser.js('document.getElementById("mode-badge").textContent')==('Synthetic preview' if args.mode=='preview' else 'Live · Experimental' if args.mode=='public' else 'Private instance')
+            def query(value,kind='object',family='4',source=None):
+                source=source or ('RIPE' if args.mode=='public' else 'EXAMPLE')
                 browser.js('location.hash="query";document.getElementById("query-value").value='+json.dumps(value)+';document.getElementById("query-kind").value='+json.dumps(kind)+';document.getElementById("query-family").value='+json.dumps(family)+';document.getElementById("query-source").value='+json.dumps(source)+';document.getElementById("query-form").requestSubmit()')
                 browser.wait('!document.getElementById("query-submit").disabled && document.getElementById("query-status").textContent!=="Querying…"')
                 return browser.js('document.getElementById("query-result").textContent')
-            assert 'AS64496' in query('AS64496')
-            assert '192.0.2.0/24' in query('192.0.2.0/24')
-            assert '2001:db8:100::/48' in query('2001:db8:100::/48')
-            assert query('AS64496','origin')=='192.0.2.0/24'
-            assert query('AS64496','origin','6')=='2001:db8:100::/48'
-            assert set(query('AS64496:AS-DOCS','set').splitlines())=={'192.0.2.0/24','198.51.100.0/24'}
-            assert set(query('AS64496:AS-DOCS','set','6').splitlines())=={'2001:db8:100::/48','2001:db8:200::/48'}
-            assert 'No ' in query('AS64511')
+            if args.mode=='public':
+                browser.wait('!document.getElementById("live-panel").hidden && document.getElementById("live-objects").textContent!=="—"')
+                assert 'AS3333' in query('AS3333')
+                assert '193.0.6.0/24' in query('193.0.6.0/24')
+                assert '2001:67c:2e8::/48' in query('2001:67c:2e8::/48')
+                assert '193.0.6.0/24' in query('AS3333','origin')
+                assert '2001:' in query('AS3333','origin','6')
+                assert '193.0.6.0/24' in query('AS-RIPE','set')
+                assert 'No ' in query('RIRRD-NO-SUCH-OBJECT-SECURITY-CHECK')
+                assert 'ARIN' not in browser.js('[...document.getElementById("query-source").options].map(o=>o.value)')
+                telemetry=browser.js('fetch("live.json").then(r=>r.json())')
+                assert telemetry['service']=='online' and telemetry['total_objects']>900000
+                assert telemetry['http_queries']>=6
+            else:
+                assert 'AS64496' in query('AS64496')
+                assert '192.0.2.0/24' in query('192.0.2.0/24')
+                assert '2001:db8:100::/48' in query('2001:db8:100::/48')
+                assert query('AS64496','origin')=='192.0.2.0/24'
+                assert query('AS64496','origin','6')=='2001:db8:100::/48'
+                assert set(query('AS64496:AS-DOCS','set').splitlines())=={'192.0.2.0/24','198.51.100.0/24'}
+                assert set(query('AS64496:AS-DOCS','set','6').splitlines())=={'2001:db8:100::/48','2001:db8:200::/48'}
+                assert 'No ' in query('AS64511')
             if args.mode=='live':
                 text=query('DOCS-MNT');assert 'DOCS-MNT' in text and 'auth:' not in text and 'DummyValue' not in text
                 browser.js('document.getElementById("query-source").add(new Option("UNKNOWN","UNKNOWN"))')
