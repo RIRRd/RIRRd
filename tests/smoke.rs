@@ -2229,3 +2229,165 @@ fn bundled_dashboard_serves_local_assets_metadata_and_uses_the_private_api() {
     );
     drop(server);
 }
+
+#[test]
+fn filtered_nrtm3_survives_restart_and_keeps_excluded_classes_out_of_public_queries() {
+    let workspace = tempfile::tempdir().unwrap();
+    let upstream = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = upstream.local_addr().unwrap();
+    let config = workspace.path().join("irrd.toml");
+    fs::write(
+        &config,
+        format!(
+            r#"database = "registry.redb"
+sources = ["TEST"]
+listen = "127.0.0.1:0"
+http_listen = "127.0.0.1:0"
+max_connections = 8
+io_timeout_seconds = 2
+max_snapshot_bytes = 8192
+[nrtm3_sync.TEST]
+endpoint = "{endpoint}"
+interval_seconds = 1
+base_serial = 41
+object_class_filter = ["aut-num", "route"]
+"#
+        ),
+    )
+    .unwrap();
+    let snapshot = workspace.path().join("snapshot.rpsl");
+    fs::write(
+        &snapshot,
+        "aut-num: AS64496\nsource: TEST\n\nroute: 192.0.2.0/24\norigin: AS64496\nsource: TEST\n",
+    )
+    .unwrap();
+    successful(
+        cli(&config)
+            .args(["import", "snapshot", "--source", "TEST", "--file"])
+            .arg(snapshot)
+            .output()
+            .unwrap(),
+    );
+    upstream.set_nonblocking(true).unwrap();
+    let peer = thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        for trailer in ["OTHER", "TEST"] {
+            let mut stream = loop {
+                match upstream.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(Instant::now() < deadline);
+                        thread::sleep(Duration::from_millis(20));
+                    }
+                    Err(error) => panic!("accepting mirror: {error}"),
+                }
+            };
+            stream.set_nonblocking(false).unwrap();
+            stream.set_read_timeout(Some(IO_DEADLINE)).unwrap();
+            let mut request = String::new();
+            BufReader::new(&mut stream).read_line(&mut request).unwrap();
+            assert_eq!(request, "-g TEST:3:42-LAST\n");
+            write!(stream,"%START Version: 3 TEST 42-47\n\nADD 43\n\nmntner: PRIVATE-MNT\nauth: BCRYPT-PW private-fixture-only\nsource: TEST\n\nADD 45\n\nroute: 198.51.100.0/24\norigin: AS64496\nsource: TEST\n\nDEL 46\n\nroute: 192.0.2.0/24\norigin: AS64496\nsource: TEST\n\n%END {trailer}\n").unwrap();
+        }
+    });
+    let (server, http) = Server::start_listener(&config, "GraphQL listening");
+    let deadline = Instant::now() + Duration::from_secs(12);
+    loop {
+        let status = whois(
+            http,
+            b"GET /ui/mirrors.json HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+        );
+        if status.contains("\"serial\":47") {
+            break;
+        }
+        assert!(Instant::now() < deadline, "mirror did not commit: {status}");
+        thread::sleep(Duration::from_millis(50));
+    }
+    let request = |q: &str| {
+        whois(
+            http,
+            format!(
+                "GET /v1/whois/?q={q} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+            )
+            .as_bytes(),
+        )
+    };
+    assert!(request("-x%20198.51.100.0%2F24").contains("198.51.100.0/24"));
+    assert!(request("-x%20192.0.2.0%2F24").starts_with("HTTP/1.1 204 "));
+    assert!(request("PRIVATE-MNT").starts_with("HTTP/1.1 204 "));
+    let body = r#"{"query":"{ databaseStatus { serialNewestMirror localJournalKept synchronisedSerials } }"}"#;
+    let status=whois(http,format!("POST /graphql/ HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes());
+    let status: Value = serde_json::from_str(status.split_once("\r\n\r\n").unwrap().1).unwrap();
+    assert_eq!(
+        status["data"]["databaseStatus"][0],
+        serde_json::json!({"serialNewestMirror":47,"localJournalKept":false,"synchronisedSerials":false})
+    );
+    drop(server);
+    peer.join().unwrap();
+    let serial = successful(
+        cli(&config)
+            .args(["source", "status", "--source", "TEST"])
+            .output()
+            .unwrap(),
+    );
+    assert_eq!(
+        serde_json::from_slice::<Value>(&serial).unwrap()["serial"],
+        47
+    );
+    successful(cli(&config).args(["database", "verify"]).output().unwrap());
+    let exported = workspace.path().join("public.rpsl");
+    successful(
+        cli(&config)
+            .args([
+                "export", "snapshot", "--source", "TEST", "--public", "--file",
+            ])
+            .arg(&exported)
+            .output()
+            .unwrap(),
+    );
+    let text = fs::read_to_string(exported).unwrap();
+    assert!(!text.contains("PRIVATE-MNT") && !text.contains("private-fixture-only"));
+    let backup = workspace.path().join("filtered.backup");
+    successful(
+        cli(&config)
+            .args(["database", "backup", "--file"])
+            .arg(&backup)
+            .output()
+            .unwrap(),
+    );
+    let restored = workspace.path().join("restored.toml");
+    fs::write(
+        &restored,
+        fs::read_to_string(&config)
+            .unwrap()
+            .replace("registry.redb", "restored.redb"),
+    )
+    .unwrap();
+    successful(
+        cli(&restored)
+            .args(["database", "restore", "--file"])
+            .arg(&backup)
+            .output()
+            .unwrap(),
+    );
+    successful(
+        cli(&restored)
+            .args(["database", "verify"])
+            .output()
+            .unwrap(),
+    );
+    let restored_status = successful(
+        cli(&restored)
+            .args(["source", "status", "--source", "TEST"])
+            .output()
+            .unwrap(),
+    );
+    assert_eq!(
+        serde_json::from_slice::<Value>(&restored_status).unwrap()["serial"],
+        47
+    );
+    let (server, tcp) = Server::start(&restored);
+    assert!(whois(tcp, b"!r198.51.100.0/24\n").contains("198.51.100.0/24"));
+    assert_eq!(whois(tcp, b"!mmntner,PRIVATE-MNT\n"), "D\n");
+    drop(server);
+}

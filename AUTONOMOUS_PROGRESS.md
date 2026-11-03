@@ -1,3 +1,11 @@
+## Continuous mirroring continuation — 3 November 2026
+
+See [the checkpoint](docs/compatibility/CONTINUOUS_MIRROR_CHECKPOINT.md) for the
+source bootstrap/serial handoff, filtered NRTMv3 profile, quiet-source cursor
+persistence, live query/schema console and remaining source-specific work.
+Snapshot age, poll success and telemetry refresh are now separate concepts.
+Full parity and production qualification remain incomplete.
+
 ## Expanded sources and write classes — 3 November 2026
 
 The public service now serves 2,610,758 routing objects across twelve sources.

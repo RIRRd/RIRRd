@@ -96,6 +96,31 @@ ceilings for the larger real dataset, not measured minimum-host requirements.
 The gateway has a separate 128 MiB ceiling. Firewall input permits TCP 22/43/80/443,
 loopback, established traffic and ICMP; development ports remain private.
 
+## Continuous feeds and snapshot fallback
+
+The catalog configures RADB, ALTDB, BELL, REACH and BBOI for Merit's NRTMv3
+endpoint, polling every 60 seconds after a matching snapshot/serial bootstrap.
+Publication serials are checked before/after snapshot download; a changed serial
+rejects the candidate. Incremental catch-up and full integrity verification run
+before activation. Only source rows with an observed successful poll say
+“following”; absent or failed telemetry never means fresh data.
+
+Only the catalog's routing classes are retained from the incremental stream.
+Persistent admission policy rejects configuration drift until an explicit
+snapshot reset. Filtered mirrors keep no downstream journal; public mirroring
+and submissions remain private. Ordered upstream omissions are valid NRTMv3,
+but duplicate/backward/out-of-range operations and incomplete frames fail the
+whole batch. Scheduled pulls stage at most 64 MiB with a 15-second deadline;
+individual routing policies are capped at 4 MiB. These are operational bounds,
+not claims of complete NRTM parity. NRTMv3 does not authenticate the publisher.
+
+The dashboard shows last check, last success, serial, poll interval and overdue
+or failed checks per source. The current aggregate object count includes
+incremental edits; source/class counts explicitly describe the bootstrap.
+The daily timer remains a full snapshot rebuild/recovery path. Other loaded
+feeds stay daily snapshots until their own incremental bootstrap is verified.
+See [the checkpoint](../compatibility/CONTINUOUS_MIRROR_CHECKPOINT.md).
+
 ## Measured telemetry
 
 The gateway samples every five seconds; the visible dashboard refreshes every

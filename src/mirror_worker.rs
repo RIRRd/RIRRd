@@ -134,6 +134,9 @@ fn sync_once(
     let Some(mut response) =
         nrtm_client::fetch(config.endpoint, source, start, timeout, max_bytes)?
     else {
+        if !config.object_class_filter.is_empty() && !stopped(shutdown) {
+            store.confirm_mirror_base(source, base, &config.object_class_filter)?;
+        }
         return Ok(None);
     };
     let mut stage = tempfile::tempfile().context("creating private NRTMv3 staging file")?;
@@ -416,6 +419,59 @@ mod tests {
         peer.join().expect("peer thread")?;
         assert!(error.to_string().contains("staging byte limit"));
         assert_eq!(store.source_serial("TEST")?, None);
+        assert_eq!(store.verify()?, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn quiet_filtered_source_persists_its_cursor_and_rejects_policy_changes() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = registry(dir.path())?;
+        let listener = listener()?;
+        let endpoint = listener.local_addr()?;
+        let peer = thread::spawn(move || -> Result<()> {
+            for _ in 0..2 {
+                request(&listener, "-g TEST:3:10-LAST\n")?
+                    .write_all(b"% Warning: there are no newer updates available\n")?;
+            }
+            Ok(())
+        });
+        let (_stop, shutdown) = watch::channel(false);
+        let mut config = MirrorConfig {
+            endpoint,
+            base_serial: Some(9),
+            interval_seconds: 60,
+            object_class_filter: [String::from("aut-num")].into(),
+        };
+        assert_eq!(
+            sync_once(
+                &store,
+                "TEST",
+                &config,
+                4096,
+                Duration::from_secs(3),
+                &shutdown
+            )?,
+            None
+        );
+        assert_eq!(store.source_serial("TEST")?, Some(9));
+        assert_eq!(store.verify()?, 1);
+        drop(store);
+        let store = Store::open_for_service(&dir.path().join("registry.redb"))?;
+        config.object_class_filter = [String::from("route")].into();
+        assert!(
+            sync_once(
+                &store,
+                "TEST",
+                &config,
+                4096,
+                Duration::from_secs(3),
+                &shutdown
+            )
+            .is_err()
+        );
+        peer.join().expect("peer thread")?;
+        assert_eq!(store.source_serial("TEST")?, Some(9));
         assert_eq!(store.verify()?, 1);
         Ok(())
     }

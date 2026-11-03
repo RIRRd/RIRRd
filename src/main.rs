@@ -538,6 +538,13 @@ fn main() -> Result<()> {
             let start = base
                 .checked_add(1)
                 .context("source serial cannot advance")?;
+            let filter = config
+                .nrtm3_sync
+                .get(&source)
+                .filter(|mirror| {
+                    mirror.endpoint == endpoint && !mirror.object_class_filter.is_empty()
+                })
+                .map(|mirror| &mirror.object_class_filter);
             match nrtm_client::fetch(
                 endpoint,
                 &source,
@@ -546,13 +553,6 @@ fn main() -> Result<()> {
                 config.max_snapshot_bytes,
             )? {
                 Some(input) => {
-                    let filter = config
-                        .nrtm3_sync
-                        .get(&source)
-                        .filter(|mirror| {
-                            mirror.endpoint == endpoint && !mirror.object_class_filter.is_empty()
-                        })
-                        .map(|mirror| &mirror.object_class_filter);
                     let serial = if let Some(classes) = filter {
                         let transcript =
                             nrtm3::Reader::filtered(input, &source, config.max_snapshot_bytes)
@@ -576,12 +576,17 @@ fn main() -> Result<()> {
                     };
                     print_serial(&source, Some(serial));
                 }
-                None => println!(
-                    "{}",
-                    serde_json::json!({
-                        "source": source, "serial": committed, "up_to_date": true,
-                    })
-                ),
+                None => {
+                    if let Some(classes) = filter {
+                        store.confirm_mirror_base(&source, base, classes)?;
+                    }
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "source":source, "serial":store.source_serial(&source)?, "up_to_date":true,
+                        })
+                    );
+                }
             }
         }
         Command::Rpki {

@@ -3,6 +3,7 @@
 import datetime
 import argparse
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -50,23 +51,43 @@ def healthy(sources):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--resume', help='Private failed generation name, never the serving generation')
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument('--resume', help='Private failed generation name, never the serving generation')
+    mode.add_argument('--activate', help='Activate a completely prepared generation after verifying it with the installed runtime')
     args = parser.parse_args()
     with (ROOT / 'refresh.lock').open('w') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         destination = ROOT / 'generations' / datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%SZ')
         previous = (ROOT / 'current').resolve(strict=True)
-        if args.resume:
-            if not re.fullmatch(r'[A-Za-z0-9_-]+', args.resume):
-                raise ValueError('Resume requires a generation basename')
-            destination = ROOT / 'generations' / args.resume
+        selected = args.resume or args.activate
+        if selected:
+            if not re.fullmatch(r'[A-Za-z0-9_-]+', selected):
+                raise ValueError('A generation basename is required')
+            destination = ROOT / 'generations' / selected
             if destination.is_symlink() or destination.resolve() == previous:
                 raise ValueError('The serving generation cannot be resumed or modified')
         try:
             save_state({'state': 'running', 'generation': destination.name, 'attempted_at': datetime.datetime.now(datetime.timezone.utc).isoformat()})
-            subprocess.run([sys.executable, str(TOOLS / 'prepare.py'), '--catalog', str(TOOLS / 'sources.json'),
-                            '--binary', BINARY, '--output', str(destination)] + (['--resume'] if args.resume else []), check=True)
+            if not args.activate:
+                subprocess.run([sys.executable, str(TOOLS / 'prepare.py'), '--catalog', str(TOOLS / 'sources.json'),
+                                '--binary', BINARY, '--output', str(destination)] + (['--resume'] if args.resume else []), check=True)
             report = json.loads((destination / 'sources.json').read_text())
+            if args.activate:
+                # A completed generation may have been built using the previous
+                # runtime. Preserve that provenance, then verify the new runtime
+                # against all committed objects before exposing the generation.
+                inputs = json.loads((destination / 'build-inputs.json').read_text())
+                catalog = json.loads((TOOLS / 'sources.json').read_text())
+                digest = hashlib.sha256((TOOLS / 'sources.json').read_bytes()).hexdigest()
+                expected = {row['source'] for row in catalog['sources'] if row['state'] == 'enabled'}
+                loaded = {row['source'] for row in report['sources'] if row['state'] == 'loaded'}
+                if inputs['catalog_sha256'] != digest or loaded != expected or report['binary_sha256'] != inputs['binary_sha256']:
+                    raise ValueError('Prepared candidate has inconsistent or changed inputs')
+                subprocess.run([BINARY, '--config', str(destination / 'irrd.toml'), 'config', 'check'], check=True, capture_output=True)
+                verification = subprocess.run([BINARY, '--config', str(destination / 'irrd.toml'), 'database', 'verify'],
+                                              check=True, capture_output=True, text=True, timeout=1800)
+                if json.loads(verification.stdout)['objects'] != report['total_objects']:
+                    raise ValueError('Prepared generation count changed before activation')
             before = json.loads((previous / 'sources.json').read_text())
             baseline = {row['source']: row['objects'] for row in before['sources'] if row['state'] == 'loaded'}
             loaded = {row['source']: row['objects'] for row in report['sources'] if row['state'] == 'loaded'}
@@ -94,7 +115,11 @@ def main():
             for old in (ROOT / 'generations').iterdir():
                 if old not in (destination, previous) and old.is_dir():
                     shutil.rmtree(old)
-            save_state({'state': 'ok', 'completed_at': report['verified_at']})
+            with open(BINARY, 'rb') as binary:
+                runtime_digest = hashlib.file_digest(binary, 'sha256').hexdigest()
+            save_state({'state': 'ok', 'completed_at': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                        'snapshot_verified_at': report['verified_at'], 'build_binary_sha256': report['binary_sha256'],
+                        'runtime_binary_sha256': runtime_digest})
         except Exception:
             # Leave serving state unchanged; private journal has detailed diagnostics.
             save_state({'state': 'failed', 'attempted_at': datetime.datetime.now(datetime.timezone.utc).isoformat(),

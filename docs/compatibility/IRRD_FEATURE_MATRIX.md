@@ -25,6 +25,16 @@ oracle results or protocol interop evidence as appropriate. Release
 extensions are tracked separately from upstream behaviour. Each row stays
 open until the stated behaviour and safety checks are demonstrated.
 
+## Continuous mirror and console checkpoint
+
+The [continuous-mirroring checkpoint](CONTINUOUS_MIRROR_CHECKPOINT.md) records
+serial-aligned filtered NRTMv3 scheduling, ordered upstream omissions, bounded
+large policy records, persistent class policy and quiet-source cursors. The
+console exposes per-source checks/coverage and the running GraphQL schema.
+Five source feeds are configured for 60-second incremental polling; other feeds
+remain explicitly snapshots or pending access. This does not establish signed
+NRTMv4 scheduling, downstream re-export or full mirroring parity.
+
 ## Expanded source and authoritative checkpoint
 
 The [expanded checkpoint](EXPANDED_SOURCES_CHECKPOINT.md) records twelve real

@@ -283,6 +283,62 @@ impl Store {
         Ok(self.db.begin_read()?.open_table(OBJECTS)?.len()?)
     }
 
+    /// Persist a verified snapshot cursor after a complete no-new-updates reply.
+    /// This also pins the class policy for quiet sources across restarts.
+    pub fn confirm_mirror_base(
+        &self,
+        source: &str,
+        base: u64,
+        classes: &HashSet<String>,
+    ) -> Result<()> {
+        let source = canonical_source(source)?;
+        ensure!(
+            !classes.is_empty()
+                && classes
+                    .iter()
+                    .all(|class| crate::rpsl::supported_class(class)),
+            "invalid mirror filter"
+        );
+        let mut policy = classes.iter().map(String::as_str).collect::<Vec<_>>();
+        policy.sort_unstable();
+        let policy = policy.join(",");
+        let _gate = self.query_gate.blocking_write();
+        let mut write = self.db.begin_write()?;
+        write.set_durability(Durability::Immediate);
+        {
+            reject_nrtm4_source(&write, &source)?;
+            reject_authoritative_source(&write, &source)?;
+            let mut serials = write.open_table(SERIALS)?;
+            let mut filters = write.open_table(MIRROR_FILTERS)?;
+            if let Some(recorded) = serials.get(source.as_str())? {
+                ensure!(
+                    recorded.value() == base
+                        && filters
+                            .get(source.as_str())?
+                            .is_some_and(|value| value.value() == policy),
+                    "mirror cursor or class filter changed; explicit snapshot reset required"
+                );
+                return Ok(());
+            }
+            let records = write.open_table(OBJECTS)?;
+            let upper = format!("{source}\0");
+            let mut count = 0;
+            for entry in records.range((source.as_str(), "", "")..(upper.as_str(), "", ""))? {
+                let (identity, _) = entry?;
+                ensure!(
+                    classes.contains(identity.value().1),
+                    "snapshot contains an excluded mirror class"
+                );
+                count += 1;
+            }
+            ensure!(count > 0, "mirror bootstrap requires a nonempty snapshot");
+            serials.insert(source.as_str(), base)?;
+            filters.insert(source.as_str(), policy.as_str())?;
+        }
+        write.commit()?;
+        Ok(())
+    }
+
     pub fn with_legacy_md5_sources(mut self, sources: HashSet<String>) -> Self {
         self.legacy_md5_sources = sources;
         self

@@ -12,6 +12,7 @@ from types import SimpleNamespace
 
 import gateway
 import prepare
+import refresh
 
 
 class Backend(http.server.BaseHTTPRequestHandler):
@@ -150,6 +151,27 @@ class GatewayChecks(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError,'publication serial changed'):
                     prepare.run(args)
             self.assertFalse((output/'sources.json').exists())
+
+    def test_prepared_activation_rejects_changed_inputs_or_runtime_verification_before_switch(self):
+        import hashlib
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);tools=root/'tools';tools.mkdir();generations=root/'generations';generations.mkdir()
+            previous=generations/'previous';previous.mkdir();candidate=generations/'candidate';candidate.mkdir()
+            (root/'current').symlink_to(previous)
+            catalog={'sources':[{'source':'TEST','state':'enabled'}]}
+            (tools/'sources.json').write_text(json.dumps(catalog))
+            digest=hashlib.sha256((tools/'sources.json').read_bytes()).hexdigest()
+            report={'binary_sha256':'a'*64,'total_objects':10,'sources':[{'source':'TEST','state':'loaded','objects':10}]}
+            (candidate/'sources.json').write_text(json.dumps(report));(candidate/'irrd.toml').write_text('test fixture')
+            inputs={'binary_sha256':'a'*64,'catalog_sha256':digest}
+            for changed in ['count','catalog']:
+                (candidate/'build-inputs.json').write_text(json.dumps({**inputs,'catalog_sha256':'wrong' if changed=='catalog' else digest}))
+                with mock.patch.object(refresh,'ROOT',root),mock.patch.object(refresh,'TOOLS',tools),mock.patch.object(refresh,'BINARY','fixture-runtime'),mock.patch.object(refresh.sys,'argv',['refresh.py','--activate','candidate']),mock.patch.object(refresh.subprocess,'run',return_value=SimpleNamespace(stdout='{"objects":9}')) as run:
+                    with self.assertRaises(ValueError):refresh.main()
+                    self.assertEqual((root/'current').resolve(),previous)
+                    self.assertEqual(json.loads((root/'last-refresh.json').read_text())['state'],'failed')
+                    self.assertTrue(all(call.args[0][0]=='fixture-runtime' for call in run.call_args_list))
+                    self.assertEqual(run.call_count,0 if changed=='catalog' else 2)
 
     def test_failed_build_resumes_verified_sources_and_rejects_changed_inputs(self):
         import gzip
