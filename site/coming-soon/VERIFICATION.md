@@ -29,3 +29,9 @@ private certificate state `/var/lib/caddy/`, timestamped config/content backups
 
 No browser visual check or real renewal cycle has elapsed. External services
 provide point-in-time evidence; the live certificate remains managed by Caddy.
+
+Additional independent probes: HTTPS over IPv4 returned 200 with valid TLS from
+Helsinki and Buffalo:
+https://api.globalping.io/v1/measurements/2zDHDtmLXTlj9Rqu900021R3v .
+HTTP over IPv6 from Newcastle returned 308 with Location `https://rirrd.co.uk/`:
+https://api.globalping.io/v1/measurements/2EaCWlWfhBAhKyUF600021R3w .
