@@ -1,0 +1,2461 @@
+{
+  "upstream_commit": "8e8080dab744a348b7d0e6efcb53f403301dd075",
+  "declarations": "irrd/rpsl/rpsl_objects.py",
+  "classes": {
+    "as-block": [
+      {
+        "name": "as-block",
+        "type": "ASBlock",
+        "required": true,
+        "multiple": false,
+        "primary_key": true,
+        "lookup_key": true
+      },
+      {
+        "name": "descr",
+        "type": "Text",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "admin-c",
+        "type": "Reference",
+        "required": true,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": true,
+        "reference_targets": [
+          "role",
+          "person"
+        ],
+        "strong_reference": true
+      },
+      {
+        "name": "tech-c",
+        "type": "Reference",
+        "required": true,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": true,
+        "reference_targets": [
+          "role",
+          "person"
+        ],
+        "strong_reference": true
+      },
+      {
+        "name": "remarks",
+        "type": "Text",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "notify",
+        "type": "Email",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "mnt-by",
+        "type": "ReferenceList",
+        "required": true,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": true,
+        "reference_targets": [
+          "mntner"
+        ],
+        "strong_reference": true
+      },
+      {
+        "name": "changed",
+        "type": "Changed",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "source",
+        "type": "GenericName",
+        "required": true,
+        "multiple": false,
+        "primary_key": false,
+        "lookup_key": false
+      }
+    ],
+    "as-set": [
+      {
+        "name": "as-set",
+        "type": "SetName",
+        "required": true,
+        "multiple": false,
+        "primary_key": true,
+        "lookup_key": true,
+        "constraints": {
+          "prefix": "AS"
+        }
+      },
+      {
+        "name": "descr",
+        "type": "Text",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "members",
+        "type": "ReferenceList",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": true,
+        "reference_targets": [
+          "aut-num",
+          "as-set"
+        ],
+        "strong_reference": false
+      },
+      {
+        "name": "mbrs-by-ref",
+        "type": "ReferenceList",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": true,
+        "reference_targets": [
+          "mntner"
+        ],
+        "strong_reference": false,
+        "constraints": {
+          "allow_kw_any": true
+        }
+      },
+      {
+        "name": "admin-c",
+        "type": "Reference",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": true,
+        "reference_targets": [
+          "role",
+          "person"
+        ],
+        "strong_reference": true
+      },
+      {
+        "name": "tech-c",
+        "type": "Reference",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": true,
+        "reference_targets": [
+          "role",
+          "person"
+        ],
+        "strong_reference": true
+      },
+      {
+        "name": "remarks",
+        "type": "Text",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "notify",
+        "type": "Email",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "mnt-by",
+        "type": "ReferenceList",
+        "required": true,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": true,
+        "reference_targets": [
+          "mntner"
+        ],
+        "strong_reference": true
+      },
+      {
+        "name": "changed",
+        "type": "Changed",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "source",
+        "type": "GenericName",
+        "required": true,
+        "multiple": false,
+        "primary_key": false,
+        "lookup_key": false
+      }
+    ],
+    "aut-num": [
+      {
+        "name": "aut-num",
+        "type": "ASNumber",
+        "required": true,
+        "multiple": false,
+        "primary_key": true,
+        "lookup_key": true
+      },
+      {
+        "name": "as-name",
+        "type": "GenericName",
+        "required": true,
+        "multiple": false,
+        "primary_key": false,
+        "lookup_key": false,
+        "constraints": {
+          "allowed_prefixes": [
+            "AS"
+          ]
+        }
+      },
+      {
+        "name": "descr",
+        "type": "Text",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "member-of",
+        "type": "ReferenceList",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": true,
+        "reference_targets": [
+          "as-set"
+        ],
+        "strong_reference": false
+      },
+      {
+        "name": "import",
+        "type": "Text",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "mp-import",
+        "type": "Text",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "import-via",
+        "type": "Text",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "export",
+        "type": "Text",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "mp-export",
+        "type": "Text",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "export-via",
+        "type": "Text",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "default",
+        "type": "Text",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "mp-default",
+        "type": "Text",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "admin-c",
+        "type": "Reference",
+        "required": true,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": true,
+        "reference_targets": [
+          "role",
+          "person"
+        ],
+        "strong_reference": true
+      },
+      {
+        "name": "tech-c",
+        "type": "Reference",
+        "required": true,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": true,
+        "reference_targets": [
+          "role",
+          "person"
+        ],
+        "strong_reference": true
+      },
+      {
+        "name": "remarks",
+        "type": "Text",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "notify",
+        "type": "Email",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "mnt-by",
+        "type": "ReferenceList",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": true,
+        "reference_targets": [
+          "mntner"
+        ],
+        "strong_reference": true
+      },
+      {
+        "name": "changed",
+        "type": "Changed",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "source",
+        "type": "GenericName",
+        "required": true,
+        "multiple": false,
+        "primary_key": false,
+        "lookup_key": false
+      }
+    ],
+    "domain": [
+      {
+        "name": "domain",
+        "type": "Text",
+        "required": true,
+        "multiple": false,
+        "primary_key": true,
+        "lookup_key": true
+      },
+      {
+        "name": "descr",
+        "type": "Text",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "admin-c",
+        "type": "Reference",
+        "required": true,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": true,
+        "reference_targets": [
+          "role",
+          "person"
+        ],
+        "strong_reference": true
+      },
+      {
+        "name": "tech-c",
+        "type": "Reference",
+        "required": true,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": true,
+        "reference_targets": [
+          "role",
+          "person"
+        ],
+        "strong_reference": true
+      },
+      {
+        "name": "zone-c",
+        "type": "Reference",
+        "required": true,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": true,
+        "reference_targets": [
+          "role",
+          "person"
+        ],
+        "strong_reference": true
+      },
+      {
+        "name": "nserver",
+        "type": "Text",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "sub-dom",
+        "type": "Text",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "dom-net",
+        "type": "Text",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "refer",
+        "type": "Text",
+        "required": false,
+        "multiple": false,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "remarks",
+        "type": "Text",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "notify",
+        "type": "Email",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "mnt-by",
+        "type": "ReferenceList",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": true,
+        "reference_targets": [
+          "mntner"
+        ],
+        "strong_reference": true
+      },
+      {
+        "name": "changed",
+        "type": "Changed",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "source",
+        "type": "GenericName",
+        "required": true,
+        "multiple": false,
+        "primary_key": false,
+        "lookup_key": false
+      }
+    ],
+    "filter-set": [
+      {
+        "name": "filter-set",
+        "type": "SetName",
+        "required": true,
+        "multiple": false,
+        "primary_key": true,
+        "lookup_key": true,
+        "constraints": {
+          "prefix": "FLTR"
+        }
+      },
+      {
+        "name": "descr",
+        "type": "Text",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "filter",
+        "type": "Text",
+        "required": true,
+        "multiple": false,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "mp-filter",
+        "type": "Text",
+        "required": false,
+        "multiple": false,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "admin-c",
+        "type": "Reference",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": true,
+        "reference_targets": [
+          "role",
+          "person"
+        ],
+        "strong_reference": true
+      },
+      {
+        "name": "tech-c",
+        "type": "Reference",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": true,
+        "reference_targets": [
+          "role",
+          "person"
+        ],
+        "strong_reference": true
+      },
+      {
+        "name": "remarks",
+        "type": "Text",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "notify",
+        "type": "Email",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "mnt-by",
+        "type": "ReferenceList",
+        "required": true,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": true,
+        "reference_targets": [
+          "mntner"
+        ],
+        "strong_reference": true
+      },
+      {
+        "name": "changed",
+        "type": "Changed",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "source",
+        "type": "GenericName",
+        "required": true,
+        "multiple": false,
+        "primary_key": false,
+        "lookup_key": false
+      }
+    ],
+    "inet-rtr": [
+      {
+        "name": "inet-rtr",
+        "type": "DNSName",
+        "required": true,
+        "multiple": false,
+        "primary_key": true,
+        "lookup_key": true
+      },
+      {
+        "name": "descr",
+        "type": "Text",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "alias",
+        "type": "DNSName",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "local-as",
+        "type": "ASNumber",
+        "required": true,
+        "multiple": false,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "ifaddr",
+        "type": "Text",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "interface",
+        "type": "Text",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "peer",
+        "type": "Text",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "mp-peer",
+        "type": "Text",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "member-of",
+        "type": "ReferenceList",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": true,
+        "reference_targets": [
+          "rtr-set"
+        ],
+        "strong_reference": false
+      },
+      {
+        "name": "rs-in",
+        "type": "Text",
+        "required": false,
+        "multiple": false,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "rs-out",
+        "type": "Text",
+        "required": false,
+        "multiple": false,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "admin-c",
+        "type": "Reference",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": true,
+        "reference_targets": [
+          "role",
+          "person"
+        ],
+        "strong_reference": true
+      },
+      {
+        "name": "tech-c",
+        "type": "Reference",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": true,
+        "reference_targets": [
+          "role",
+          "person"
+        ],
+        "strong_reference": true
+      },
+      {
+        "name": "remarks",
+        "type": "Text",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "notify",
+        "type": "Email",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "mnt-by",
+        "type": "ReferenceList",
+        "required": true,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": true,
+        "reference_targets": [
+          "mntner"
+        ],
+        "strong_reference": true
+      },
+      {
+        "name": "changed",
+        "type": "Changed",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "source",
+        "type": "GenericName",
+        "required": true,
+        "multiple": false,
+        "primary_key": false,
+        "lookup_key": false
+      }
+    ],
+    "inet6num": [
+      {
+        "name": "inet6num",
+        "type": "IPv6Prefix",
+        "required": true,
+        "multiple": false,
+        "primary_key": true,
+        "lookup_key": true
+      },
+      {
+        "name": "netname",
+        "type": "Text",
+        "required": true,
+        "multiple": false,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "descr",
+        "type": "Text",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "country",
+        "type": "Text",
+        "required": true,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "admin-c",
+        "type": "Reference",
+        "required": true,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": true,
+        "reference_targets": [
+          "role",
+          "person"
+        ],
+        "strong_reference": true
+      },
+      {
+        "name": "tech-c",
+        "type": "Reference",
+        "required": true,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": true,
+        "reference_targets": [
+          "role",
+          "person"
+        ],
+        "strong_reference": true
+      },
+      {
+        "name": "rev-srv",
+        "type": "Text",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "status",
+        "type": "Text",
+        "required": true,
+        "multiple": false,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "geofeed",
+        "type": "URL",
+        "required": false,
+        "multiple": false,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "remarks",
+        "type": "Text",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "notify",
+        "type": "Email",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "mnt-by",
+        "type": "ReferenceList",
+        "required": true,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": true,
+        "reference_targets": [
+          "mntner"
+        ],
+        "strong_reference": true
+      },
+      {
+        "name": "changed",
+        "type": "Changed",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "source",
+        "type": "GenericName",
+        "required": true,
+        "multiple": false,
+        "primary_key": false,
+        "lookup_key": false
+      }
+    ],
+    "inetnum": [
+      {
+        "name": "inetnum",
+        "type": "IPv4AddressRange",
+        "required": true,
+        "multiple": false,
+        "primary_key": true,
+        "lookup_key": true
+      },
+      {
+        "name": "netname",
+        "type": "Text",
+        "required": true,
+        "multiple": false,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "descr",
+        "type": "Text",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "country",
+        "type": "Text",
+        "required": true,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "admin-c",
+        "type": "Reference",
+        "required": true,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": true,
+        "reference_targets": [
+          "role",
+          "person"
+        ],
+        "strong_reference": true
+      },
+      {
+        "name": "tech-c",
+        "type": "Reference",
+        "required": true,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": true,
+        "reference_targets": [
+          "role",
+          "person"
+        ],
+        "strong_reference": true
+      },
+      {
+        "name": "rev-srv",
+        "type": "Text",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "status",
+        "type": "Text",
+        "required": true,
+        "multiple": false,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "geofeed",
+        "type": "URL",
+        "required": false,
+        "multiple": false,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "remarks",
+        "type": "Text",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "notify",
+        "type": "Email",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "mnt-by",
+        "type": "ReferenceList",
+        "required": true,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": true,
+        "reference_targets": [
+          "mntner"
+        ],
+        "strong_reference": true
+      },
+      {
+        "name": "changed",
+        "type": "Changed",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "source",
+        "type": "GenericName",
+        "required": true,
+        "multiple": false,
+        "primary_key": false,
+        "lookup_key": false
+      }
+    ],
+    "irt": [
+      {
+        "name": "irt",
+        "type": "GenericName",
+        "required": true,
+        "multiple": false,
+        "primary_key": true,
+        "lookup_key": true
+      },
+      {
+        "name": "address",
+        "type": "Text",
+        "required": true,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "phone",
+        "type": "Text",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "fax-no",
+        "type": "Text",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "e-mail",
+        "type": "Email",
+        "required": true,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "abuse-mailbox",
+        "type": "Email",
+        "required": true,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "admin-c",
+        "type": "Reference",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": true,
+        "reference_targets": [
+          "role",
+          "person"
+        ],
+        "strong_reference": true
+      },
+      {
+        "name": "tech-c",
+        "type": "Reference",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": true,
+        "reference_targets": [
+          "role",
+          "person"
+        ],
+        "strong_reference": true
+      },
+      {
+        "name": "remarks",
+        "type": "Text",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "notify",
+        "type": "Email",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "mnt-by",
+        "type": "ReferenceList",
+        "required": true,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": true,
+        "reference_targets": [
+          "mntner"
+        ],
+        "strong_reference": true
+      },
+      {
+        "name": "changed",
+        "type": "Changed",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "source",
+        "type": "GenericName",
+        "required": true,
+        "multiple": false,
+        "primary_key": false,
+        "lookup_key": false
+      }
+    ],
+    "key-cert": [
+      {
+        "name": "key-cert",
+        "type": "GenericName",
+        "required": true,
+        "multiple": false,
+        "primary_key": true,
+        "lookup_key": true
+      },
+      {
+        "name": "method",
+        "type": "Text",
+        "required": false,
+        "multiple": false,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "owner",
+        "type": "Text",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "fingerpr",
+        "type": "Text",
+        "required": false,
+        "multiple": false,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "certif",
+        "type": "Text",
+        "required": true,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "remarks",
+        "type": "Text",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "admin-c",
+        "type": "Reference",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": true,
+        "reference_targets": [
+          "role",
+          "person"
+        ],
+        "strong_reference": true
+      },
+      {
+        "name": "tech-c",
+        "type": "Reference",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": true,
+        "reference_targets": [
+          "role",
+          "person"
+        ],
+        "strong_reference": true
+      },
+      {
+        "name": "notify",
+        "type": "Email",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "mnt-by",
+        "type": "ReferenceList",
+        "required": true,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": true,
+        "reference_targets": [
+          "mntner"
+        ],
+        "strong_reference": true
+      },
+      {
+        "name": "changed",
+        "type": "Changed",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "source",
+        "type": "GenericName",
+        "required": true,
+        "multiple": false,
+        "primary_key": false,
+        "lookup_key": false
+      }
+    ],
+    "mntner": [
+      {
+        "name": "mntner",
+        "type": "GenericName",
+        "required": true,
+        "multiple": false,
+        "primary_key": true,
+        "lookup_key": true
+      },
+      {
+        "name": "descr",
+        "type": "Text",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "admin-c",
+        "type": "Reference",
+        "required": true,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": true,
+        "reference_targets": [
+          "role",
+          "person"
+        ],
+        "strong_reference": true
+      },
+      {
+        "name": "tech-c",
+        "type": "Reference",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": true,
+        "reference_targets": [
+          "role",
+          "person"
+        ],
+        "strong_reference": true
+      },
+      {
+        "name": "upd-to",
+        "type": "Email",
+        "required": true,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "mnt-nfy",
+        "type": "Email",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "auth",
+        "type": "Auth",
+        "required": true,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "remarks",
+        "type": "Text",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "notify",
+        "type": "Email",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "mnt-by",
+        "type": "ReferenceList",
+        "required": true,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": true,
+        "reference_targets": [
+          "mntner"
+        ],
+        "strong_reference": true
+      },
+      {
+        "name": "changed",
+        "type": "Changed",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "source",
+        "type": "GenericName",
+        "required": true,
+        "multiple": false,
+        "primary_key": false,
+        "lookup_key": false
+      }
+    ],
+    "organisation": [
+      {
+        "name": "organisation",
+        "type": "GenericName",
+        "required": true,
+        "multiple": false,
+        "primary_key": true,
+        "lookup_key": true
+      },
+      {
+        "name": "org-name",
+        "type": "Text",
+        "required": true,
+        "multiple": false,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "country",
+        "type": "Text",
+        "required": true,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "address",
+        "type": "Text",
+        "required": true,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "phone",
+        "type": "Text",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "fax-no",
+        "type": "Text",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "e-mail",
+        "type": "Email",
+        "required": true,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "admin-c",
+        "type": "Reference",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": true,
+        "reference_targets": [
+          "role",
+          "person"
+        ],
+        "strong_reference": true
+      },
+      {
+        "name": "tech-c",
+        "type": "Reference",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": true,
+        "reference_targets": [
+          "role",
+          "person"
+        ],
+        "strong_reference": true
+      },
+      {
+        "name": "remarks",
+        "type": "Text",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "notify",
+        "type": "Email",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "mnt-by",
+        "type": "ReferenceList",
+        "required": true,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": true,
+        "reference_targets": [
+          "mntner"
+        ],
+        "strong_reference": true
+      },
+      {
+        "name": "changed",
+        "type": "Changed",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "source",
+        "type": "GenericName",
+        "required": true,
+        "multiple": false,
+        "primary_key": false,
+        "lookup_key": false
+      }
+    ],
+    "peering-set": [
+      {
+        "name": "peering-set",
+        "type": "SetName",
+        "required": true,
+        "multiple": false,
+        "primary_key": true,
+        "lookup_key": true,
+        "constraints": {
+          "prefix": "PRNG"
+        }
+      },
+      {
+        "name": "descr",
+        "type": "Text",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "peering",
+        "type": "Text",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "mp-peering",
+        "type": "Text",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "admin-c",
+        "type": "Reference",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": true,
+        "reference_targets": [
+          "role",
+          "person"
+        ],
+        "strong_reference": true
+      },
+      {
+        "name": "tech-c",
+        "type": "Reference",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": true,
+        "reference_targets": [
+          "role",
+          "person"
+        ],
+        "strong_reference": true
+      },
+      {
+        "name": "remarks",
+        "type": "Text",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "notify",
+        "type": "Email",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "mnt-by",
+        "type": "ReferenceList",
+        "required": true,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": true,
+        "reference_targets": [
+          "mntner"
+        ],
+        "strong_reference": true
+      },
+      {
+        "name": "changed",
+        "type": "Changed",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "source",
+        "type": "GenericName",
+        "required": true,
+        "multiple": false,
+        "primary_key": false,
+        "lookup_key": false
+      }
+    ],
+    "person": [
+      {
+        "name": "person",
+        "type": "Text",
+        "required": true,
+        "multiple": false,
+        "primary_key": false,
+        "lookup_key": true
+      },
+      {
+        "name": "address",
+        "type": "Text",
+        "required": true,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "phone",
+        "type": "Text",
+        "required": true,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "fax-no",
+        "type": "Text",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "e-mail",
+        "type": "Email",
+        "required": true,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "nic-hdl",
+        "type": "GenericName",
+        "required": true,
+        "multiple": false,
+        "primary_key": true,
+        "lookup_key": true,
+        "constraints": {
+          "non_strict_allow_any": true
+        }
+      },
+      {
+        "name": "remarks",
+        "type": "Text",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "notify",
+        "type": "Email",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "mnt-by",
+        "type": "ReferenceList",
+        "required": true,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": true,
+        "reference_targets": [
+          "mntner"
+        ],
+        "strong_reference": true
+      },
+      {
+        "name": "changed",
+        "type": "Changed",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "source",
+        "type": "GenericName",
+        "required": true,
+        "multiple": false,
+        "primary_key": false,
+        "lookup_key": false
+      }
+    ],
+    "role": [
+      {
+        "name": "role",
+        "type": "Text",
+        "required": true,
+        "multiple": false,
+        "primary_key": false,
+        "lookup_key": true
+      },
+      {
+        "name": "trouble",
+        "type": "Text",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "address",
+        "type": "Text",
+        "required": true,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "phone",
+        "type": "Text",
+        "required": true,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "fax-no",
+        "type": "Text",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "e-mail",
+        "type": "Email",
+        "required": true,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "admin-c",
+        "type": "Reference",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": true,
+        "reference_targets": [
+          "role",
+          "person"
+        ],
+        "strong_reference": true
+      },
+      {
+        "name": "tech-c",
+        "type": "Reference",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": true,
+        "reference_targets": [
+          "role",
+          "person"
+        ],
+        "strong_reference": true
+      },
+      {
+        "name": "nic-hdl",
+        "type": "GenericName",
+        "required": true,
+        "multiple": false,
+        "primary_key": true,
+        "lookup_key": true,
+        "constraints": {
+          "non_strict_allow_any": true
+        }
+      },
+      {
+        "name": "remarks",
+        "type": "Text",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "notify",
+        "type": "Email",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "mnt-by",
+        "type": "ReferenceList",
+        "required": true,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": true,
+        "reference_targets": [
+          "mntner"
+        ],
+        "strong_reference": true
+      },
+      {
+        "name": "changed",
+        "type": "Changed",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "source",
+        "type": "GenericName",
+        "required": true,
+        "multiple": false,
+        "primary_key": false,
+        "lookup_key": false
+      }
+    ],
+    "route": [
+      {
+        "name": "route",
+        "type": "IPv4Prefix",
+        "required": true,
+        "multiple": false,
+        "primary_key": true,
+        "lookup_key": true
+      },
+      {
+        "name": "descr",
+        "type": "Text",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "origin",
+        "type": "ASNumber",
+        "required": true,
+        "multiple": false,
+        "primary_key": true,
+        "lookup_key": false
+      },
+      {
+        "name": "holes",
+        "type": "IPv4Prefixes",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "member-of",
+        "type": "ReferenceList",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": true,
+        "reference_targets": [
+          "route-set"
+        ],
+        "strong_reference": false
+      },
+      {
+        "name": "inject",
+        "type": "Text",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "aggr-bndry",
+        "type": "Text",
+        "required": false,
+        "multiple": false,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "aggr-mtd",
+        "type": "Text",
+        "required": false,
+        "multiple": false,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "export-comps",
+        "type": "Text",
+        "required": false,
+        "multiple": false,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "components",
+        "type": "Text",
+        "required": false,
+        "multiple": false,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "admin-c",
+        "type": "Reference",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": true,
+        "reference_targets": [
+          "role",
+          "person"
+        ],
+        "strong_reference": true
+      },
+      {
+        "name": "tech-c",
+        "type": "Reference",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": true,
+        "reference_targets": [
+          "role",
+          "person"
+        ],
+        "strong_reference": true
+      },
+      {
+        "name": "geoidx",
+        "type": "Text",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "roa-uri",
+        "type": "Text",
+        "required": false,
+        "multiple": false,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "remarks",
+        "type": "Text",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "notify",
+        "type": "Email",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "mnt-by",
+        "type": "ReferenceList",
+        "required": true,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": true,
+        "reference_targets": [
+          "mntner"
+        ],
+        "strong_reference": true
+      },
+      {
+        "name": "changed",
+        "type": "Changed",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "source",
+        "type": "GenericName",
+        "required": true,
+        "multiple": false,
+        "primary_key": false,
+        "lookup_key": false
+      }
+    ],
+    "route-set": [
+      {
+        "name": "route-set",
+        "type": "SetName",
+        "required": true,
+        "multiple": false,
+        "primary_key": true,
+        "lookup_key": true,
+        "constraints": {
+          "prefix": "RS"
+        }
+      },
+      {
+        "name": "members",
+        "type": "RouteSetMembers",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": true,
+        "constraints": {
+          "ip_version": 4
+        }
+      },
+      {
+        "name": "mp-members",
+        "type": "RouteSetMembers",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": true,
+        "constraints": {
+          "ip_version": null
+        }
+      },
+      {
+        "name": "mbrs-by-ref",
+        "type": "ReferenceList",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": true,
+        "reference_targets": [
+          "mntner"
+        ],
+        "strong_reference": false,
+        "constraints": {
+          "allow_kw_any": true
+        }
+      },
+      {
+        "name": "descr",
+        "type": "Text",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "admin-c",
+        "type": "Reference",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": true,
+        "reference_targets": [
+          "role",
+          "person"
+        ],
+        "strong_reference": true
+      },
+      {
+        "name": "tech-c",
+        "type": "Reference",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": true,
+        "reference_targets": [
+          "role",
+          "person"
+        ],
+        "strong_reference": true
+      },
+      {
+        "name": "remarks",
+        "type": "Text",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "notify",
+        "type": "Email",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "mnt-by",
+        "type": "ReferenceList",
+        "required": true,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": true,
+        "reference_targets": [
+          "mntner"
+        ],
+        "strong_reference": true
+      },
+      {
+        "name": "changed",
+        "type": "Changed",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "source",
+        "type": "GenericName",
+        "required": true,
+        "multiple": false,
+        "primary_key": false,
+        "lookup_key": false
+      }
+    ],
+    "route6": [
+      {
+        "name": "route6",
+        "type": "IPv6Prefix",
+        "required": true,
+        "multiple": false,
+        "primary_key": true,
+        "lookup_key": true
+      },
+      {
+        "name": "descr",
+        "type": "Text",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "origin",
+        "type": "ASNumber",
+        "required": true,
+        "multiple": false,
+        "primary_key": true,
+        "lookup_key": false
+      },
+      {
+        "name": "holes",
+        "type": "IPv6Prefixes",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "member-of",
+        "type": "ReferenceList",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": true,
+        "reference_targets": [
+          "route-set"
+        ],
+        "strong_reference": false
+      },
+      {
+        "name": "inject",
+        "type": "Text",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "aggr-bndry",
+        "type": "Text",
+        "required": false,
+        "multiple": false,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "aggr-mtd",
+        "type": "Text",
+        "required": false,
+        "multiple": false,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "export-comps",
+        "type": "Text",
+        "required": false,
+        "multiple": false,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "components",
+        "type": "Text",
+        "required": false,
+        "multiple": false,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "admin-c",
+        "type": "Reference",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": true,
+        "reference_targets": [
+          "role",
+          "person"
+        ],
+        "strong_reference": true
+      },
+      {
+        "name": "tech-c",
+        "type": "Reference",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": true,
+        "reference_targets": [
+          "role",
+          "person"
+        ],
+        "strong_reference": true
+      },
+      {
+        "name": "geoidx",
+        "type": "Text",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "roa-uri",
+        "type": "Text",
+        "required": false,
+        "multiple": false,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "remarks",
+        "type": "Text",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "notify",
+        "type": "Email",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "mnt-by",
+        "type": "ReferenceList",
+        "required": true,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": true,
+        "reference_targets": [
+          "mntner"
+        ],
+        "strong_reference": true
+      },
+      {
+        "name": "changed",
+        "type": "Changed",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "source",
+        "type": "GenericName",
+        "required": true,
+        "multiple": false,
+        "primary_key": false,
+        "lookup_key": false
+      }
+    ],
+    "rtr-set": [
+      {
+        "name": "rtr-set",
+        "type": "SetName",
+        "required": true,
+        "multiple": false,
+        "primary_key": true,
+        "lookup_key": true,
+        "constraints": {
+          "prefix": "RTRS"
+        }
+      },
+      {
+        "name": "descr",
+        "type": "Text",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "members",
+        "type": "ReferenceList",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": true,
+        "reference_targets": [
+          "inet-rtr",
+          "rtr-set"
+        ],
+        "strong_reference": false
+      },
+      {
+        "name": "mp-members",
+        "type": "ReferenceList",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": true,
+        "reference_targets": [
+          "inet-rtr",
+          "rtr-set"
+        ],
+        "strong_reference": false
+      },
+      {
+        "name": "mbrs-by-ref",
+        "type": "ReferenceList",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": true,
+        "reference_targets": [
+          "mntner"
+        ],
+        "strong_reference": false,
+        "constraints": {
+          "allow_kw_any": true
+        }
+      },
+      {
+        "name": "admin-c",
+        "type": "Reference",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": true,
+        "reference_targets": [
+          "role",
+          "person"
+        ],
+        "strong_reference": true
+      },
+      {
+        "name": "tech-c",
+        "type": "Reference",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": true,
+        "reference_targets": [
+          "role",
+          "person"
+        ],
+        "strong_reference": true
+      },
+      {
+        "name": "remarks",
+        "type": "Text",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "notify",
+        "type": "Email",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "mnt-by",
+        "type": "ReferenceList",
+        "required": true,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": true,
+        "reference_targets": [
+          "mntner"
+        ],
+        "strong_reference": true
+      },
+      {
+        "name": "changed",
+        "type": "Changed",
+        "required": false,
+        "multiple": true,
+        "primary_key": false,
+        "lookup_key": false
+      },
+      {
+        "name": "source",
+        "type": "GenericName",
+        "required": true,
+        "multiple": false,
+        "primary_key": false,
+        "lookup_key": false
+      }
+    ]
+  }
+}

@@ -1,0 +1,43 @@
+# Autonomous development checkpoint
+
+## Baseline
+
+IRRd v4.5.4, commit `8e8080dab744a348b7d0e6efcb53f403301dd075`, is the pinned compatibility oracle. The [feature matrix](docs/compatibility/IRRD_FEATURE_MATRIX.md) records the reference behaviour, requirements and evidence for each area. [Architecture decisions](docs/ARCHITECTURE.md) record the initial storage selection and threat model. [Benchmark methodology](docs/benchmarks/METHODOLOGY.md) defines the controls for comparative testing.
+
+## Implementation
+
+| Milestone | Checkpoint |
+|---|---|
+| 0 Research | Baseline, feature and RPSL schema inventory, standards links, threat model and benchmark design recorded. Storage trade-offs are qualitative pending measured evaluation and the inventory needs differential evidence. |
+| 1 Foundation | CLI, validated TOML, structured JSON logs, process lifecycle, embedded store and Windows/Linux CI workflow. CI execution and audit results are separate verification gates. |
+| 2 RPSL and storage | Structural parsing for 19 classes, canonical identities, bounded plain/gzip snapshot replacement, exact and origin indexes, and logical verification. Full attribute and reference validation, source journals and prefix/set/reverse indexes are open. |
+| 3 Queries | Bare exact TCP lookups and IRRd-style version, class/key, exact route prefix and origin queries. Persistent connections, RIPE flags and broader IRRd command semantics, GraphQL, and upstream interoperability remain open. |
+| 4 Mirroring | Local snapshot import/export and tested object round trip. Remote fetch, scheduling, serials, NRTMv3/v4 and interoperability remain open. |
+| 5–7 Registry services | Authoritative writes, authentication, RPKI and scope filtering, REST and admin UI remain open. |
+| 8–10 Release | Initial local tests, RustSec scan, RPSL fuzz target, process-kill recovery test and synthetic smoke benchmark. Fuzz execution, host-crash and storage-failure recovery, broader security review, load tests, release packaging, production migration and readiness gates remain open. |
+
+## Verification
+
+- Windows Rust 1.99.1 passed formatting, Clippy with warnings denied, 19 unit tests and one CLI/TCP integration test. One ignored helper is invoked by the process-kill test, which confirmed the last acknowledged snapshot and indexes survived termination during replacement.
+- The RustSec 0.22.2 scan checked 83 dependencies in the root lockfile against 1,402 advisories and exited successfully. The released Windows executable was checksum-verified. The source build of the audit tool required a C compiler absent from this host.
+- The exact-key differential harness passed 13 fixture cases in a Rust-to-Rust self-check. This exercises the harness. Upstream execution remains pending. The [Compose oracle](tools/oracle/README.md) passed configuration validation only.
+- The isolated RPSL fuzz target type-checked. A scheduled Linux CI job is configured for libFuzzer. No full fuzz run or remote CI run has been observed.
+- The [Windows synthetic smoke report](docs/benchmarks/WINDOWS_SMOKE.md) records three release-build repetitions and the raw results. At eight concurrent clients the mean was 10,903 queries/s with p95 0.88–1.14 ms. There is no measured upstream comparison.
+
+## Known limits and blockers
+
+- The current commands share a database file with exclusive process ownership. Offline imports and exports require a stopped listener. A future in-process scheduler should preserve consistent queries during sync.
+- Structural RPSL import is strict about UTF-8, key format and duplicate identities. Real registry datasets and upstream fixtures still need differential testing.
+- Public WHOIS implements only the documented command subset. Origin order is deterministic by configured source and then per-source lexical order. Upstream ordering and RPKI/route-preference behaviour require differential testing.
+- Snapshot export can contain password hashes and requires explicit acknowledgement. The round trip exercises object recovery. Journal, serial and sync metadata recovery needs a versioned backup format.
+- Replacing the synthetic 10,000-object database increased apparent file size from 4.75 MB to 135.28 MB. Profile page reuse and compaction with sustained replacements before making a storage-footprint claim.
+- Docker Desktop's Linux engine failed to respond on the Windows host, including after a startup attempt. WSL listed no distributions. Run the pinned upstream oracle on a Linux runner with PostgreSQL and Redis for interoperability and comparative benchmarks.
+- Local Windows GNU builds use Rust 1.99.1 and required adding Rust's self-contained tools and a checksum-verified MSYS2 assembler to the command's PATH. The repository does not depend on that workaround on a standard Linux or Windows MSVC development runner.
+
+## Resume
+
+1. Run formatting, Clippy and locked tests as shown in the [README](README.md). Run the RustSec audit and a Linux RPSL fuzz campaign.
+2. Bring up the pinned upstream service on an isolated Linux runner using the [oracle instructions](tools/oracle/README.md). Load a licence-cleared corpus into both services and run the WHOIS differential harness. Record object counts, schema/format differences and exact wire evidence.
+3. Implement a canonical prefix type and add transactional indexes for covering, covered and inverse lookups. Extend storage invariants and bounded WHOIS route and reverse commands with the oracle tests.
+4. Implement source generations and journals, then add a bounded in-process sync worker. Preserve serial continuity and all-or-nothing index publication. Use pinned v4.5.4 fixtures before implementing broader NRTMv4 draft interoperability.
+5. Advance GraphQL and authoritative submission on stable query and storage contracts. Keep all unmet security, interoperability and production readiness gates in the compatibility matrix.

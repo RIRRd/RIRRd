@@ -1,0 +1,5 @@
+route6: 2001:0DB8:0000::/32
+origin: as064496
+remarks: A synthetic example
++ continued
+source: TEST

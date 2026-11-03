@@ -1,0 +1,6 @@
+route:          192.0.2.0/24
+descr:          Documentation prefix
+origin:         AS64496
+mnt-by:         EXAMPLE-MNT
+changed:        hostmaster@example.invalid 20260101
+source:         EXAMPLE

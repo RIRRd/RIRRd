@@ -1,0 +1,6 @@
+database = "irrd.redb"
+sources = ["EXAMPLE"]
+listen = "127.0.0.1:4343"
+max_connections = 64
+io_timeout_seconds = 5
+max_snapshot_bytes = 1073741824

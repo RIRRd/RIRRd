@@ -1,0 +1,19 @@
+name: RPSL fuzzing
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '20 4 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  rpsl:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - run: rustup toolchain install nightly --profile minimal
+      - run: cargo +stable install cargo-fuzz --locked --version 0.13.2
+      - run: cp -r fuzz/seeds/rpsl "$RUNNER_TEMP/rpsl"
+      - run: cargo +nightly fuzz run rpsl "$RUNNER_TEMP/rpsl" -- -max_total_time=60 -max_len=65537

@@ -1,0 +1,24 @@
+# Windows smoke benchmark, 3 November 2026
+
+The [raw report](windows-smoke-2026-11-03.json) records the release binary and dataset hashes, three repetitions, elapsed times, response latencies and throughput. The host ran Windows 11 Pro for Workstations build 26200 with an Intel Core i5-11600K (6 cores, 12 threads), 64 GiB RAM and a Fanxiang S880 1 TB NVMe SSD. The database was on NTFS. The compiler was Rust 1.99.1 for `x86_64-pc-windows-gnu` using Cargo's release profile. Python 3.12.14 and the server shared the host.
+
+```sh
+cargo build --locked --release
+python tools/benchmark_smoke.py --binary target/release/rust-irrd.exe --objects 10000 --queries 4000 --warmup-queries 400 --concurrency 1 8 32 --repetitions 3
+```
+
+Each timed query made one IPv4 loopback TCP connection, issued an exact ASN lookup and validated the full response. The benchmark used a deterministic synthetic dataset. The OS page cache and other host activity were uncontrolled.
+
+| Workload | Wall time range | Database file length |
+|---|---:|---:|
+| Plain import to a fresh database | 0.205–0.604 s | 4.75 MB |
+| Plain replacement | 0.477–0.602 s | 135.28 MB |
+| Gzip replacement after plain replacement | 0.441–0.508 s | 71.05 MB |
+
+| Concurrent clients | Mean queries/s | Sample standard deviation, queries/s | p95 range |
+|---:|---:|---:|---:|
+| 1 | 1,260 | 357 | 0.55–0.83 ms |
+| 8 | 10,903 | 891 | 0.88–1.14 ms |
+| 32 | 9,713 | 3,890 | 3.76–4.14 ms |
+
+File length increased by about 28.5× after plain replacement. Measure allocated blocks and redb page statistics over repeated replacements before choosing an optimization. The benchmark did not measure process memory, CPU, controlled cold-cache imports, representative traffic or upstream IRRd. Use the [comparative methodology](METHODOLOGY.md) for release qualification.
