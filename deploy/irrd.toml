@@ -1,0 +1,7 @@
+database = "/var/lib/rust-irrd/state/irrd.redb"
+sources = ["EXAMPLE"]
+# Bind inside the container. Compose publishes the socket on host loopback.
+listen = "0.0.0.0:4343"
+max_connections = 64
+io_timeout_seconds = 5
+max_snapshot_bytes = 1073741824

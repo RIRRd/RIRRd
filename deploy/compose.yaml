@@ -1,0 +1,42 @@
+name: rust-irrd
+
+services:
+  irrd:
+    build:
+      context: ..
+    image: rust-irrd:local
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      - "127.0.0.1:4343:4343/tcp"
+    volumes:
+      - type: bind
+        source: ./irrd.toml
+        target: /etc/rust-irrd/irrd.toml
+        read_only: true
+        bind:
+          create_host_path: false
+      - irrd-state:/var/lib/rust-irrd
+    stop_grace_period: 30s
+    healthcheck:
+      test:
+        - CMD
+        - /bin/bash
+        - -ec
+        - >-
+          exec 3<>/dev/tcp/127.0.0.1/4343;
+          printf '!v\n' >&3;
+          read -r frame <&3;
+          read -r body <&3;
+          read -r end <&3;
+          [[ $$frame == A[0-9]* && -n $$body && $$end == C ]]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+
+volumes:
+  irrd-state:

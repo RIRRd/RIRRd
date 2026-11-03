@@ -104,6 +104,8 @@ This command evaluates validated payloads locally. It does not currently annotat
 
 ## Development checks
 
+See the [deployment examples](deploy/README.md) for Docker Compose and native systemd setup. A separate Linux CI job defines container bootstrap, WHOIS and shutdown verification.
+
 ```sh
 cargo fmt --all -- --check
 cargo clippy --locked --all-targets -- -D warnings

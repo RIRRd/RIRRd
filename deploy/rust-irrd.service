@@ -1,0 +1,31 @@
+[Unit]
+Description=Rust Internet Routing Registry Daemon
+After=network.target
+
+[Service]
+Type=simple
+User=rust-irrd
+Group=rust-irrd
+UMask=0077
+StateDirectory=rust-irrd
+StateDirectoryMode=0700
+WorkingDirectory=/var/lib/rust-irrd
+ExecStartPre=/usr/local/bin/rust-irrd --config /etc/rust-irrd/irrd.toml config check
+ExecStart=/usr/local/bin/rust-irrd --config /etc/rust-irrd/irrd.toml server
+Restart=on-failure
+RestartSec=5s
+KillSignal=SIGTERM
+TimeoutStopSec=30s
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+PrivateDevices=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ProtectControlGroups=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target
