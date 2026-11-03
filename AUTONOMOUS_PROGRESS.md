@@ -1,3 +1,11 @@
+## UK node, nineteen public sources and embedded RPKI — 3 November 2026
+
+The [current checkpoint](docs/compatibility/UK_NODE_PUBLIC_SOURCES_RPKI.md) records
+nineteen loaded public sources, about 4.99 million RPSL objects, seven incremental
+feeds, twelve snapshot feeds, public ARIN query support, live class/key browsing,
+API/router commands and in-process Routinator-based RPKI validation/RTR. Earlier
+owner-enrollment assumptions are superseded. Full parity remains incomplete.
+
 ## Continuous mirroring continuation — 3 November 2026
 
 See [the checkpoint](docs/compatibility/CONTINUOUS_MIRROR_CHECKPOINT.md) for the

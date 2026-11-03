@@ -1,3 +1,6 @@
+> Current continuation: [UK node, nineteen public sources and embedded RPKI](UK_NODE_PUBLIC_SOURCES_RPKI.md).
+> This original Linux checkpoint is retained as historical evidence.
+
 Latest continuation: [continuous mirroring and expanded console](CONTINUOUS_MIRROR_CHECKPOINT.md)
 activated five incremental feeds on 3 November 2026. The measurements below are
 the earlier Linux checkpoint and are retained as historical evidence.
