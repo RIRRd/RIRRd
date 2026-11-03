@@ -7,7 +7,11 @@ use std::net::IpAddr;
 use anyhow::{Result, anyhow, ensure};
 use time::{Date, Month};
 
-use crate::rpsl::{Object, parse};
+use crate::rpsl::{
+    Object,
+    lookup::{RangeOperator, parse_range},
+    parse,
+};
 
 const MAX_MAINTAINERS: usize = 64;
 const ROUTE_OPTIONAL: &[&str] = &[
@@ -16,6 +20,43 @@ const ROUTE_OPTIONAL: &[&str] = &[
     "member-of",
     "admin-c",
     "tech-c",
+    "remarks",
+    "notify",
+    "changed",
+];
+const AS_SET_OPTIONAL: &[&str] = &[
+    "descr",
+    "members",
+    "mbrs-by-ref",
+    "admin-c",
+    "tech-c",
+    "remarks",
+    "notify",
+    "changed",
+];
+const ROUTE_SET_OPTIONAL: &[&str] = &[
+    "descr",
+    "members",
+    "mp-members",
+    "mbrs-by-ref",
+    "admin-c",
+    "tech-c",
+    "remarks",
+    "notify",
+    "changed",
+];
+const AUT_NUM_OPTIONAL: &[&str] = &[
+    "descr",
+    "member-of",
+    // The pinned IRRd schema treats policy expressions as opaque text.
+    "import",
+    "mp-import",
+    "import-via",
+    "export",
+    "mp-export",
+    "export-via",
+    "default",
+    "mp-default",
     "remarks",
     "notify",
     "changed",
@@ -49,6 +90,14 @@ pub fn validate(object: &Object) -> Result<()> {
         ),
         "route" => (&["route", "origin", "mnt-by", "source"], ROUTE_OPTIONAL),
         "route6" => (&["route6", "origin", "mnt-by", "source"], ROUTE_OPTIONAL),
+        "as-set" => (&["as-set", "mnt-by", "source"], AS_SET_OPTIONAL),
+        "route-set" => (&["route-set", "mnt-by", "source"], ROUTE_SET_OPTIONAL),
+        "aut-num" => (
+            &[
+                "aut-num", "as-name", "admin-c", "tech-c", "mnt-by", "source",
+            ],
+            AUT_NUM_OPTIONAL,
+        ),
         _ => {
             return Err(anyhow!(
                 "object class is outside the authoritative submission profile"
@@ -78,7 +127,18 @@ pub fn validate(object: &Object) -> Result<()> {
         if !first
             && matches!(
                 name,
-                "person" | "role" | "mntner" | "nic-hdl" | "source" | "route" | "route6" | "origin"
+                "person"
+                    | "role"
+                    | "mntner"
+                    | "nic-hdl"
+                    | "source"
+                    | "route"
+                    | "route6"
+                    | "origin"
+                    | "as-set"
+                    | "route-set"
+                    | "aut-num"
+                    | "as-name"
             )
         {
             return Err(anyhow!("duplicate {name} attribute"));
@@ -90,17 +150,22 @@ pub fn validate(object: &Object) -> Result<()> {
                     scalar(attribute).ok_or_else(|| anyhow!("invalid {name} prefix"))?,
                     ipv6,
                 )?;
+                ensure!(network.length != 0, "default route is prohibited");
                 ensure!(
                     network.bits != 0 || network.length != if ipv6 { 128 } else { 32 },
                     "unspecified host route is prohibited"
                 );
                 route = Some(network);
             }
-            "origin" => ensure!(
+            "origin" | "aut-num" => ensure!(
                 scalar(attribute)
                     .and_then(asn)
                     .is_some_and(|number| number != 0),
-                "origin must be a nonzero AS number"
+                "{name} must be a nonzero AS number"
+            ),
+            "as-name" => ensure!(
+                scalar(attribute).is_some_and(|value| valid_name_with_prefix(value, Some("AS-"))),
+                "invalid as-name"
             ),
             "holes" => {
                 let mut values = list_values(attribute).peekable();
@@ -112,10 +177,39 @@ pub fn validate(object: &Object) -> Result<()> {
             "member-of" => {
                 let mut values = list_values(attribute).peekable();
                 ensure!(values.peek().is_some(), "empty member-of attribute");
+                let prefix = if object.class == "aut-num" {
+                    "AS-"
+                } else {
+                    "RS-"
+                };
                 ensure!(
-                    values.all(route_set_name),
-                    "invalid route-set reference in member-of"
+                    values.all(|value| set_name(value, &[prefix])),
+                    "invalid set reference in member-of"
                 );
+            }
+            "as-set" | "route-set" => {
+                let prefix = if name == "as-set" { "AS-" } else { "RS-" };
+                ensure!(
+                    scalar(attribute).is_some_and(|value| set_name(value, &[prefix])),
+                    "invalid {name} name"
+                );
+            }
+            "members" | "mp-members" => {
+                let mut values = list_values(attribute).peekable();
+                ensure!(values.peek().is_some(), "empty {name} attribute");
+                let valid = if object.class == "as-set" {
+                    values.all(|value| asn(value).is_some() || set_name(value, &["AS-"]))
+                } else {
+                    values.all(|value| route_set_member(value, name == "mp-members"))
+                };
+                ensure!(valid, "invalid {name} attribute");
+            }
+            "mbrs-by-ref" => {
+                if !scalar(attribute).is_some_and(|value| value.eq_ignore_ascii_case("ANY")) {
+                    let mut values = list_values(attribute).peekable();
+                    ensure!(values.peek().is_some(), "empty mbrs-by-ref attribute");
+                    ensure!(values.all(valid_name), "invalid maintainer in mbrs-by-ref");
+                }
             }
             "mntner" | "nic-hdl" | "source" | "admin-c" | "tech-c" => {
                 ensure!(
@@ -160,6 +254,21 @@ pub fn validate(object: &Object) -> Result<()> {
     }
     extract_maintainers(&fields, true)?;
     Ok(())
+}
+
+/// Return the parent ASN required when creating a validated AS-SET or ROUTE-SET.
+/// Updates to existing names use the ordinary schema rules.
+pub fn set_creation_asn(object: &Object) -> Result<u32> {
+    ensure!(
+        matches!(object.class.as_str(), "as-set" | "route-set"),
+        "set creation policy requires an AS-SET or ROUTE-SET"
+    );
+    object
+        .key
+        .split_once(':')
+        .and_then(|(first, _)| asn(first))
+        .filter(|&number| number != 0)
+        .ok_or_else(|| anyhow!("new set names must start with a nonzero ASN component"))
 }
 
 /// Extract authorising maintainers from existing or submitted data.
@@ -313,10 +422,7 @@ impl Network {
             IpAddr::V6(ip) if ipv6 && !address.contains('.') => (u128::from(ip), 128),
             _ => return Err(anyhow!("route prefix address family or notation mismatch")),
         };
-        ensure!(
-            (1..=width).contains(&length),
-            "route prefix length is zero or out of range"
-        );
+        ensure!(length <= width, "route prefix length is out of range");
         let network = Self { bits, length };
         ensure!(
             network.bits & !network.mask() == 0,
@@ -326,7 +432,9 @@ impl Network {
     }
 
     fn mask(self) -> u128 {
-        u128::MAX << (128 - self.length)
+        u128::MAX
+            .checked_shl(u32::from(128 - self.length))
+            .unwrap_or(0)
     }
 
     fn strictly_contains(self, other: Self) -> bool {
@@ -342,7 +450,7 @@ fn asn(value: &str) -> Option<u32> {
     digits.parse().ok()
 }
 
-fn route_set_name(value: &str) -> bool {
+fn set_name(value: &str, prefixes: &[&str]) -> bool {
     let mut has_set_name = false;
     for (index, component) in value.split(':').enumerate() {
         if index == 5 {
@@ -352,9 +460,12 @@ fn route_set_name(value: &str) -> bool {
             continue;
         }
         if !generic_name(component)
-            || !component
-                .get(..3)
-                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("RS-"))
+            || !component.get(..3).is_some_and(|prefix| {
+                prefixes
+                    .iter()
+                    .any(|allowed| prefix.eq_ignore_ascii_case(allowed))
+            })
+            || component.eq_ignore_ascii_case("AS-ANY")
             || component.eq_ignore_ascii_case("RS-ANY")
         {
             return false;
@@ -362,6 +473,43 @@ fn route_set_name(value: &str) -> bool {
         has_set_name = true;
     }
     has_set_name
+}
+
+fn route_set_member(value: &str, multiprotocol: bool) -> bool {
+    let (target, range) = match value.split_once('^') {
+        Some((target, range)) => {
+            let Some(range) = parse_range(range) else {
+                return false;
+            };
+            (target, Some(range))
+        }
+        None => (value, None),
+    };
+    if asn(target).is_some() || set_name(target, &["RS-", "AS-"]) {
+        // A range on an ASN or nested set needs an explicit expansion policy.
+        return range.is_none();
+    }
+    let ipv6 = target.contains(':');
+    if ipv6 && !multiprotocol {
+        return false;
+    }
+    let width = if ipv6 { 128 } else { 32 };
+    let length = if target.contains('/') {
+        let Ok(network) = Network::parse(target, ipv6) else {
+            return false;
+        };
+        u16::from(network.length)
+    } else {
+        if target.parse::<IpAddr>().is_err() || (ipv6 && target.contains('.')) {
+            return false;
+        }
+        width
+    };
+    match range {
+        Some(RangeOperator::Length(end)) => (length..=width).contains(&end),
+        Some(RangeOperator::Interval(start, end)) => start >= length && end <= width,
+        _ => true,
+    }
 }
 
 fn generic_name(value: &str) -> bool {
@@ -375,6 +523,10 @@ fn generic_name(value: &str) -> bool {
 }
 
 fn valid_name(value: &str) -> bool {
+    valid_name_with_prefix(value, None)
+}
+
+fn valid_name_with_prefix(value: &str, allowed_prefix: Option<&str>) -> bool {
     const RESERVED: &[&str] = &[
         "ANY", "AS-ANY", "RS_ANY", "PEERAS", "AND", "OR", "NOT", "ATOMIC", "FROM", "TO", "AT",
         "ACTION", "ACCEPT", "ANNOUNCE", "EXCEPT", "REFINE", "NETWORKS", "INTO", "INBOUND",
@@ -387,7 +539,7 @@ fn valid_name(value: &str) -> bool {
     !RESERVED.contains(&upper.as_str())
         && !["AS-", "RS-", "RTRS-", "FLTR-", "PRNG-"]
             .iter()
-            .any(|prefix| upper.starts_with(prefix))
+            .any(|prefix| Some(*prefix) != allowed_prefix && upper.starts_with(prefix))
 }
 
 fn valid_email(value: &str) -> bool {
@@ -522,7 +674,7 @@ mod tests {
             assert!(validate(&object(&malformed)).is_err(), "{malformed}");
         }
 
-        let unsupported = object("aut-num: AS64496\nsource: EXAMPLE\n");
+        let unsupported = object("filter-set: FLTR-EXAMPLE\nsource: EXAMPLE\n");
         assert!(validate(&unsupported).is_err());
     }
 
@@ -632,6 +784,118 @@ mod tests {
                 "{class}: {prefix}\norigin: AS64496\nmnt-by: EXAMPLE-MNT\nsource: EXAMPLE\n"
             );
             assert!(parse(&text).is_err(), "{text}");
+        }
+    }
+
+    const AS_SET: &str = concat!(
+        "as-set: AS064496:AS-EXAMPLE\n",
+        "members: AS64497,\n",
+        "+ AS64498:AS-CHILD\n",
+        "mbrs-by-ref: ANY\n",
+        "mnt-by: EXAMPLE-MNT\n",
+        "source: EXAMPLE\n",
+    );
+
+    const ROUTE_SET: &str = concat!(
+        "route-set: AS64496:RS-EXAMPLE\n",
+        "members: AS64497, AS-CHILD, RS-CHILD, 0.0.0.0/0^0-24, 192.0.2.1\n",
+        "mp-members: 2001:db8::/32^48, ::/0^+\n",
+        "mbrs-by-ref: FIRST-MNT, SECOND-MNT\n",
+        "mnt-by: EXAMPLE-MNT\n",
+        "source: EXAMPLE\n",
+    );
+
+    #[test]
+    fn validates_set_schemas_and_extracts_creation_parent() -> Result<()> {
+        for text in [AS_SET, ROUTE_SET] {
+            let object = object(text);
+            validate(&object)?;
+            assert_eq!(set_creation_asn(&object)?, 64496);
+        }
+
+        for name in ["AS-EXAMPLE", "AS0:AS-EXAMPLE", "AS-PARENT:AS-EXAMPLE"] {
+            let legacy_name = object(&AS_SET.replace("AS064496:AS-EXAMPLE", name));
+            validate(&legacy_name)?;
+            assert!(set_creation_asn(&legacy_name).is_err());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_invalid_or_unsupported_set_members_and_grants() {
+        for input in [
+            AS_SET.replace("AS064496:AS-EXAMPLE", "AS-ANY"),
+            AS_SET.replace("AS064496:AS-EXAMPLE", "AS64496:RS-EXAMPLE"),
+            AS_SET.replace("AS64498:AS-CHILD", "RS-CHILD"),
+            AS_SET.replace("AS64498:AS-CHILD", "192.0.2.0/24"),
+            AS_SET.replace("members:", "mp-members:"),
+            AS_SET.replace("mbrs-by-ref: ANY", "mbrs-by-ref: ANY, EXAMPLE-MNT"),
+            ROUTE_SET.replace("RS-CHILD,", "RS-CHILD^+,"),
+            ROUTE_SET.replace("192.0.2.1", "2001:db8::/32"),
+            ROUTE_SET.replace("192.0.2.1", "192.00.02.1"),
+            ROUTE_SET.replace("2001:db8::/32^48", "2001:db8::/32^31-48"),
+            ROUTE_SET.replace("2001:db8::/32^48", "2001:db8::/32^129"),
+            ROUTE_SET.replace("2001:db8::/32^48", "2001:db8::1/32^48"),
+            ROUTE_SET.replace("FIRST-MNT, SECOND-MNT", "FIRST-MNT,,SECOND-MNT"),
+            ROUTE_SET.replace("mnt-by: EXAMPLE-MNT\n", ""),
+        ] {
+            assert!(validate(&object(&input)).is_err(), "{input}");
+        }
+    }
+
+    const AUT_NUM: &str = concat!(
+        "aut-num: as064496\n",
+        "as-name: AS-EXAMPLE\n",
+        "descr: Example autonomous system\n",
+        "member-of: AS64497:AS-PARENT, AS-SECOND\n",
+        "import: from AS64497 accept AS64497\n",
+        "import: from AS64498\n",
+        "+ accept AS64498\n",
+        "mp-export: afi ipv6.unicast to AS64497 announce AS64496\n",
+        "admin-c: TEST1-EXAMPLE\n",
+        "tech-c: TEST2-EXAMPLE\n",
+        "mnt-by: EXAMPLE-MNT\n",
+        "source: EXAMPLE\n",
+    );
+
+    #[test]
+    fn validates_aut_num_names_policies_and_strong_contacts() -> Result<()> {
+        let object = object(AUT_NUM);
+        assert_eq!(object.key, "AS64496");
+        validate(&object)?;
+        assert_eq!(contacts(&object)?, ["TEST1-EXAMPLE", "TEST2-EXAMPLE"]);
+        assert_eq!(maintainers(&object)?, ["EXAMPLE-MNT"]);
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_incomplete_or_ambiguous_aut_num_objects() {
+        for invalid in [
+            AUT_NUM.replace("as064496", "AS0"),
+            AUT_NUM.replace("as-name: AS-EXAMPLE", "as-name: AS-ANY"),
+            AUT_NUM.replace("as-name: AS-EXAMPLE", "as-name: RS-EXAMPLE"),
+            AUT_NUM.replace(
+                "as-name: AS-EXAMPLE",
+                "as-name: AS-EXAMPLE\nas-name: DUPLICATE",
+            ),
+            AUT_NUM.replace("as-name: AS-EXAMPLE\n", ""),
+            AUT_NUM.replace("admin-c: TEST1-EXAMPLE\n", ""),
+            AUT_NUM.replace("tech-c: TEST2-EXAMPLE\n", ""),
+            AUT_NUM.replace("mnt-by: EXAMPLE-MNT\n", ""),
+            AUT_NUM.replace("AS-SECOND", "RS-SECOND"),
+            AUT_NUM.replace("AS-SECOND", "AS64498"),
+            AUT_NUM.replace("TEST1-EXAMPLE", "TEST1-EXAMPLE,TEST2-EXAMPLE"),
+            AUT_NUM.replace("from AS64497 accept AS64497", "# empty expression"),
+            AUT_NUM.replace(
+                "from AS64497 accept AS64497",
+                "from\u{0085}AS64497 accept ANY",
+            ),
+            AUT_NUM.replace("descr: Example autonomous system", "status: ASSIGNED"),
+        ] {
+            assert!(validate(&object(&invalid)).is_err(), "{invalid}");
+        }
+        for identity in ["64496", "AS4294967296", "AS64496.1"] {
+            assert!(parse(&AUT_NUM.replace("as064496", identity)).is_err());
         }
     }
 }

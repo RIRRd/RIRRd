@@ -36,6 +36,21 @@ struct Access {
     nrtm3: HashMap<String, HashSet<IpAddr>>,
 }
 
+#[derive(Clone)]
+struct Client {
+    access: Arc<Access>,
+    peer: IpAddr,
+}
+
+impl Client {
+    fn permits_nrtm3(&self, source: &str) -> bool {
+        self.access
+            .nrtm3
+            .get(source)
+            .is_some_and(|peers| peers.contains(&self.peer))
+    }
+}
+
 fn admit(
     slots: &Arc<Semaphore>,
     peers: &mut HashMap<IpAddr, Weak<Semaphore>>,
@@ -99,6 +114,7 @@ enum Query {
         start: u64,
         end: Option<u64>,
     },
+    Nrtm3Sources,
     Version,
 }
 
@@ -135,7 +151,8 @@ pub async fn serve(
                 if let Some(permit) = admit(
                     &slots, &mut peers, ip, peer_limit, config.max_connections,
                 ) {
-                    clients.spawn(handle(socket, store.clone(), access.clone(), ip, deadline, permit, stopped.clone()));
+                    let client = Client { access: access.clone(), peer: ip };
+                    clients.spawn(handle(socket, store.clone(), client, deadline, permit, stopped.clone()));
                 }
             }
         }
@@ -148,12 +165,12 @@ pub async fn serve(
 async fn handle(
     socket: TcpStream,
     store: Arc<Store>,
-    access: Arc<Access>,
-    peer: IpAddr,
+    client: Client,
     deadline: Duration,
     mut permit: ConnectionPermit,
     mut stopped: watch::Receiver<bool>,
 ) {
+    let access = &client.access;
     let (read, mut write) = socket.into_split();
     let mut input = BufReader::new(read);
     let mut selected = access.sources.clone();
@@ -205,7 +222,7 @@ async fn handle(
                     "%  No entries found for the selected source(s).\n\n\n".to_owned()
                 } else if let Some(query) = prepared.and_then(parse_query_text) {
                     if matches!(&query, Query::Nrtm3 { source, .. }
-                        if !access.nrtm3.get(source).is_some_and(|peers| peers.contains(&peer)))
+                        if !client.permits_nrtm3(source))
                     {
                         "%% ERROR: Access denied\n\n\n".to_owned()
                     } else {
@@ -214,6 +231,7 @@ async fn handle(
                             store.clone(),
                             selected.clone(),
                             excluded.clone(),
+                            client.clone(),
                             deadline,
                             permit,
                         )
@@ -361,18 +379,20 @@ async fn lookup(
     store: Arc<Store>,
     sources: Arc<[String]>,
     excluded: Arc<[String]>,
+    client: Client,
     deadline: Duration,
     permit: ConnectionPermit,
 ) -> Option<(String, ConnectionPermit)> {
     let nrtm = matches!(&query, Query::Nrtm3 { .. });
+    let discovery = matches!(&query, Query::Nrtm3Sources);
     let irrd = match &query {
-        Query::Exact(_) | Query::Nrtm3 { .. } => false,
+        Query::Exact(_) | Query::Nrtm3 { .. } | Query::Nrtm3Sources => false,
         Query::Route { irrd, .. } | Query::Inverse { irrd, .. } => *irrd,
         _ => true,
     };
     let lookup = tokio::task::spawn_blocking(move || {
         let _view = store.query_gate().blocking_read();
-        let result = execute(query, &store, &sources, &excluded);
+        let result = execute(query, &store, &sources, &excluded, &client);
         (result, permit)
     });
     let response = match timeout(deadline, lookup).await {
@@ -381,6 +401,8 @@ async fn lookup(
             tracing::error!(%error, "WHOIS lookup failed");
             let response = if nrtm {
                 "%% ERROR: Requested NRTMv3 range is unavailable\n\n\n"
+            } else if discovery {
+                "%% ERROR: An internal error occurred while processing this query.\n\n\n"
             } else if irrd {
                 "F Lookup failed\n"
             } else {
@@ -393,7 +415,13 @@ async fn lookup(
     Some(response)
 }
 
-fn execute(query: Query, store: &Store, sources: &[String], excluded: &[String]) -> Result<String> {
+fn execute(
+    query: Query,
+    store: &Store,
+    sources: &[String],
+    excluded: &[String],
+    client: &Client,
+) -> Result<String> {
     match query {
         Query::Version => Ok(frame_irrd(format!(
             "rust-irrd {}",
@@ -451,6 +479,7 @@ fn execute(query: Query, store: &Store, sources: &[String], excluded: &[String])
             let prefixes = crate::sets::routes_for_as_set(store, sources, &name, family, excluded)?;
             Ok(frame_values(prefixes))
         }
+        Query::Nrtm3Sources => nrtm3_sources(store, client),
         Query::Nrtm3 { source, start, end } => {
             let Some((end, operations)) = store.nrtm3_journal(
                 &source,
@@ -496,6 +525,24 @@ fn execute(query: Query, store: &Store, sources: &[String], excluded: &[String])
             Ok(response)
         }
     }
+}
+
+fn nrtm3_sources(store: &Store, client: &Client) -> Result<String> {
+    let mut response = String::new();
+    for source in client.access.sources.iter() {
+        let permission = if client.permits_nrtm3(source) {
+            "X"
+        } else {
+            "N"
+        };
+        if let Some((oldest, newest)) = store.nrtm3_journal_bounds(source)? {
+            writeln!(response, "{source}:3:{permission}:{oldest}-{newest}")?;
+        } else {
+            writeln!(response, "{source}:3:{permission}:Unknown")?;
+        }
+    }
+    response.push_str("\n\n");
+    Ok(response)
 }
 
 fn frame_irrd(body: String) -> String {
@@ -596,6 +643,9 @@ fn parse_query_text(line: &str) -> Option<Query> {
         let argument = argument.trim();
         if flag == "g" {
             return parse_journal_query(argument);
+        }
+        if flag == "q" && argument == "sources" {
+            return Some(Query::Nrtm3Sources);
         }
         if flag == "i" {
             let (field, value) = argument.split_once(' ')?;
@@ -793,5 +843,81 @@ mod tests {
             assert_eq!(parse_query(invalid), None);
         }
         assert_eq!(parse_query(&[b'A'; 513]), None);
+    }
+
+    #[tokio::test]
+    async fn advertises_nrtm3_ranges_with_per_peer_acl_and_ripe_framing() -> Result<()> {
+        use crate::nrtm3::{Kind, Operation};
+
+        let directory = tempfile::tempdir()?;
+        let config_file = directory.path().join("irrd.toml");
+        std::fs::write(
+            &config_file,
+            r#"
+database = "registry.redb"
+sources = ["OTHER", "EMPTY", "TEST"]
+listen = "127.0.0.1:0"
+max_connections = 4
+io_timeout_seconds = 2
+max_snapshot_bytes = 4096
+
+[nrtm3_serve]
+OTHER = ["192.0.2.1"]
+TEST = ["127.0.0.1"]
+"#,
+        )?;
+        let config = Config::load(&config_file)?;
+        let store = Arc::new(Store::open(&config.database)?);
+        let writer = Arc::clone(&store);
+        tokio::task::spawn_blocking(move || -> Result<()> {
+            for (source, first, last) in [("OTHER", 31, 31), ("TEST", 41, 42)] {
+                let object = crate::rpsl::parse(&format!("aut-num: AS64496\nsource: {source}"))
+                    .map_err(anyhow::Error::msg)?;
+                writer.replace_source(source, [Ok(object.clone())])?;
+                writer.apply_nrtm3(
+                    source,
+                    (first, last),
+                    Some(first - 1),
+                    (first..=last).map(|serial| {
+                        Ok(Operation {
+                            kind: Kind::Add,
+                            serial,
+                            object: object.clone(),
+                        })
+                    }),
+                )?;
+            }
+            Ok(())
+        })
+        .await??;
+
+        let listener = TcpListener::bind(config.listen).await?;
+        let address = listener.local_addr()?;
+        let (stop, stopped) = watch::channel(false);
+        let server = tokio::spawn(async move { serve(listener, &config, store, stopped).await });
+        for (query, expected) in [
+            (
+                "-q sources\r\n",
+                "OTHER:3:N:31-31\nEMPTY:3:N:Unknown\nTEST:3:X:41-42\n\n\n",
+            ),
+            (
+                "-s TEST -q sources\r\n",
+                "OTHER:3:N:31-31\nEMPTY:3:N:Unknown\nTEST:3:X:41-42\n\n\n",
+            ),
+            ("-g OTHER:3:31-LAST\r\n", "%% ERROR: Access denied\n\n\n"),
+            (
+                "-g TEST:3:43-LAST\r\n",
+                "% Warning: there are no newer updates available\n\n\n",
+            ),
+        ] {
+            let mut socket = TcpStream::connect(address).await?;
+            socket.write_all(query.as_bytes()).await?;
+            let mut response = String::new();
+            timeout(Duration::from_secs(3), socket.read_to_string(&mut response)).await??;
+            assert_eq!(response, expected);
+        }
+        let _ = stop.send(true);
+        timeout(Duration::from_secs(3), server).await???;
+        Ok(())
     }
 }

@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use anyhow::{Context, Result, ensure};
 
 use crate::{
-    authoritative_validation::{contacts, maintainers, validate},
+    authoritative_validation::{contacts, maintainers, set_creation_asn, validate},
     maintainer_auth::{AuthBudget, authenticates, authenticates_existing, validate_new},
     rpsl::Object,
 };
@@ -48,7 +48,14 @@ pub fn authorize(
         ensure!(
             matches!(
                 object.class.as_str(),
-                "person" | "role" | "mntner" | "route" | "route6"
+                "person"
+                    | "role"
+                    | "mntner"
+                    | "route"
+                    | "route6"
+                    | "as-set"
+                    | "route-set"
+                    | "aut-num"
             ),
             "unsupported authoritative object class"
         );
@@ -110,6 +117,10 @@ pub fn authorize(
             );
         }
         ensure!(
+            object.class != "aut-num" || previous.is_some(),
+            "new aut-num objects require operator provisioning"
+        );
+        ensure!(
             any_maintainer(
                 object,
                 &existing,
@@ -120,13 +131,22 @@ pub fn authorize(
             )?,
             "maintainer authentication failed"
         );
-        if previous.is_none()
-            && matches!(object.class.as_str(), "route" | "route6")
-            && let Some(parent) = route_parent(object)?
-        {
+        let parent = if previous.is_some() {
+            None
+        } else {
+            match object.class.as_str() {
+                "route" | "route6" => route_parent(object)?,
+                "as-set" | "route-set" => {
+                    let asn = set_creation_asn(object)?;
+                    existing("aut-num", &format!("AS{asn}"))?
+                }
+                _ => None,
+            }
+        };
+        if let Some(parent) = parent {
             ensure!(
                 exists_after(&parent.class, &parent.key)?,
-                "route parent would be deleted by this submission"
+                "parent object would be deleted by this submission"
             );
             ensure!(
                 any_maintainer(
@@ -137,7 +157,7 @@ pub fn authorize(
                     &mut authenticated,
                     legacy_md5,
                 )?,
-                "route parent authentication failed"
+                "parent maintainer authentication failed"
             );
         }
         for maintainer in maintainers(object)? {

@@ -273,7 +273,7 @@ fn parse_member(class: &str, multiprotocol: bool, member: &str) -> Option<SetMem
     None
 }
 
-fn parse_range(value: &str) -> Option<RangeOperator> {
+pub(crate) fn parse_range(value: &str) -> Option<RangeOperator> {
     let length = |value: &str| {
         if value.len() > 3 || !value.bytes().all(|byte| byte.is_ascii_digit()) {
             return None;

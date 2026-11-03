@@ -30,6 +30,7 @@ printf '!mroute,192.0.2.0/24AS64496\n' | nc 127.0.0.1 4343
 | `!!`, `-k`, `!q` | Start a persistent connection or close it. Each session has an idle deadline and a 1,024-line budget. |
 | `!s<source-list>`, `!s-lc`, `!e<set-list>`, `!e-lc` | Select and inspect query sources or recursive set exclusions for the current connection. |
 | `-s <source-list>`, `-a`, `-V <client>` | RIPE-style source selection, source reset and client identification. |
+| `-q sources` | List configured sources, retained NRTMv3 journal bounds and whether the peer may mirror each source. |
 | `!v`, `!n<client>` | Report version or acknowledge client identification. |
 
 Bare, route and inverse lookups return at most 16 objects. A single-AS origin lookup returns at most 4,096 distinct prefixes. Set expansion has separate traversal limits. Requests exceeding a limit fail as a whole. The mirror parser validates record structure and identity. Indexing retains valid optional lookup values and reports malformed values that it skipped.
@@ -163,7 +164,7 @@ This command evaluates validated payloads locally. It does not currently annotat
 
 Set `authoritative_sources = ["EXAMPLE"]` alongside `sources` in TOML. Bootstrap operator-managed records and maintainers through a trusted snapshot using `import snapshot --authoritative-restore`. This flag explicitly permits full source replacement. The NRTMv3 client rejects authoritative sources.
 
-Stop the server and run `rust-irrd update --source EXAMPLE --file changes.rpsl`. Pipe one password per line to standard input. Use `--delete` when every record in the file is a deletion. The supported write profile covers person, role, route and route6 creation, modification and deletion, and updates to existing maintainers. Maintainer provisioning is operator-managed. Authentication requires bounded `BCRYPT-PW` verification. An update requires a valid maintainer for both the existing and proposed record. A maintainer update also verifies the proposed credentials. Strong references are checked and can prevent deletion.
+Stop the server and run `rust-irrd update --source EXAMPLE --file changes.rpsl`. Pipe one password per line to standard input. Use `--delete` when every record in the file is a deletion. The supported write profile covers person, role, route, route6, AS-set and route-set creation, modification and deletion, and updates to existing maintainers and autonomous system records. New maintainer and autonomous system records require operator provisioning. Authentication requires bounded `BCRYPT-PW` verification. An update requires a valid maintainer for both the existing and proposed record. A maintainer update also verifies the proposed credentials. Strong references are checked and can prevent deletion. New AS-sets and route-sets require a leading ASN in their names. Creation also requires authentication against the same-source parent `aut-num` when it exists.
 
 Route creation also checks the same-source parent when one exists. Exact or smallest enclosing address allocations take precedence over the closest strict covering route. Ambiguous equally specific parents reject creation. The authoritative parser requires unambiguous CIDR syntax and rejects AS0, default routes and unspecified host routes. Aggregate policy attributes are outside the supported profile.
 
