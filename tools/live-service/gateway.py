@@ -36,6 +36,7 @@ class State:
         self.history_file = history_file
         self.history = collections.deque(maxlen=1440)
         self.previous_sample = None
+        self.history_cache = None
         if history_file:
             try:
                 if history_file.stat().st_size <= 2 * 1024 * 1024:
@@ -67,6 +68,7 @@ class State:
                 'rss_bytes': snapshot.get('process_rss_bytes'), 'cpu_percent': snapshot.get('cpu_percent_one_core'),
                 'http_qps': qps, 'http_p95_ms': durations[max(0, math.ceil(len(durations) * .95) - 1)] if durations else None,
                 'vrps': vrps})
+            self.history_cache = None
             while self.history and self.history[0]['timestamp'] < now - 86400:
                 self.history.popleft()
             data = json.dumps(list(self.history))
@@ -84,6 +86,17 @@ class State:
             return {'schema_version': 1, 'sample_seconds': 60, 'retention_seconds': 86400,
                     'scope': 'Actual node samples; gaps are not interpolated. HTTP counters exclude TCP. Recent p95 uses at most 512 attempts, not a load test.',
                     'samples': list(self.history)}
+
+    def history_json(self):
+        # A history window changes once per sample, not once per visitor.
+        # Cache only aggregate monitoring data; query responses are not cached.
+        with self.lock:
+            if self.history_cache is None:
+                self.history_cache = json.dumps({'schema_version': 1,
+                    'sample_seconds': 60, 'retention_seconds': 86400,
+                    'scope': 'Actual node samples; gaps are not interpolated. HTTP counters exclude TCP. Recent p95 uses at most 512 attempts, not a load test.',
+                    'samples': list(self.history)}, separators=(',', ':')).encode()
+            return self.history_cache
 
     def allow(self, client, clock=None):
         clock = time.monotonic() if clock is None else clock
@@ -288,7 +301,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if self.command == 'GET' and path.path == '/dashboard/live.json' and not path.query:
             return self.respond(200, json.dumps(state.stats()).encode())
         if self.command == 'GET' and path.path == '/dashboard/history.json' and not path.query:
-            return self.respond(200, json.dumps(state.samples()).encode())
+            return self.respond(200, state.history_json())
         if self.command == 'GET' and path.path == '/dashboard/meta.json' and not path.query:
             stats = state.stats()
             loaded = [s['source'] for s in stats.get('sources', []) if s['state'] == 'loaded']

@@ -103,6 +103,20 @@ class GatewayChecks(unittest.TestCase):
             self.assertNotIn('prefix',path.read_text())
             self.assertNotIn('client',path.read_text())
 
+    def test_history_export_is_shared_until_a_new_observation(self):
+        state=gateway.State(Path('/unused'),1)
+        now=gateway.time.time()
+        sample={'total_objects':100,'process_rss_bytes':123456,'cpu_percent_one_core':0.5}
+        state.sample(sample,200,now=now)
+        first=state.history_json()
+        self.assertEqual(json.loads(first),state.samples())
+        self.assertIs(first,state.history_json())
+        state.record(.01,False)
+        self.assertIs(first,state.history_json())
+        state.sample(sample,201,now=now+60)
+        self.assertIsNot(first,state.history_json())
+        self.assertEqual(len(json.loads(state.history_json())['samples']),2)
+
     def test_bounds_and_per_client_rate(self):
         self.assertEqual(self.request('POST', '/graphql/', b'X' * (gateway.MAX_BODY + 1))[0], 413)
         self.assertEqual(self.request('GET', '/v1/whois/?q=A', headers={'Transfer-Encoding': 'chunked'})[0], 400)

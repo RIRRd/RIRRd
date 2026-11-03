@@ -21,9 +21,38 @@ pub enum Validation {
 
 pub struct RoaTable {
     vrps: Vec<Vrp>,
+    lengths_v4: Vec<u8>,
+    lengths_v6: Vec<u8>,
 }
 
 impl RoaTable {
+    fn indexed(mut vrps: Vec<Vrp>) -> Self {
+        vrps.sort_unstable();
+        vrps.dedup();
+        let mut v4 = [false; 33];
+        let mut v6 = [false; 129];
+        for entry in &vrps {
+            match entry.prefix {
+                Prefix::V4(_, length) => v4[usize::from(length)] = true,
+                Prefix::V6(_, length) => v6[usize::from(length)] = true,
+            }
+        }
+        Self {
+            vrps,
+            lengths_v4: (0..=32).rev().filter(|&n| v4[usize::from(n)]).collect(),
+            lengths_v6: (0..=128).rev().filter(|&n| v6[usize::from(n)]).collect(),
+        }
+    }
+
+    fn covering_lengths(&self, route: Prefix, inclusive: bool) -> impl Iterator<Item = u8> + '_ {
+        let lengths = match route {
+            Prefix::V4(..) => &self.lengths_v4,
+            Prefix::V6(..) => &self.lengths_v6,
+        };
+        let first =
+            lengths.partition_point(|&n| n > route.length() || (!inclusive && n == route.length()));
+        lengths[first..].iter().copied()
+    }
     /// Read a complete JSON document exported by a trusted RPKI validator.
     pub fn read(reader: impl Read, max_bytes: u64) -> Result<Self> {
         let limit = max_bytes.saturating_add(1);
@@ -33,10 +62,7 @@ impl RoaTable {
             limit - reader.get_ref().limit() <= max_bytes,
             "ROA feed exceeds the configured byte limit"
         );
-        let mut vrps = feed?.0.roas;
-        vrps.sort_unstable();
-        vrps.dedup();
-        Ok(Self { vrps })
+        Ok(Self::indexed(feed?.0.roas))
     }
 
     /// Construct the ROV index directly from the embedded validator's verified payloads.
@@ -62,9 +88,7 @@ impl RoaTable {
                 max_length,
             });
         }
-        vrps.sort_unstable();
-        vrps.dedup();
-        Ok(Self { vrps })
+        Ok(Self::indexed(vrps))
     }
 
     /// Build directly from verified binary prefixes without allocating and
@@ -87,9 +111,7 @@ impl RoaTable {
                 max_length,
             });
         }
-        vrps.sort_unstable();
-        vrps.dedup();
-        Ok(Self { vrps })
+        Ok(Self::indexed(vrps))
     }
 
     pub fn family_counts(&self) -> (usize, usize) {
@@ -104,7 +126,7 @@ impl RoaTable {
     pub fn covering_payloads(&self, prefix: &str) -> Result<(Vec<serde_json::Value>, bool)> {
         let route = Prefix::parse(prefix)?;
         let mut result = Vec::new();
-        for length in (0..=route.length()).rev() {
+        for length in self.covering_lengths(route, true) {
             let candidate = route.ancestor(length);
             let lower = self.vrps.partition_point(|v| v.prefix < candidate);
             for vrp in self.vrps[lower..]
@@ -138,27 +160,18 @@ impl RoaTable {
         if self.is_empty() {
             return Ok(Validation::NotFound);
         }
-        let mut covered = false;
-        for length in (0..=route.length()).rev() {
-            let candidate = route.ancestor(length);
-            // The last entry at or before (prefix, origin) is the exact
-            // origin's greatest maxLength when such an entry exists.
-            let upper = self
-                .vrps
-                .partition_point(|entry| (entry.prefix, entry.origin) <= (candidate, origin));
-            if let Some(entry) = upper.checked_sub(1).and_then(|index| self.vrps.get(index))
-                && entry.prefix == candidate
-            {
-                covered = true;
-                if origin != 0 && origin == entry.origin && route.length() <= entry.max_length {
-                    return Ok(Validation::Valid);
-                }
-            } else if self
-                .vrps
-                .get(upper)
-                .is_some_and(|entry| entry.prefix == candidate)
-            {
-                covered = true;
+        // Exact, valid announcements are common. Do not make them walk or
+        // search the length directory before the same direct lookup as before.
+        let exact = self.covering_verdict(route, origin, route.length());
+        if exact == Some(Validation::Valid) {
+            return Ok(Validation::Valid);
+        }
+        let mut covered = exact.is_some();
+        for length in self.covering_lengths(route, false) {
+            match self.covering_verdict(route.ancestor(length), origin, route.length()) {
+                Some(Validation::Valid) => return Ok(Validation::Valid),
+                Some(_) => covered = true,
+                None => {}
             }
         }
         Ok(if covered {
@@ -166,6 +179,30 @@ impl RoaTable {
         } else {
             Validation::NotFound
         })
+    }
+
+    #[inline]
+    fn covering_verdict(&self, candidate: Prefix, origin: u32, length: u8) -> Option<Validation> {
+        // The last record before (prefix, origin) carries this origin's largest
+        // maxLength when present. Other origins still establish coverage.
+        let upper = self
+            .vrps
+            .partition_point(|entry| (entry.prefix, entry.origin) <= (candidate, origin));
+        if let Some(entry) = upper.checked_sub(1).and_then(|n| self.vrps.get(n))
+            && entry.prefix == candidate
+        {
+            return Some(
+                if origin != 0 && origin == entry.origin && length <= entry.max_length {
+                    Validation::Valid
+                } else {
+                    Validation::Invalid
+                },
+            );
+        }
+        self.vrps
+            .get(upper)
+            .filter(|entry| entry.prefix == candidate)
+            .map(|_| Validation::Invalid)
     }
 }
 
@@ -365,6 +402,69 @@ mod tests {
 
     fn table(input: &str) -> Result<RoaTable> {
         RoaTable::read(input.as_bytes(), input.len() as u64)
+    }
+
+    #[test]
+    fn length_index_matches_full_scan_across_both_families_and_as_zero() -> Result<()> {
+        let mut records = Vec::new();
+        // Include default routes, sparse lengths, multiple origins and AS0.
+        for n in 0..256u32 {
+            let v4 = Prefix::V4(0x0a00_0000 | (n << 12), 32).ancestor((n % 33) as u8);
+            let v6 = Prefix::V6((0x2001_0db8u128 << 96) | (u128::from(n) << 64), 128)
+                .ancestor((n % 129) as u8);
+            for prefix in [v4, v6] {
+                records.push(Vrp {
+                    prefix,
+                    origin: if n % 7 == 0 { 0 } else { 64496 + n % 3 },
+                    max_length: prefix.width(),
+                });
+            }
+        }
+        let table = RoaTable::indexed(records);
+        for n in 0..512u32 {
+            for query in [
+                Prefix::V4(0x0a00_0000 | (n << 12), 32).ancestor((n % 33) as u8),
+                Prefix::V6((0x2001_0db8u128 << 96) | (u128::from(n) << 64), 128)
+                    .ancestor((n % 129) as u8),
+            ] {
+                let (address, length) = match query {
+                    Prefix::V4(a, l) => (IpAddr::V4(a.into()), l),
+                    Prefix::V6(a, l) => (IpAddr::V6(a.into()), l),
+                };
+                for origin in [0, 64496, 64497, 64498, 64500] {
+                    let covering: Vec<_> = table
+                        .vrps
+                        .iter()
+                        .filter(|v| {
+                            query.width() == v.prefix.width()
+                                && query.length() >= v.prefix.length()
+                                && query.ancestor(v.prefix.length()) == v.prefix
+                        })
+                        .collect();
+                    let expected = if covering
+                        .iter()
+                        .any(|v| origin != 0 && origin == v.origin && length <= v.max_length)
+                    {
+                        Validation::Valid
+                    } else if covering.is_empty() {
+                        Validation::NotFound
+                    } else {
+                        Validation::Invalid
+                    };
+                    assert_eq!(
+                        table.validate(&format!("{address}/{length}"), origin)?,
+                        expected
+                    );
+                }
+            }
+        }
+        let v4_only = RoaTable::from_verified_prefixes([("192.0.2.0".parse()?, 24, 64496, 24)])?;
+        assert_eq!(
+            v4_only.validate("2001:db8::/32", 64496)?,
+            Validation::NotFound
+        );
+        assert!(v4_only.covering_payloads("2001:db8::/32")?.0.is_empty());
+        Ok(())
     }
 
     #[test]
