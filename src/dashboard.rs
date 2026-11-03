@@ -34,7 +34,7 @@ pub struct Metadata {
 async fn headers(request: Request, next: Next) -> Response {
     let mut response = next.run(request).await;
     let headers = response.headers_mut();
-    headers.insert(CONTENT_SECURITY_POLICY,"default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'".parse().unwrap());
+    headers.insert(CONTENT_SECURITY_POLICY,"default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'".parse().unwrap());
     headers.insert(X_CONTENT_TYPE_OPTIONS, "nosniff".parse().unwrap());
     headers.insert(REFERRER_POLICY, "no-referrer".parse().unwrap());
     headers.insert(CACHE_CONTROL, "no-store".parse().unwrap());
@@ -96,6 +96,8 @@ pub fn router(metadata: Metadata, store: std::sync::Arc<crate::storage::Store>) 
                 )
             }),
         )
+        .route("/ui/charts.js", get(|| async { ([(CONTENT_TYPE, "text/javascript; charset=utf-8")], include_str!("../web/dashboard/charts.js")) }))
+        .route("/ui/mark.svg", get(|| async { ([(CONTENT_TYPE, "image/svg+xml")], include_str!("../web/dashboard/mark.svg")) }))
         .with_state(metadata)
         .layer(middleware::from_fn(headers)))
 }

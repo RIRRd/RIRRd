@@ -21,7 +21,7 @@ NODE = json.loads(Path(__file__).with_name('node.json').read_text())
 
 
 class State:
-    def __init__(self, generation, backend_port):
+    def __init__(self, generation, backend_port, history_file=None):
         self.generation, self.backend_port = generation, backend_port
         self.lock = threading.Lock()
         self.clients = collections.OrderedDict()
@@ -32,6 +32,56 @@ class State:
         self.previous_cpu = None
         self.report_cache = None
         self.report_key = None
+        self.history_file = history_file
+        self.history = collections.deque(maxlen=1440)
+        self.previous_sample = None
+        if history_file:
+            try:
+                if history_file.stat().st_size <= 2 * 1024 * 1024:
+                    saved = json.loads(history_file.read_text())
+                    now = time.time()
+                    fields = {'timestamp', 'objects', 'rss_bytes', 'cpu_percent', 'http_qps', 'http_p95_ms', 'vrps'}
+                    for point in saved[-1440:]:
+                        if (isinstance(point, dict) and set(point) == fields and
+                            all(value is None or (type(value) in (int, float) and math.isfinite(value) and value >= 0) for value in point.values()) and
+                            isinstance(point['timestamp'], (int, float)) and now - 86400 <= point['timestamp'] <= now):
+                            self.history.append(point)
+            except (OSError, ValueError, TypeError):
+                pass
+
+    def sample(self, snapshot, vrps=None, now=None):
+        now = time.time() if now is None else now
+        with self.lock:
+            if self.history and now - self.history[-1]['timestamp'] < 60:
+                return
+            qps = None
+            if self.previous_sample:
+                elapsed = now - self.previous_sample[0]
+                if elapsed > 0:
+                    qps = (self.requests - self.previous_sample[1]) / elapsed
+            self.previous_sample = (now, self.requests)
+            durations = sorted(self.durations)
+            self.history.append({'timestamp': now, 'objects': snapshot.get('total_objects'),
+                'rss_bytes': snapshot.get('process_rss_bytes'), 'cpu_percent': snapshot.get('cpu_percent_one_core'),
+                'http_qps': qps, 'http_p95_ms': durations[max(0, math.ceil(len(durations) * .95) - 1)] if durations else None,
+                'vrps': vrps})
+            while self.history and self.history[0]['timestamp'] < now - 86400:
+                self.history.popleft()
+            data = json.dumps(list(self.history))
+        if self.history_file:
+            try:
+                pending = self.history_file.with_suffix('.next')
+                pending.write_text(data)
+                pending.chmod(0o600)
+                pending.replace(self.history_file)
+            except OSError:
+                pass  # A telemetry write failure must not disable registry queries.
+
+    def samples(self):
+        with self.lock:
+            return {'schema_version': 1, 'sample_seconds': 60, 'retention_seconds': 86400,
+                    'scope': 'Actual node samples; gaps are not interpolated. HTTP counters exclude TCP. Recent p95 uses at most 512 attempts, not a load test.',
+                    'samples': list(self.history)}
 
     def allow(self, client, clock=None):
         clock = time.monotonic() if clock is None else clock
@@ -137,6 +187,19 @@ class State:
                 snapshot['last_refresh'] = json.loads(refresh_state.read_text())
             with self.lock:
                 self.telemetry = snapshot
+            vrps = None
+            rpki = http.client.HTTPConnection('127.0.0.1', self.backend_port, timeout=2)
+            try:
+                rpki.request('GET', '/v1/rpki/status', headers={'Host': '127.0.0.1'})
+                response = rpki.getresponse()
+                status = json.loads(response.read(MAX_BODY))
+                if response.status == 200 and status.get('usable'):
+                    vrps = status.get('vrps')
+            except (OSError, ValueError, http.client.HTTPException):
+                pass
+            finally:
+                rpki.close()
+            self.sample(snapshot, vrps)
         except (OSError, ValueError, KeyError, http.client.HTTPException, subprocess.SubprocessError):
             with self.lock:
                 self.telemetry = {**self.telemetry, 'service': 'unavailable',
@@ -221,18 +284,20 @@ class Handler(http.server.BaseHTTPRequestHandler):
         state = self.server.state
         if self.command == 'GET' and path.path == '/dashboard/live.json' and not path.query:
             return self.respond(200, json.dumps(state.stats()).encode())
+        if self.command == 'GET' and path.path == '/dashboard/history.json' and not path.query:
+            return self.respond(200, json.dumps(state.samples()).encode())
         if self.command == 'GET' and path.path == '/dashboard/meta.json' and not path.query:
             stats = state.stats()
             loaded = [s['source'] for s in stats.get('sources', []) if s['state'] == 'loaded']
             return self.respond(200, json.dumps({'mode': 'live', 'public_service': True,
                 'source_revision': stats.get('release', {}).get('source_commit'),
-                'version': '0.1.0', 'node': NODE,
-                'sources': loaded, 'whois_listen': 'rirrd.co.uk:43',
+                'version': stats.get('release', {}).get('version', '0.1.0-beta.1'), 'node': NODE,
+                'sources': loaded, 'whois_listen': NODE['whois'],
                 'http_sources': [s['source'] for s in stats.get('sources', []) if s['state'] == 'loaded' and s.get('http_access', True)],
                 'http_whois_sources': [s['source'] for s in stats.get('sources', []) if s['state'] == 'loaded'],
                 'max_connections': 128, 'database_cache_mib': 64}).encode())
         permitted = (self.command == 'GET' and path.path in ('/v1/whois/', '/v1/rpki/status', '/v1/rpki/validate', '/v1/irr/objects')) or (
-            self.command == 'POST' and path.path == '/graphql/' and not path.query)
+            self.command == 'POST' and path.path in ('/graphql/', '/v1/rpki/validate') and not path.query)
         if not permitted:
             return self.respond(404)
         # Caddy overwrites this header from its immediate public connection.
@@ -286,8 +351,9 @@ def main():
     parser.add_argument('--generation', type=Path, required=True)
     parser.add_argument('--port', type=int, default=9281)
     parser.add_argument('--backend-port', type=int, default=9280)
+    parser.add_argument('--history-file', type=Path)
     args = parser.parse_args()
-    state = State(args.generation, args.backend_port)
+    state = State(args.generation, args.backend_port, args.history_file)
     state.collect()
     def collector():
         while True:

@@ -3,14 +3,14 @@
 Queries run against this RIRRd node's own database. The service is experimental,
 read-only, and available over IPv4 and IPv6. A source can be a periodically
 refreshed snapshot or a continuously followed mirror: check the
-[live source status](https://rirrd.co.uk/dashboard/#sources) before using results.
+[live source status](https://irrd.tools/dashboard/#sources) before using results.
 IRR routing policy and cryptographic RPKI origin validation are complementary.
 
 ## IPv4 and IPv6 prefixes originated by an ASN
 
 ```sh
-whois -h rirrd.co.uk '!gAS3333'
-whois -h rirrd.co.uk '!6AS3333'
+whois -h irrd.tools '!gAS3333'
+whois -h irrd.tools '!6AS3333'
 ```
 
 `!g` returns IPv4 prefixes and `!6` returns IPv6 prefixes. TCP responses use the
@@ -18,24 +18,24 @@ IRRd length framing. HTTP WHOIS returns the same payload without that framing.
 The RIRRd `sources` HTTP parameter selects a source for this request:
 
 ```sh
-curl --fail --get --data-urlencode 'sources=RIPE' --data-urlencode 'q=!gAS3333' https://rirrd.co.uk/v1/whois/
-curl --fail --get --data-urlencode 'sources=RIPE' --data-urlencode 'q=!6AS3333' https://rirrd.co.uk/v1/whois/
+curl --fail --get --data-urlencode 'sources=RIPE' --data-urlencode 'q=!gAS3333' https://irrd.tools/v1/whois/
+curl --fail --get --data-urlencode 'sources=RIPE' --data-urlencode 'q=!6AS3333' https://irrd.tools/v1/whois/
 ```
 
 ## All ASNs in an AS-set, direct members, and prefix expansion
 
 ```sh
 # Recursively expand nested sets into ASNs.
-whois -h rirrd.co.uk '!iAS-RIPENCC,1'
+whois -h irrd.tools '!iAS-RIPENCC,1'
 # Direct members can include nested set names.
-whois -h rirrd.co.uk '!iAS-RIPENCC'
+whois -h irrd.tools '!iAS-RIPENCC'
 # Resolve recursive AS-set membership to originated IPv4 or IPv6 prefixes.
-whois -h rirrd.co.uk '!a4AS-RIPENCC'
-whois -h rirrd.co.uk '!a6AS-RIPENCC'
+whois -h irrd.tools '!a4AS-RIPENCC'
+whois -h irrd.tools '!a6AS-RIPENCC'
 
-curl --fail --get --data-urlencode 'sources=RIPE' --data-urlencode 'q=!iAS-RIPENCC,1' https://rirrd.co.uk/v1/whois/
-curl --fail --get --data-urlencode 'sources=RIPE' --data-urlencode 'q=!a4AS-RIPENCC' https://rirrd.co.uk/v1/whois/
-curl --fail --get --data-urlencode 'sources=RIPE' --data-urlencode 'q=!a6AS-RIPENCC' https://rirrd.co.uk/v1/whois/
+curl --fail --get --data-urlencode 'sources=RIPE' --data-urlencode 'q=!iAS-RIPENCC,1' https://irrd.tools/v1/whois/
+curl --fail --get --data-urlencode 'sources=RIPE' --data-urlencode 'q=!a4AS-RIPENCC' https://irrd.tools/v1/whois/
+curl --fail --get --data-urlencode 'sources=RIPE' --data-urlencode 'q=!a6AS-RIPENCC' https://irrd.tools/v1/whois/
 ```
 
 Results are deduplicated. Source order matters when the same set name occurs in
@@ -48,9 +48,9 @@ query parity remains incomplete.
 ## Inspect an object or exact route
 
 ```sh
-whois -h rirrd.co.uk AS3333
-whois -h rirrd.co.uk -- '-s RIPE -x 193.0.0.0/21'
-curl --fail --get --data-urlencode 'q=-s RIPE AS-RIPENCC' https://rirrd.co.uk/v1/whois/
+whois -h irrd.tools AS3333
+whois -h irrd.tools -- '-s RIPE -x 193.0.0.0/21'
+curl --fail --get --data-urlencode 'q=-s RIPE AS-RIPENCC' https://irrd.tools/v1/whois/
 ```
 
 All loaded sources, including ARIN, use the public WHOIS, GraphQL and bounded
@@ -60,22 +60,22 @@ from this local RIRRd database.
 ## Structured GraphQL
 
 ```sh
-curl --fail https://rirrd.co.uk/graphql/ -H 'Content-Type: application/json' \
+curl --fail https://irrd.tools/graphql/ -H 'Content-Type: application/json' \
   --data '{"query":"{ asnPrefixes(asns:[3333],ipVersion:4,sources:[\"RIPE\"]) { asn prefixes } }"}'
-curl --fail https://rirrd.co.uk/graphql/ -H 'Content-Type: application/json' \
+curl --fail https://irrd.tools/graphql/ -H 'Content-Type: application/json' \
   --data '{"query":"{ recursiveSetMembers(setNames:[\"AS-RIPENCC\"],sources:[\"RIPE\"]) { rpslPk rootSource members } }"}'
-curl --fail https://rirrd.co.uk/graphql/ -H 'Content-Type: application/json' \
+curl --fail https://irrd.tools/graphql/ -H 'Content-Type: application/json' \
   --data '{"query":"{ asSetPrefixes(setNames:[\"AS-RIPENCC\"],ipVersion:6,sources:[\"RIPE\"]) { rpslPk prefixes } }"}'
 ```
 
 Check both the HTTP status and GraphQL `errors` field. The
-[API workbench](https://rirrd.co.uk/dashboard/#api) introspects the actual schema.
+[API workbench](https://irrd.tools/dashboard/#api) introspects the actual schema.
 
 ## Browse AS-sets and routing classes
 
 ```sh
 curl --fail --get --data-urlencode 'source=RIPE' --data-urlencode 'class=as-set' \
-  --data-urlencode 'limit=30' https://rirrd.co.uk/v1/irr/objects
+  --data-urlencode 'limit=30' https://irrd.tools/v1/irr/objects
 ```
 
 The response contains `keys` and `next_cursor`. Send that cursor as the `after`
@@ -87,10 +87,10 @@ not a full database scan. Changes can occur between pages. Classes: `aut-num`,
 ## Live origin validation and telemetry
 
 ```sh
-curl --fail https://rirrd.co.uk/v1/rpki/status
+curl --fail https://irrd.tools/v1/rpki/status
 curl --fail --get --data-urlencode 'prefix=193.0.0.0/21' \
-  --data-urlencode 'origin=AS3333' https://rirrd.co.uk/v1/rpki/validate
-curl --fail https://rirrd.co.uk/dashboard/live.json
+  --data-urlencode 'origin=AS3333' https://irrd.tools/v1/rpki/validate
+curl --fail https://irrd.tools/dashboard/live.json
 ```
 
 RPKI checks return `VALID`, `INVALID` or `NOT_FOUND` only with a usable locally

@@ -23,3 +23,5 @@ id_rsa*
 
 # Reproducible community build output; source assets and deployment files are tracked.
 /site/community/public/
+
+/site/project/public/

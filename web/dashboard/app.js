@@ -6,6 +6,7 @@
   const bytes = n => Number.isFinite(n) ? (n / 1048576).toFixed(1) + ' MiB' : 'Not reported';
   const pages = ['overview', 'query', 'sources', 'rpki', 'api', 'connect', 'system'];
   let metadata, latest, rpkiData, loading = false, currentResult = '', command = '', cursor = null, queryController;
+  let historyData, historyFetched = 0;
   const publicMode = () => metadata?.public_service === true;
   const sampleASN = () => metadata?.sources?.includes('EXAMPLE') ? 'AS64496' : 'AS3333';
   const sampleSet = () => metadata?.sources?.includes('EXAMPLE') ? 'AS64496:AS-DOCS' : 'AS-RIPENCC';
@@ -101,6 +102,28 @@
       hash.textContent = 'SHA-256: ' + file.sha256; details.append(title, info, hash); out.append(details);
     }
   }
+  function renderHistory() {
+    if (!historyData) return;
+    const cutoff = Date.now() / 1000 - Number(el('history-range').value);
+    const samples = historyData.samples.filter(p => p.timestamp >= cutoff);
+    const charts = window.RIRRdCharts;
+    charts.line(el('query-chart'), samples, 'http_qps', 'Public HTTP queries per second', v => v.toFixed(2) + '/s');
+    charts.line(el('latency-chart'), samples, 'http_p95_ms', 'Recent HTTP p95 response time', v => v.toFixed(1) + ' ms');
+    charts.line(el('memory-chart'), samples, 'rss_bytes', 'Registry process resident memory', v => (v / 1048576).toFixed(0) + ' MiB');
+    charts.line(el('vrp-chart'), samples, 'vrps', 'Validated RPKI origin payload count', v => Math.round(v).toLocaleString());
+    charts.line(el('cpu-chart'), samples, 'cpu_percent', 'Registry CPU as a percentage of one core', v => v.toFixed(1) + '%');
+    text('history-note', historyData.scope + ' Samples: ' + samples.length + '. Collection began ' + (historyData.samples[0] ? new Date(historyData.samples[0].timestamp * 1000).toLocaleString() : 'just now') + '.');
+  }
+  async function refreshHistory(force) {
+    if (!publicMode()) return;
+    el('overview-history').hidden = false; el('resource-history').hidden = false; el('rpki-history').hidden = false;
+    try {
+      if (force || Date.now() - historyFetched > 60000) {
+        historyData = await json('history.json'); historyFetched = Date.now();
+      }
+      renderHistory();
+    } catch { text('history-note', 'History is temporarily unavailable. No values have been generated to fill the gap.'); }
+  }
   async function refresh(force = false) {
     if (!metadata || loading || document.hidden) return;
     const selected = location.hash.slice(1) || 'overview';
@@ -109,12 +132,14 @@
     try {
       latest = await json(publicMode() ? 'live.json' : 'mirrors.json');
       if (publicMode() && latest.service !== 'online') throw new Error('Node service is unavailable');
-      text('mode-badge', publicMode() ? 'Live · Experimental' : 'Private instance');
+      text('mode-badge', publicMode() ? 'Live · Beta' : 'Private instance');
       const totals = {};
       for (const group of Object.values(latest.class_counts || {})) for (const [name, value] of Object.entries(group)) totals[name] = (totals[name] || 0) + value;
       text('live-objects', count(latest.total_objects)); text('count-route', count(totals.route)); text('count-route6', count(totals.route6)); text('count-as-set', count(totals['as-set']));
       text('live-observed', latest.observed_at ? 'Observed ' + new Date(latest.observed_at).toLocaleString() + '. Counts include committed incremental edits.' : 'Committed database counts.');
       renderSources();
+      RIRRdCharts.bars(el('source-chart'), sourceRows().map(row => ({label:row.source,value:Object.values(classes(row)).reduce((n,v)=>n+v,0)})).sort((a,b)=>b.value-a.value), 'Committed routing objects by source');
+      if (['overview','system','rpki'].includes(selected) || force) await refreshHistory(force);
       el('resource-metrics').replaceChildren();
       for (const [label, value, detail] of [['Process memory', bytes(latest.process_rss_bytes), 'Resident memory (RSS)'], ['Service memory', bytes(latest.cgroup_memory_bytes), 'Includes charged filesystem cache'], ['CPU, one-core scale', latest.cpu_percent_one_core == null ? 'Not reported' : latest.cpu_percent_one_core.toFixed(2) + '%', 'Sampled, not lifetime CPU'], ['Database file', latest.database_bytes == null ? 'Not reported' : (latest.database_bytes / 1073741824).toFixed(2) + ' GiB', 'Current database generation']]) {
         const card = document.createElement('article'), name = document.createElement('span'), number = document.createElement('strong'), note = document.createElement('small'); name.textContent = label; number.textContent = value; note.textContent = detail; card.append(name, number, note); el('resource-metrics').append(card);
@@ -130,11 +155,12 @@
       text('vrp-count', rpkiData.vrps == null ? '—' : count(rpkiData.vrps));
       text('rpki-summary', rpkiData.usable ? 'Fresh validated dataset' : rpkiData.enabled ? 'Starting / unavailable' : 'Optional validator disabled');
       text('rpki-state', rpkiData.usable ? 'Dataset ready' : 'Unavailable'); el('rpki-state').className = 'badge' + (rpkiData.usable ? '' : ' warning');
-      text('rpki-detail', rpkiData.message); el('rpki-submit').disabled = !rpkiData.usable;
+      text('rpki-detail', rpkiData.message); el('rpki-submit').disabled = !rpkiData.usable; el('rpki-batch-submit').disabled = !rpkiData.usable;
+      RIRRdCharts.bars(el('anchor-chart'), (rpkiData.trust_anchors || []).map(a=>({label:a.name,value:a.vrps_ipv4+a.vrps_ipv6})), 'Validated RPKI origin payloads by trust anchor');
       text('router-access', publicMode() ? 'This public node offers origin checks over HTTPS. Direct router RTR access is not public.' : rpkiData.rtr_listen ? 'Local RTR listener: ' + rpkiData.rtr_listen + '. Use a router on the same host or an authorised management connection.' : 'A local RTR listener is not configured.');
       el('rpki-metrics').replaceChildren();
       for (const [label, value] of [['Validated payloads', count(rpkiData.vrps)], ['Rejected publication points', rpkiData.rejected_publication_points ?? '—'], ['Dataset serial', rpkiData.serial ?? '—'], ['Last validated', rpkiData.last_success ? new Date(rpkiData.last_success * 1000).toLocaleString() : 'Not yet']]) { const box = document.createElement('div'), name = document.createElement('span'), number = document.createElement('strong'); name.textContent = label; number.textContent = value; box.append(name, number); el('rpki-metrics').append(box); }
-    } catch (error) { text('rpki-summary', 'Status unavailable'); text('rpki-detail', error.message); el('rpki-submit').disabled = true; }
+    } catch (error) { text('rpki-summary', 'Status unavailable'); text('rpki-detail', error.message); el('rpki-submit').disabled = true; el('rpki-batch-submit').disabled = true; }
   }
   function queryText() {
     const value = el('query-value').value.trim(), kind = el('query-kind').value, family = el('query-family').value;
@@ -223,7 +249,8 @@
     try {
       metadata = await json('meta.json');
       if (publicMode() && location.hash === '#network') { location.replace('/#nodes'); return; }
-      text('mode-badge', publicMode() ? 'Live · Experimental' : 'Private instance'); text('brand-caption', publicMode() ? 'PUBLIC NODE TOOLS' : 'INSTANCE CONSOLE');
+      text('mode-badge', publicMode() ? 'Live · Beta' : 'Private instance'); text('brand-caption', publicMode() ? 'PUBLIC NODE TOOLS' : 'INSTANCE CONSOLE');
+      if (publicMode()) { document.querySelector('.brand>span:last-child').firstChild.nodeValue = 'irrd.tools'; document.querySelector('.mobile-brand').textContent = 'irrd.tools'; }
       text('node-name', metadata.node?.name || 'RIRRd instance');
       text('node-description', publicMode() ? [metadata.node?.location, metadata.node?.provider ? 'Hosted by ' + metadata.node.provider : '', 'Read-only routing tools'].filter(Boolean).join(' · ') : 'Your independently operated IRR and optional RPKI validator.');
       text('instance-label', publicMode() ? 'Public read-only node' : 'Independent self-hosted instance'); el('community-link').hidden = !publicMode();
@@ -231,9 +258,11 @@
       fillSelect('query-source', metadata.http_sources || metadata.sources, true); commands(); el('query-value').value = sampleASN(); updateCommand(); el('query-submit').disabled = false;
       const taskName = new URLSearchParams(location.search).get('task');
       if (['origin4','origin6','recursive','set4','set6','object'].includes(taskName)) task(taskName);
+      const presetValue = new URLSearchParams(location.search).get('value'); if (presetValue && presetValue.length <= 256) { el('query-value').value = presetValue; updateCommand(); }
       await refresh(true);
     } catch (error) { text('mode-notice', 'Unable to connect: ' + error.message); el('mode-notice').className = 'notice error'; }
   }
+  el('history-range').addEventListener('change', renderHistory);
   window.addEventListener('hashchange', page);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
   document.querySelectorAll('[data-task]').forEach(button => button.addEventListener('click', () => task(button.dataset.task)));
@@ -246,8 +275,27 @@
   el('graphql-form').addEventListener('submit', event => workbench(event)); el('load-schema').addEventListener('click', event => workbench(event, true));
   el('rpki-form').addEventListener('submit', async event => {
     event.preventDefault(); el('rpki-submit').disabled = true;
-    try { const data = await json('/v1/rpki/validate?' + new URLSearchParams({prefix: el('rpki-prefix').value.trim(), origin: el('rpki-origin').value.trim()})); text('rpki-result', JSON.stringify(data, null, 2)); text('rpki-verdict', data.state); el('rpki-verdict').className = 'verdict ' + data.state.toLowerCase(); }
-    catch (error) { text('rpki-verdict', 'Validation unavailable: ' + error.message); } finally { await refreshRpki(); }
+    try { const data = await json('/v1/rpki/validate?' + new URLSearchParams({prefix: el('rpki-prefix').value.trim(), origin: el('rpki-origin').value.trim()})); text('rpki-result', JSON.stringify(data, null, 2));
+      text('rpki-explanation', data.state === 'VALID' ? 'At least one covering ROA authorises this ASN and prefix length.' : data.state === 'INVALID' ? 'A ROA covers this prefix, but none authorises this ASN and prefix length. Check the listed origins and maximum lengths.' : 'No validated ROA covers this prefix in the current dataset. This does not verify the route or its IRR policy.');
+      const list = el('rpki-covering'); list.replaceChildren();
+      if (data.covering_roas?.length) {
+        const table=document.createElement('table'),caption=document.createElement('caption');caption.textContent='Covering ROAs'+(data.covering_roas_truncated ? ' · first 32 shown' : '');table.append(caption);
+        for (const [index,row] of [['Prefix','Origin','Maximum length'],...data.covering_roas.map(r=>[r.prefix,'AS'+r.asn,r.max_length])].entries()) { const tr=document.createElement('tr');for(const value of row){const cell=document.createElement(index ? 'td' : 'th');cell.textContent=value;tr.append(cell);}table.append(tr); }list.append(table);
+      } text('rpki-verdict', data.state); el('rpki-verdict').className = 'verdict ' + data.state.toLowerCase(); }
+    catch (error) { text('rpki-verdict', 'Validation unavailable: ' + error.message); text('rpki-explanation',''); el('rpki-covering').replaceChildren(); } finally { await refreshRpki(); }
+  });
+  el('rpki-batch-form').addEventListener('submit', async event => {
+    event.preventDefault(); el('rpki-batch-submit').disabled = true; el('rpki-batch-results').replaceChildren();
+    try {
+      const lines=el('rpki-batch-input').value.trim().split(/\n/).filter(line=>line.trim());
+      if(!lines.length || lines.length>100)throw new Error('Enter between 1 and 100 routes.');
+      const routes=lines.map(line=>{const parts=line.trim().split(/\s+/);if(parts.length!==2)throw new Error('Each line needs one prefix and one origin ASN.');return {prefix:parts[0],origin:parts[1]};});
+      const data=await json('/v1/rpki/validate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({routes})});
+      const table=document.createElement('table');
+      for(const [i,row] of [['Prefix','Origin','Result'],...data.results.map(r=>[r.prefix,'AS'+r.origin,r.state])].entries()) {const tr=document.createElement('tr');for(const value of row){const cell=document.createElement(i?'td':'th');cell.textContent=value;tr.append(cell);}table.append(tr);}
+      el('rpki-batch-results').append(table);text('rpki-batch-status',data.results.length+' routes checked against dataset serial '+data.dataset_serial+'.');
+    }catch(error){text('rpki-batch-status','Batch unavailable: '+error.message);}
+    finally{el('rpki-batch-submit').disabled=!rpkiData?.usable;}
   });
   page(); initialize(); setInterval(() => refresh(), 30000);
 })();

@@ -13,9 +13,7 @@ ROOT = Path(__file__).resolve().parent
 
 
 def document(title, body):
-    return f'''<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{html.escape(title)} · RIRRd</title><link rel="stylesheet" href="/community.css"></head>
-<body><a class="skip" href="#main">Skip to content</a><header class="shell masthead"><a class="brand" href="/"><span>R↗</span><strong>RIRRd <small>NETWORK</small></strong></a><nav><a href="/#nodes">Public nodes</a><a href="/dashboard/#query">Query tools</a><a href="/guides/api/">API &amp; examples</a><a href="/self-host/">Self-host RIRRd</a></nav><a class="button secondary" href="/#submit-node">Submit a node</a></header><main id="main" class="shell document">{body}</main><footer class="shell"><div>RIRRd community network · <a href="/license.txt">MIT project license</a></div><p>Built with AI assistance · Contributions welcome with review and tests</p><p>Experimental services · Source release planned</p></footer></body></html>'''
+    return f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{html.escape(title)} · irrd.tools</title><link rel="icon" href="/brand/irrd-tools.svg" type="image/svg+xml"><link rel="stylesheet" href="/community.css"></head><body><a class="skip" href="#main">Skip to content</a><header class="shell masthead"><a class="brand" href="/"><img src="/brand/irrd-tools.svg" width="40" height="40" alt=""><strong>irrd.tools</strong></a><nav aria-label="Main"><a href="/#nodes">Public nodes</a><a href="/dashboard/#query">Query tools</a><a href="/guides/api/">API</a><a href="https://rirrd.co.uk/">RIRRd project ↗</a></nav><a class="button secondary" href="/#submit-node">Add your node</a></header><main id="main" class="shell document">{body}</main><footer class="shell"><div>irrd.tools · <a href="https://rirrd.co.uk/">Powered by RIRRd</a></div><div><a href="https://github.com/Peravix/Rirrd/issues">Report a beta issue</a></div><p>MIT-licensed code · AI-assisted development · Public beta</p></footer></body></html>'''
 
 
 def main():
@@ -36,10 +34,13 @@ def main():
     shutil.copyfile(core / 'LICENSE', out / 'license.txt')
     dash = out / 'dashboard'
     dash.mkdir(exist_ok=True)
-    for name in ['index.html', 'style.css', 'app.js']:
+    for name in ['index.html', 'style.css', 'app.js', 'charts.js']:
         shutil.copyfile(core / 'web/dashboard' / name, dash / name)
+    shutil.copyfile(core / 'site/brand/irrd-tools.svg', dash / 'mark.svg')
+    (out / 'brand').mkdir(exist_ok=True)
+    shutil.copyfile(core / 'site/brand/irrd-tools.svg', out / 'brand/irrd-tools.svg')
     # The live gateway supplies meta/live JSON. A static manifest records build provenance.
-    (out / 'build.json').write_text(json.dumps({'source_revision': revision, 'product': 'RIRRd community network', 'console_source': 'web/dashboard', 'submission_service': 'separate community service'}, indent=2) + '\n')
+    (out / 'build.json').write_text(json.dumps({'source_revision': revision, 'product': 'irrd.tools community network', 'console_source': 'web/dashboard', 'submission_service': 'separate community service'}, indent=2) + '\n')
     for folder, title, path in [('guides/api','API and query examples',core/'docs/operations/API_COMMANDS.md'), ('guides/routers','Use the public node with BIRD or FRR',core/'docs/operations/PUBLIC_ROUTER_QUERIES.md'), ('self-host','Self-host RIRRd',ROOT/'SELF_HOST.md')]:
         destination = out / folder
         destination.mkdir(parents=True, exist_ok=True)
@@ -58,12 +59,12 @@ def main():
         body = '<h1>Self-hosted software &amp; measured comparisons</h1><p>RIRRd software is independent of the community network. <a href="/self-host/">Read about self-hosting →</a></p><h2>Recorded IRR-only comparison</h2><p>100,000 synthetic objects on the recorded Linux host, against pinned official IRRd 4.5.4. These historical measurements use their recorded commits with RPKI disabled; they are not current combined-validator capacity or minimum host requirements.</p><div class="table-scroll">' + table + '</div><p><a href="/comparison.json">Raw results and exact tested revisions</a></p><p>Live node counts, memory and source health are in the <a href="/dashboard/">public node console</a>. Full feature parity and production qualification remain incomplete.</p>'
         (project / 'index.html').write_text(document('Software and measured comparisons', body))
     files = ['index.html','community.css','community.js','nodes.json','license.txt',
-             'dashboard/index.html','dashboard/style.css','dashboard/app.js',
+             'dashboard/index.html','dashboard/style.css','dashboard/app.js','dashboard/charts.js','dashboard/mark.svg','brand/irrd-tools.svg',
              'guides/api/index.html','guides/routers/index.html','self-host/index.html']
     if (old / 'comparison.json').exists():
         files += ['project/index.html','comparison.json']
     (out / 'build.json').write_text(json.dumps({'source_revision':revision,
-        'product':'RIRRd community network','files':{name:hashlib.sha256((out/name).read_bytes()).hexdigest() for name in files}},indent=2)+'\n')
+        'product':'irrd.tools community network','files':{name:hashlib.sha256((out/name).read_bytes()).hexdigest() for name in files}},indent=2)+'\n')
     print('Built community site from', revision, 'at', out)
 
 

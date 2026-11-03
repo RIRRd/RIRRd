@@ -80,6 +80,28 @@ class GatewayChecks(unittest.TestCase):
         self.assertNotIn('127.0.0.1', body.decode())
         self.assertIn('HTTPS', value['rtr_exposure'])
 
+    def test_history_is_real_bounded_private_and_survives_restart(self):
+        with tempfile.TemporaryDirectory() as root:
+            path=Path(root)/'history.json'
+            state=gateway.State(Path('/unused'),1,path)
+            now=gateway.time.time()
+            sample={'total_objects':100,'process_rss_bytes':123456,'cpu_percent_one_core':0.5}
+            state.sample(sample,200,now=now-120)
+            state.record(.01,False)
+            state.sample(sample,201,now=now-60)
+            state.sample(sample,202,now=now-59)
+            self.assertEqual(len(state.samples()['samples']),2)
+            self.assertEqual(state.samples()['samples'][1]['http_qps'],1/60)
+            self.assertEqual(path.stat().st_mode & 0o777,0o600)
+            restored=gateway.State(Path('/unused'),1,path)
+            self.assertEqual(len(restored.samples()['samples']),2)
+            restored.sample(sample,203,now=now)
+            self.assertIsNone(restored.samples()['samples'][-1]['http_qps'])
+            restored.sample(sample,204,now=now+86401)
+            self.assertEqual(len(restored.samples()['samples']),1)
+            self.assertNotIn('prefix',path.read_text())
+            self.assertNotIn('client',path.read_text())
+
     def test_bounds_and_per_client_rate(self):
         self.assertEqual(self.request('POST', '/graphql/', b'X' * (gateway.MAX_BODY + 1))[0], 413)
         self.assertEqual(self.request('GET', '/v1/whois/?q=A', headers={'Transfer-Encoding': 'chunked'})[0], 400)

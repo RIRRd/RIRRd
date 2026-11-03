@@ -35,10 +35,15 @@
       const following = live.sources.filter(row => row.mirror?.state === 'following' && Date.now() / 1000 - row.mirror.checked_at_unix_seconds < 180).length;
       el('network-sync').textContent = following + ' incremental · remaining scheduled';
       el('network-sets').textContent = number(Object.values(live.class_counts || {}).reduce((n, row) => n + (row['as-set'] || 0), 0));
+      const sources = live.sources.map(row=>({label:row.source,value:Object.values(live.class_counts?.[row.source] || {}).reduce((n,v)=>n+v,0)})).sort((a,b)=>b.value-a.value);
+      const shown=sources.slice(0,8);if(sources.length>8)shown.push({label:'Other '+(sources.length-8)+' sources',value:sources.slice(8).reduce((n,row)=>n+row.value,0)});
+      RIRRdCharts.bars(el('network-source-chart'),shown,'Current routing objects by source');
+      try { const response=await fetch('/dashboard/history.json',{cache:'no-store'});if(!response.ok)throw new Error();const history=await response.json();RIRRdCharts.line(el('network-activity-chart'),history.samples,'http_qps','UK node HTTP queries per second',v=>v.toFixed(2)+'/s');}catch{RIRRdCharts.empty(el('network-activity-chart'),'Node activity history is temporarily unavailable.');}
       el('network-observed').textContent = 'UK node dataset · Observed ' + new Date(live.observed_at).toLocaleString() + ' · Per-source update modes are available in the dashboard.';
     } catch { el('network-observed').textContent = 'Live dataset counters are temporarily unavailable. Directory listings remain available.'; }
     finally { loading = false; }
   }
+  el('site-query-form').addEventListener('submit', event=>{event.preventDefault();const parameters=new URLSearchParams({task:el('site-query-kind').value,value:el('site-query-value').value.trim()});location.href='/dashboard/?'+parameters+'#query';});
   el('region').addEventListener('change', render);
   document.querySelectorAll('[data-task]').forEach(link => { link.href = '/dashboard/?task=' + encodeURIComponent(link.dataset.task) + '#query'; });
   el('node-form').addEventListener('submit', async event => {

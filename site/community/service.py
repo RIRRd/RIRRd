@@ -211,7 +211,7 @@ def main():
     commands = parser.add_subparsers(dest='command', required=True)
     serve = commands.add_parser('serve')
     serve.add_argument('--port', type=int, default=9282)
-    serve.add_argument('--origin', default='https://rirrd.co.uk')
+    serve.add_argument('--origin', default='https://irrd.tools')
     commands.add_parser('list')
     review = commands.add_parser('review')
     review.add_argument('id')
