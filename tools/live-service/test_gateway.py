@@ -17,6 +17,8 @@ import refresh
 
 class Backend(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
+        if self.path == '/v1/rpki/status':
+            self.send_response(200);self.end_headers();self.wfile.write(json.dumps({'enabled':True,'usable':True,'rtr_listen':'127.0.0.1:3323','rtr_exposure':'loopback only'}).encode());return
         self.send_response(200)
         self.end_headers()
         self.wfile.write(b'aut-num: AS64496\nsource: EXAMPLE\n')
@@ -69,6 +71,14 @@ class GatewayChecks(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertGreaterEqual(json.loads(data)['http_queries'], 2)
         self.assertNotIn('generation', data.decode())
+
+    def test_public_rpki_status_does_not_publish_a_localhost_endpoint(self):
+        status, body = self.request('GET', '/v1/rpki/status')
+        self.assertEqual(status, 200)
+        value = json.loads(body)
+        self.assertNotIn('rtr_listen', value)
+        self.assertNotIn('127.0.0.1', body.decode())
+        self.assertIn('HTTPS', value['rtr_exposure'])
 
     def test_bounds_and_per_client_rate(self):
         self.assertEqual(self.request('POST', '/graphql/', b'X' * (gateway.MAX_BODY + 1))[0], 413)

@@ -30,6 +30,8 @@ class State:
         self.started = time.monotonic()
         self.telemetry = {}
         self.previous_cpu = None
+        self.report_cache = None
+        self.report_key = None
 
     def allow(self, client, clock=None):
         clock = time.monotonic() if clock is None else clock
@@ -53,7 +55,12 @@ class State:
 
     def collect(self):
         try:
-            report = json.loads((self.generation / 'sources.json').read_text())
+            report_file = self.generation / 'sources.json'
+            key = (str(self.generation.resolve()), report_file.stat().st_mtime_ns)
+            if key != self.report_key:
+                self.report_cache = json.loads(report_file.read_text())
+                self.report_key = key
+            report = dict(self.report_cache)
             catalog_path = Path(__file__).with_name('sources.json')
             if catalog_path.exists():
                 catalog = {row['source']: row for row in json.loads(catalog_path.read_text())['sources']}
@@ -93,7 +100,10 @@ class State:
             if self.previous_cpu:
                 cpu_percent = max(0., (current_cpu - self.previous_cpu[0]) / (clock - self.previous_cpu[1]) / 10000)
             self.previous_cpu = current_cpu, clock
-            pid = int(subprocess.check_output(['systemctl', 'show', '-p', 'MainPID', '--value', 'rirrd-live.service'], timeout=2))
+            processes = (cgroup / 'cgroup.procs').read_text().splitlines()
+            if not processes:
+                raise OSError('Registry process is restarting')
+            pid = int(processes[0])
             process = dict(line.split(':', 1) for line in Path(f'/proc/{pid}/status').read_text().splitlines() if ':' in line)
             rss = int(process['VmRSS'].split()[0]) * 1024
             stat = Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()
@@ -256,9 +266,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
             data = response.read(MAX_RESPONSE + 1)
             if len(data) > MAX_RESPONSE:
                 return self.respond(502, b'{"error":"Response exceeds public gateway limit"}')
+            if path.path == '/v1/rpki/status' and response.status == 200:
+                public_status = json.loads(data)
+                public_status.pop('rtr_listen', None)
+                public_status['rtr_exposure'] = 'node-local; public origin validation uses HTTPS'
+                data = json.dumps(public_status).encode()
             error = response.status >= 400
             self.respond(response.status, data, response.getheader('Content-Type', 'application/json'))
-        except (OSError, http.client.HTTPException):
+        except (OSError, http.client.HTTPException, ValueError):
             self.respond(503, b'{"error":"Registry temporarily unavailable"}')
         finally:
             if path.path != '/v1/rpki/status':
@@ -276,7 +291,7 @@ def main():
     state.collect()
     def collector():
         while True:
-            time.sleep(5)
+            time.sleep(15)
             state.collect()
     threading.Thread(target=collector, daemon=True).start()
     Server(('127.0.0.1', args.port), state).serve_forever()
