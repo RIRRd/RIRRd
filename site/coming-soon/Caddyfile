@@ -1,0 +1,15 @@
+{
+	servers {
+		protocols h1 h2
+	}
+}
+rirrd.co.uk {
+	root * /var/www/rirrd-coming-soon
+	encode gzip
+	header {
+		Content-Security-Policy "default-src 'none'; style-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'"
+		X-Content-Type-Options nosniff
+		Referrer-Policy no-referrer
+	}
+	file_server
+}
