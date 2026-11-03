@@ -56,6 +56,7 @@ pub fn authorize(
                     | "as-set"
                     | "route-set"
                     | "aut-num"
+                    | "organisation"
             ),
             "unsupported authoritative object class"
         );

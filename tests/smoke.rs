@@ -1480,3 +1480,108 @@ max_snapshot_bytes = 4096
     assert_eq!(whois(address, b"!maut-num,AS64496\n"), "D\n");
     assert!(whois(address, b"!maut-num,AS64497\n").contains("aut-num: AS64497"));
 }
+
+#[test]
+fn authoritative_organisation_cli_and_http_preserve_authorization_and_references() {
+    let workspace = tempfile::tempdir().unwrap();
+    let config = workspace.path().join("irrd.toml");
+    fs::write(&config, "database = \"test.redb\"\nsources = [\"TEST\", \"OTHER\"]\nauthoritative_sources = [\"TEST\"]\nlisten = \"127.0.0.1:0\"\nhttp_listen = \"127.0.0.1:0\"\nhttp_authoritative_updates = true\nmax_connections = 4\nio_timeout_seconds = 2\nmax_snapshot_bytes = 65536\n").unwrap();
+    let hash = bcrypt::hash_with_salt("organisation secret", 4, [11; 16]).unwrap();
+    let snapshot = workspace.path().join("bootstrap.rpsl");
+    fs::write(&snapshot, format!("mntner: TEST-MNT\nauth: BCRYPT-PW {hash}\nmnt-by: TEST-MNT\nsource: TEST\n\nperson: Test Contact\nnic-hdl: TC1-TEST\nmnt-by: TEST-MNT\nsource: TEST\n")).unwrap();
+    successful(
+        cli(&config)
+            .args([
+                "import",
+                "snapshot",
+                "--source",
+                "TEST",
+                "--authoritative-restore",
+                "--file",
+            ])
+            .arg(&snapshot)
+            .output()
+            .unwrap(),
+    );
+    let organisation = "organisation: ORG-TEST\norg-name: Documentation Organisation\ncountry: GB\naddress: Example Road\ne-mail: noc@example.net\nadmin-c: TC1-TEST\nmnt-by: TEST-MNT\nsource: TEST\n";
+    let file = workspace.path().join("submission.rpsl");
+    let submit = |text: &str, delete: bool, password: &str| {
+        fs::write(&file, text).unwrap();
+        let mut command = cli(&config);
+        command
+            .args(["update", "--source", "TEST", "--file"])
+            .arg(&file)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        if delete {
+            command.arg("--delete");
+        }
+        let mut child = command.spawn().unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(password.as_bytes())
+            .unwrap();
+        child.wait_with_output().unwrap()
+    };
+    let denied = submit(organisation, false, "wrong secret\n");
+    assert!(!denied.status.success());
+    assert!(!String::from_utf8_lossy(&denied.stderr).contains("wrong secret"));
+    let invalid = organisation.replace("TC1-TEST", "MISSING-TEST");
+    assert!(
+        !submit(
+            &format!("{organisation}\n{}", invalid.replace("ORG-TEST", "ORG-BAD")),
+            false,
+            "organisation secret\n"
+        )
+        .status
+        .success()
+    );
+    let count = successful(cli(&config).args(["database", "verify"]).output().unwrap());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&count).unwrap()["objects"],
+        2
+    );
+    successful(submit(organisation, false, "organisation secret\n"));
+    let contact = "person: Test Contact\nnic-hdl: TC1-TEST\nsource: TEST\n";
+    assert!(
+        !submit(contact, true, "organisation secret\n")
+            .status
+            .success()
+    );
+    let (server, address) = Server::start(&config);
+    assert!(whois(address, b"!morganisation,ORG-TEST\n").contains("Documentation Organisation"));
+    drop(server);
+    let (server, http) = Server::start_listener(&config, "GraphQL listening");
+    let request = |text: &str, password: &str| {
+        let body = serde_json::json!({"objects":[{"object_text":text}],"passwords":[password]})
+            .to_string();
+        let raw = whois(http, format!("POST /v1/submit/ HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len()).as_bytes());
+        assert!(raw.starts_with("HTTP/1.1 200 "), "{raw}");
+        assert!(!raw.contains(password));
+        serde_json::from_str::<Value>(raw.split_once("\r\n\r\n").unwrap().1).unwrap()
+    };
+    assert_eq!(
+        request(organisation, "wrong secret")["summary"]["failed"],
+        1
+    );
+    assert_eq!(
+        request(
+            &organisation.replace("source: TEST", "source: OTHER"),
+            "organisation secret"
+        )["summary"]["failed"],
+        1
+    );
+    assert_eq!(
+        request(
+            &organisation.replace("Documentation Organisation", "Updated Organisation"),
+            "organisation secret"
+        )["summary"]["successful_modify"],
+        1
+    );
+    drop(server);
+    successful(submit(organisation, true, "organisation secret\n"));
+    successful(submit(contact, true, "organisation secret\n"));
+}

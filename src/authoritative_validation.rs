@@ -88,6 +88,20 @@ pub fn validate(object: &Object) -> Result<()> {
             &["mntner", "admin-c", "upd-to", "auth", "mnt-by", "source"],
             &["descr", "tech-c", "mnt-nfy", "remarks", "notify", "changed"],
         ),
+        "organisation" => (
+            &[
+                "organisation",
+                "org-name",
+                "country",
+                "address",
+                "e-mail",
+                "mnt-by",
+                "source",
+            ],
+            &[
+                "phone", "fax-no", "admin-c", "tech-c", "remarks", "notify", "changed",
+            ],
+        ),
         "route" => (&["route", "origin", "mnt-by", "source"], ROUTE_OPTIONAL),
         "route6" => (&["route6", "origin", "mnt-by", "source"], ROUTE_OPTIONAL),
         "as-set" => (&["as-set", "mnt-by", "source"], AS_SET_OPTIONAL),
@@ -139,6 +153,8 @@ pub fn validate(object: &Object) -> Result<()> {
                     | "route-set"
                     | "aut-num"
                     | "as-name"
+                    | "organisation"
+                    | "org-name"
             )
         {
             return Err(anyhow!("duplicate {name} attribute"));
@@ -209,7 +225,7 @@ pub fn validate(object: &Object) -> Result<()> {
                     ensure!(values.all(valid_name), "invalid maintainer in mbrs-by-ref");
                 }
             }
-            "mntner" | "nic-hdl" | "source" | "admin-c" | "tech-c" => {
+            "organisation" | "mntner" | "nic-hdl" | "source" | "admin-c" | "tech-c" => {
                 ensure!(
                     scalar(attribute).is_some_and(valid_name),
                     "invalid {name} name or reference"
@@ -925,6 +941,44 @@ mod tests {
             validate(&set)?;
             assert_eq!(set_creation_asn(&set).is_ok(), allowed);
         }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod organisation_tests {
+    use super::*;
+
+    #[test]
+    fn matches_pinned_organisation_fields_and_multiplicity() -> Result<()> {
+        let text = "organisation: ORG-TEST\norg-name: Example Organisation\ncountry: GB\naddress: Example Road\ne-mail: noc@example.net\nmnt-by: TEST-MNT\nsource: TEST\n";
+        validate(&parse(text).map_err(anyhow::Error::msg)?)?;
+        for missing in [
+            "org-name: Example Organisation\n",
+            "country: GB\n",
+            "address: Example Road\n",
+            "e-mail: noc@example.net\n",
+        ] {
+            assert!(
+                validate(&parse(&text.replace(missing, "")).map_err(anyhow::Error::msg)?).is_err()
+            );
+        }
+        for extra in [
+            "org-name: Duplicate\n",
+            "auth: secret\n",
+            "e-mail: invalid\n",
+            "admin-c: TC1-TEST, TC2-TEST\n",
+        ] {
+            assert!(
+                validate(&parse(&format!("{text}{extra}")).map_err(anyhow::Error::msg)?).is_err()
+            );
+        }
+        validate(
+            &parse(&format!(
+                "{text}country: NL\naddress: Second line\ne-mail: second@example.net\n"
+            ))
+            .map_err(anyhow::Error::msg)?,
+        )?;
         Ok(())
     }
 }
