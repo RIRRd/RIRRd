@@ -19,3 +19,10 @@ bench = false
 
 [workspace]
 members = ["."]
+
+[[bin]]
+name = "nrtm3"
+path = "fuzz_targets/nrtm3.rs"
+test = false
+doc = false
+bench = false

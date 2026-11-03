@@ -11,7 +11,7 @@
     "rtr-set",
     "inet-rtr"
   ],
-  "refresh": "daily snapshots; not near-real-time replication",
+  "refresh": "NRTMv3 every 60 seconds for five Merit-published feeds; daily snapshots for other loaded feeds",
   "sources": [
     {
       "source": "RIPE",
@@ -81,7 +81,14 @@
       "terms": "https://radb.atlassian.net/wiki/spaces/RADb/pages/46105414/NRTM",
       "allow_plaintext_ftp": true,
       "provider": "Merit public IRR snapshot",
-      "transport_note": "Official anonymous FTP snapshot; transport is not authenticated. SHA-256 records received bytes, not publisher authenticity."
+      "transport_note": "Official anonymous FTP snapshot; transport is not authenticated. SHA-256 records received bytes, not publisher authenticity.",
+      "nrtm3": {
+        "host": "nrtm.radb.net",
+        "port": 43,
+        "interval_seconds": 60,
+        "snapshot_serial_url": "ftp://ftp.radb.net/radb/dbase/BELL.CURRENTSERIAL",
+        "documentation": "https://radb.atlassian.net/wiki/spaces/RADb/pages/46105414/NRTM"
+      }
     },
     {
       "source": "JPIRR",
@@ -108,7 +115,14 @@
       "terms": "https://radb.atlassian.net/wiki/spaces/RADb/pages/46105414/NRTM",
       "allow_plaintext_ftp": true,
       "provider": "Merit public IRR snapshot",
-      "transport_note": "Official anonymous FTP snapshot; transport is not authenticated. SHA-256 records received bytes, not publisher authenticity."
+      "transport_note": "Official anonymous FTP snapshot; transport is not authenticated. SHA-256 records received bytes, not publisher authenticity.",
+      "nrtm3": {
+        "host": "nrtm.radb.net",
+        "port": 43,
+        "interval_seconds": 60,
+        "snapshot_serial_url": "ftp://ftp.radb.net/radb/dbase/ALTDB.CURRENTSERIAL",
+        "documentation": "https://radb.atlassian.net/wiki/spaces/RADb/pages/46105414/NRTM"
+      }
     },
     {
       "source": "TC",
@@ -131,7 +145,14 @@
       "terms": "https://radb.atlassian.net/wiki/spaces/RADb/pages/46105414/NRTM",
       "allow_plaintext_ftp": true,
       "provider": "Merit public IRR snapshot",
-      "transport_note": "Official anonymous FTP snapshot; transport is not authenticated. SHA-256 records received bytes, not publisher authenticity."
+      "transport_note": "Official anonymous FTP snapshot; transport is not authenticated. SHA-256 records received bytes, not publisher authenticity.",
+      "nrtm3": {
+        "host": "nrtm.radb.net",
+        "port": 43,
+        "interval_seconds": 60,
+        "snapshot_serial_url": "ftp://ftp.radb.net/radb/dbase/REACH.CURRENTSERIAL",
+        "documentation": "https://radb.atlassian.net/wiki/spaces/RADb/pages/46105414/NRTM"
+      }
     },
     {
       "source": "LEVEL3",
@@ -158,7 +179,14 @@
       "terms": "https://radb.atlassian.net/wiki/spaces/RADb/pages/46105414/NRTM",
       "allow_plaintext_ftp": true,
       "provider": "Merit public IRR snapshot",
-      "transport_note": "Official anonymous FTP snapshot; transport is not authenticated. SHA-256 records received bytes, not publisher authenticity."
+      "transport_note": "Official anonymous FTP snapshot; transport is not authenticated. SHA-256 records received bytes, not publisher authenticity.",
+      "nrtm3": {
+        "host": "nrtm.radb.net",
+        "port": 43,
+        "interval_seconds": 60,
+        "snapshot_serial_url": "ftp://ftp.radb.net/radb/dbase/RADB.CURRENTSERIAL",
+        "documentation": "https://radb.atlassian.net/wiki/spaces/RADb/pages/46105414/NRTM"
+      }
     },
     {
       "source": "RIPE-NONAUTH",
@@ -194,7 +222,14 @@
       "terms": "https://radb.atlassian.net/wiki/spaces/RADb/pages/46105414/NRTM",
       "allow_plaintext_ftp": true,
       "provider": "Merit public IRR snapshot",
-      "transport_note": "Official anonymous FTP snapshot; transport is not authenticated. SHA-256 records received bytes, not publisher authenticity."
+      "transport_note": "Official anonymous FTP snapshot; transport is not authenticated. SHA-256 records received bytes, not publisher authenticity.",
+      "nrtm3": {
+        "host": "nrtm.radb.net",
+        "port": 43,
+        "interval_seconds": 60,
+        "snapshot_serial_url": "ftp://ftp.radb.net/radb/dbase/BBOI.CURRENTSERIAL",
+        "documentation": "https://radb.atlassian.net/wiki/spaces/RADb/pages/46105414/NRTM"
+      }
     }
   ]
 }

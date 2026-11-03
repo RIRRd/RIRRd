@@ -131,6 +131,26 @@ class GatewayChecks(unittest.TestCase):
             self.assertEqual(rejected,{'unsafe_ascii_control':1})
             self.assertNotIn('AS-UNSAFE',(root/'output').read_text())
 
+    def test_snapshot_serial_race_is_not_used_as_a_mirror_bootstrap(self):
+        import gzip
+        import shutil
+        binary = Path(__file__).resolve().parents[2] / 'target/release/rust-irrd'
+        if not binary.is_file():
+            self.skipTest('Build the normal release binary first')
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);catalog=root/'catalog.json';output=root/'candidate'
+            catalog.write_text(json.dumps({'classes':['aut-num'], 'refresh':'test', 'sources':[
+                {'source':'TEST','state':'enabled','encoding':'utf-8','urls':['https://example.net/test.gz'],
+                 'nrtm3':{'host':'example.net','port':43,'interval_seconds':60,'snapshot_serial_url':'https://example.net/TEST.CURRENTSERIAL'}}]}))
+            def download(url,target,_allow=False):
+                target.write_bytes(gzip.compress(b'aut-num: AS64496\nsource: TEST\n'))
+                return {'url':url}
+            args=SimpleNamespace(catalog=catalog,binary=binary,output=output,resume=False)
+            with mock.patch.object(prepare,'download',download), mock.patch.object(prepare,'snapshot_serial',side_effect=[10,11]), mock.patch.object(prepare.shutil,'disk_usage',return_value=shutil._ntuple_diskusage(100*1024**3,0,100*1024**3)):
+                with self.assertRaisesRegex(ValueError,'publication serial changed'):
+                    prepare.run(args)
+            self.assertFalse((output/'sources.json').exists())
+
     def test_failed_build_resumes_verified_sources_and_rejects_changed_inputs(self):
         import gzip
         import shutil

@@ -78,6 +78,9 @@ pub struct MirrorConfig {
     pub endpoint: SocketAddr,
     pub interval_seconds: u64,
     pub base_serial: Option<u64>,
+    /// Retain these classes while consuming every upstream serial.
+    #[serde(default)]
+    pub object_class_filter: HashSet<String>,
 }
 
 #[derive(Deserialize)]
@@ -228,6 +231,18 @@ impl Config {
             ensure!(
                 (1..=86_400).contains(&mirror.interval_seconds),
                 "NRTMv3 mirror interval must be between 1 and 86400 seconds"
+            );
+            ensure!(
+                mirror.object_class_filter.len() <= 22
+                    && mirror
+                        .object_class_filter
+                        .iter()
+                        .all(|class| crate::rpsl::supported_class(class)),
+                "invalid NRTMv3 object class filter"
+            );
+            ensure!(
+                mirror.object_class_filter.is_empty() || !config.nrtm3_serve.contains_key(source),
+                "a filtered NRTMv3 mirror cannot serve a complete upstream journal"
             );
         }
         ensure!(

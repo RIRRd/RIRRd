@@ -2,7 +2,6 @@
 
 use std::{
     io::{BufReader, Read, Seek, SeekFrom, Write},
-    net::SocketAddr,
     sync::Arc,
     time::Duration,
 };
@@ -14,6 +13,24 @@ use crate::{config::MirrorConfig, nrtm_client, nrtm3::Reader, storage::Store};
 
 const MAX_STAGED_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_FETCH_TIMEOUT: Duration = Duration::from_secs(15);
+
+#[derive(Clone, serde::Serialize)]
+pub struct Status {
+    pub state: &'static str,
+    pub checked_at_unix_seconds: u64,
+    pub last_success_unix_seconds: Option<u64>,
+    pub serial: Option<u64>,
+    pub interval_seconds: u64,
+    pub object_class_filter: Vec<String>,
+    pub transport_authenticated: bool,
+}
+
+fn timestamp() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
 
 pub async fn run(
     store: Arc<Store>,
@@ -35,21 +52,25 @@ pub async fn run(
         "invalid NRTMv3 mirror limits"
     );
 
+    let mut status = Status {
+        state: "starting",
+        checked_at_unix_seconds: timestamp(),
+        last_success_unix_seconds: None,
+        serial: store.source_serial(&source)?,
+        interval_seconds: config.interval_seconds,
+        object_class_filter: config.object_class_filter.iter().cloned().collect(),
+        transport_authenticated: false,
+    };
+    status.object_class_filter.sort_unstable();
+    store.set_mirror_status(source.clone(), status.clone());
     while !stopped(&shutdown) {
         let attempt = {
             let store = store.clone();
             let source = source.clone();
             let shutdown = shutdown.clone();
+            let config = config.clone();
             tokio::task::spawn_blocking(move || {
-                sync_once(
-                    &store,
-                    &source,
-                    config.endpoint,
-                    config.base_serial,
-                    max_bytes,
-                    timeout,
-                    &shutdown,
-                )
+                sync_once(&store, &source, &config, max_bytes, timeout, &shutdown)
             })
         };
         // Once an apply starts, wait for its commit or rollback. Before then
@@ -59,10 +80,23 @@ pub async fn run(
             break;
         }
         match result {
-            Ok(Some(serial)) => tracing::info!(%source, serial, "scheduled NRTMv3 mirror advanced"),
-            Ok(None) => {}
-            Err(_) => tracing::warn!(%source, "scheduled NRTMv3 mirror failed; will retry"),
+            Ok(serial) => {
+                status.state = "following";
+                status.last_success_unix_seconds = Some(timestamp());
+                status.serial = serial
+                    .or(store.source_serial(&source)?)
+                    .or(config.base_serial);
+                if let Some(serial) = serial {
+                    tracing::info!(%source, serial, "scheduled NRTMv3 mirror advanced");
+                }
+            }
+            Err(_) => {
+                status.state = "error";
+                tracing::warn!(%source, "scheduled NRTMv3 mirror failed; will retry");
+            }
         }
+        status.checked_at_unix_seconds = timestamp();
+        store.set_mirror_status(source.clone(), status.clone());
         tokio::select! {
             biased;
             _ = shutdown.wait_for(|stopped| *stopped) => break,
@@ -75,8 +109,7 @@ pub async fn run(
 fn sync_once(
     store: &Store,
     source: &str,
-    endpoint: SocketAddr,
-    base_serial: Option<u64>,
+    config: &MirrorConfig,
     max_bytes: u64,
     timeout: Duration,
     shutdown: &watch::Receiver<bool>,
@@ -91,12 +124,15 @@ fn sync_once(
     let (base, initial_base) = match store.source_serial(source)? {
         Some(serial) => (serial, None),
         None => {
-            let serial = base_serial.context("initial NRTMv3 mirror requires snapshot serial")?;
+            let serial = config
+                .base_serial
+                .context("initial NRTMv3 mirror requires snapshot serial")?;
             (serial, Some(serial))
         }
     };
     let start = base.checked_add(1).context("NRTMv3 serial exhausted")?;
-    let Some(mut response) = nrtm_client::fetch(endpoint, source, start, timeout, max_bytes)?
+    let Some(mut response) =
+        nrtm_client::fetch(config.endpoint, source, start, timeout, max_bytes)?
     else {
         return Ok(None);
     };
@@ -133,17 +169,26 @@ fn sync_once(
         return Ok(None);
     }
     stage.seek(SeekFrom::Start(0))?;
-    let transcript =
-        Reader::new(BufReader::new(stage), source, max_bytes).map_err(anyhow::Error::msg)?;
+    let transcript = if config.object_class_filter.is_empty() {
+        Reader::new(BufReader::new(stage), source, max_bytes)
+    } else {
+        Reader::filtered(BufReader::new(stage), source, max_bytes)
+    }
+    .map_err(anyhow::Error::msg)?;
     let range = transcript.range();
     ensure!(
         range.0 == start,
         "NRTMv3 mirror response starts at an unexpected serial"
     );
     store
-        .apply_nrtm3_if(source, range, initial_base, transcript, || {
-            !stopped(shutdown)
-        })
+        .apply_nrtm3_filtered_if(
+            source,
+            range,
+            initial_base,
+            transcript,
+            (!config.object_class_filter.is_empty()).then_some(&config.object_class_filter),
+            || !stopped(shutdown),
+        )
         .map(Some)
 }
 
@@ -229,6 +274,7 @@ mod tests {
                 endpoint,
                 interval_seconds: 1,
                 base_serial: Some(9),
+                object_class_filter: Default::default(),
             },
             4096,
             Duration::from_secs(3),
@@ -253,6 +299,93 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn filtered_mirror_follows_serials_without_retaining_credentials_or_partial_journals()
+    -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = registry(dir.path())?;
+        let listener = listener()?;
+        let endpoint = listener.local_addr()?;
+        let (observed, completed) = tokio::sync::oneshot::channel();
+        let peer =
+            thread::spawn(move || -> Result<()> {
+                request(&listener, "-g TEST:3:10-LAST\n")?.write_all(concat!(
+                "%START Version: 3 TEST 10-12\n\n",
+                "ADD 10\n\nmntner: PRIVATE-MNT\nauth: BCRYPT-PW secret-proof\nsource: TEST\n\n",
+                "ADD 11\n\naut-num: AS64497\nsource: TEST\n\n",
+                "DEL 12\n\naut-num: AS64496\nsource: TEST\n\n%END TEST\n"
+            ).as_bytes())?;
+                request(&listener, "-g TEST:3:13-LAST\n")?
+                    .write_all(b"% Warning: there are no newer updates available\n")?;
+                let _ = observed.send(());
+                Ok(())
+            });
+        let config = MirrorConfig {
+            endpoint,
+            interval_seconds: 1,
+            base_serial: Some(9),
+            object_class_filter: [String::from("aut-num")].into(),
+        };
+        let (stop, shutdown) = watch::channel(false);
+        let worker = tokio::spawn(run(
+            store.clone(),
+            "TEST".into(),
+            config.clone(),
+            4096,
+            Duration::from_secs(3),
+            shutdown,
+        ));
+        tokio::time::timeout(Duration::from_secs(8), completed).await??;
+        stop.send(true)?;
+        tokio::time::timeout(Duration::from_secs(5), worker).await???;
+        peer.join().expect("peer thread")?;
+        assert_eq!(store.source_serial("TEST")?, Some(12));
+        assert_eq!(store.verify()?, 1);
+        assert!(store.nrtm3_journal("TEST", 10, None, 3, 4096).is_err());
+        let sources = [String::from("TEST")];
+        assert!(store.exact("PRIVATE-MNT", &sources, 1)?.is_empty());
+        assert!(store.exact("AS64496", &sources, 1)?.is_empty());
+        assert_eq!(store.exact("AS64497", &sources, 1)?.len(), 1);
+        let status = store.mirror_status();
+        assert_eq!(status["TEST"].state, "following");
+        assert_eq!(status["TEST"].serial, Some(12));
+        assert!(status["TEST"].last_success_unix_seconds.is_some());
+        drop(store);
+        tokio::task::spawn_blocking(move || -> Result<()> {
+        let store = Store::open_for_service(&dir.path().join("registry.redb"))?;
+        let transcript = b"%START Version: 3 TEST 13-13\n\nADD 13\n\naut-num: AS64498\nsource: TEST\n\n%END TEST\n";
+        // A restart must retain the filter policy; changing it requires a fresh snapshot.
+        assert!(
+            store
+                .apply_nrtm3(
+                    "TEST",
+                    (13, 13),
+                    None,
+                    Reader::new(&transcript[..], "TEST", 4096).unwrap()
+                )
+                .is_err()
+        );
+        let bad = b"%START Version: 3 TEST 13-14\n\nADD 13\n\naut-num: AS64498\nsource: TEST\n\nADD 14\n\nmntner: WRONG\nsource: OTHER\n\n%END TEST\n";
+        assert!(
+            store
+                .apply_nrtm3_filtered_if(
+                    "TEST",
+                    (13, 14),
+                    None,
+                    Reader::new(&bad[..], "TEST", 4096).unwrap(),
+                    Some(&config.object_class_filter),
+                    || true
+                )
+                .is_err()
+        );
+        assert_eq!(store.source_serial("TEST")?, Some(12));
+        assert!(store.exact("AS64498", &sources, 1)?.is_empty());
+        assert_eq!(store.verify()?, 1);
+        Ok(())
+        }).await??;
+        Ok(())
+    }
+
     #[test]
     fn oversized_response_never_starts_an_apply() -> Result<()> {
         let dir = tempfile::tempdir()?;
@@ -269,8 +402,12 @@ mod tests {
         let error = sync_once(
             &store,
             "TEST",
-            endpoint,
-            Some(9),
+            &MirrorConfig {
+                endpoint,
+                base_serial: Some(9),
+                interval_seconds: 1,
+                object_class_filter: Default::default(),
+            },
             128,
             Duration::from_secs(3),
             &shutdown,
@@ -302,6 +439,7 @@ mod tests {
                 endpoint,
                 interval_seconds: 1,
                 base_serial: Some(9),
+                object_class_filter: Default::default(),
             },
             4096,
             Duration::from_secs(3),

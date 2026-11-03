@@ -546,13 +546,34 @@ fn main() -> Result<()> {
                 config.max_snapshot_bytes,
             )? {
                 Some(input) => {
-                    let serial = apply_nrtm3(
-                        &store,
-                        &source,
-                        base_serial,
-                        input,
-                        config.max_snapshot_bytes,
-                    )?;
+                    let filter = config
+                        .nrtm3_sync
+                        .get(&source)
+                        .filter(|mirror| {
+                            mirror.endpoint == endpoint && !mirror.object_class_filter.is_empty()
+                        })
+                        .map(|mirror| &mirror.object_class_filter);
+                    let serial = if let Some(classes) = filter {
+                        let transcript =
+                            nrtm3::Reader::filtered(input, &source, config.max_snapshot_bytes)
+                                .map_err(anyhow::Error::msg)?;
+                        store.apply_nrtm3_filtered_if(
+                            &source,
+                            transcript.range(),
+                            base_serial,
+                            transcript,
+                            Some(classes),
+                            || true,
+                        )?
+                    } else {
+                        apply_nrtm3(
+                            &store,
+                            &source,
+                            base_serial,
+                            input,
+                            config.max_snapshot_bytes,
+                        )?
+                    };
                     print_serial(&source, Some(serial));
                 }
                 None => println!(

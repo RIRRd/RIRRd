@@ -2,7 +2,7 @@
 
 use std::io::{BufRead, Read};
 
-use crate::rpsl::{MAX_OBJECT_BYTES, Object, parse};
+use crate::rpsl::{MAX_OBJECT_BYTES, MAX_SNAPSHOT_OBJECT_BYTES, Object, parse_snapshot};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
@@ -25,14 +25,35 @@ pub struct Reader<R> {
     range: (u64, u64),
     next_serial: Option<u64>,
     finished: bool,
+    allow_gaps: bool,
 }
 
 impl<R: BufRead> Reader<R> {
     pub fn new(reader: R, expected_source: &str, max_bytes: u64) -> Result<Self, String> {
+        Self::with_profile(reader, expected_source, max_bytes, false)
+    }
+
+    /// Published v3 feeds may omit serials for withheld classes. Retain their
+    /// advertised cursor, without exposing an incomplete downstream journal.
+    pub fn filtered(reader: R, expected_source: &str, max_bytes: u64) -> Result<Self, String> {
+        Self::with_profile(reader, expected_source, max_bytes, true)
+    }
+
+    fn with_profile(
+        reader: R,
+        expected_source: &str,
+        max_bytes: u64,
+        allow_gaps: bool,
+    ) -> Result<Self, String> {
         let mut lines = Lines {
             reader,
             remaining: max_bytes,
             number: 0,
+            max_object_bytes: if allow_gaps {
+                MAX_SNAPSHOT_OBJECT_BYTES
+            } else {
+                MAX_OBJECT_BYTES
+            },
         };
         let header = lines.next_framing()?.ok_or("missing NRTMv3 START header")?;
         let (source, range) = parse_header(logical_line(&header))?;
@@ -45,6 +66,7 @@ impl<R: BufRead> Reader<R> {
             range,
             next_serial: Some(range.0),
             finished: false,
+            allow_gaps,
         })
     }
 
@@ -57,6 +79,14 @@ impl<R: BufRead> Reader<R> {
             .lines
             .next_framing()?
             .ok_or("missing NRTMv3 operation")?;
+        self.read_operation_header(expected_serial, header)
+    }
+
+    fn read_operation_header(
+        &mut self,
+        expected_serial: u64,
+        header: String,
+    ) -> Result<Operation, String> {
         let mut fields = logical_line(&header).split_ascii_whitespace();
         let kind = match fields.next() {
             Some("ADD") => Kind::Add,
@@ -72,7 +102,13 @@ impl<R: BufRead> Reader<R> {
             .and_then(parse_serial)
             .filter(|_| fields.next().is_none())
             .ok_or("invalid NRTMv3 operation serial")?;
-        if expected_serial != actual_serial {
+        if actual_serial > self.range.1
+            || (if self.allow_gaps {
+                actual_serial < expected_serial
+            } else {
+                expected_serial != actual_serial
+            })
+        {
             return Err(format!(
                 "NRTMv3 serial {actual_serial} is not the expected serial {expected_serial}"
             ));
@@ -101,9 +137,10 @@ impl<R: BufRead> Reader<R> {
                     "unexpected NRTMv3 directive in object at serial {actual_serial}"
                 ));
             }
-            if text.len() + line.len() > MAX_OBJECT_BYTES {
+            if text.len() + line.len() > self.lines.max_object_bytes {
                 return Err(format!(
-                    "NRTMv3 object at serial {actual_serial} exceeds {MAX_OBJECT_BYTES} bytes"
+                    "NRTMv3 object at serial {actual_serial} exceeds {} bytes",
+                    self.lines.max_object_bytes
                 ));
             }
             text.push_str(&line);
@@ -120,7 +157,7 @@ impl<R: BufRead> Reader<R> {
             text.push_str(&self.source);
             text.push('\n');
         }
-        let object = parse(&text)
+        let object = parse_snapshot(&text)
             .map_err(|error| format!("NRTMv3 object at serial {actual_serial}: {error}"))?;
         if object.source != self.source {
             return Err(format!(
@@ -139,6 +176,10 @@ impl<R: BufRead> Reader<R> {
             .lines
             .next_framing()?
             .ok_or("missing NRTMv3 END trailer")?;
+        self.validate_end(end)
+    }
+
+    fn validate_end(&mut self, end: String) -> Result<(), String> {
         let Some(("END", source)) = directive(logical_line(&end)) else {
             return Err("expected NRTMv3 END trailer after the final serial".into());
         };
@@ -161,6 +202,36 @@ impl<R: BufRead> Iterator for Reader<R> {
         if self.finished {
             return None;
         }
+        if self.allow_gaps {
+            let header = match self.lines.next_framing() {
+                Ok(Some(header)) => header,
+                Ok(None) => {
+                    self.finished = true;
+                    return Some(Err("missing NRTMv3 END trailer".into()));
+                }
+                Err(error) => {
+                    self.finished = true;
+                    return Some(Err(error));
+                }
+            };
+            if matches!(directive(logical_line(&header)), Some(("END", _))) {
+                self.finished = true;
+                return self.validate_end(header).err().map(Err);
+            }
+            let Some(expected) = self.next_serial else {
+                self.finished = true;
+                return Some(Err("operation exceeds advertised NRTMv3 range".into()));
+            };
+            let operation = self.read_operation_header(expected, header);
+            match &operation {
+                Ok(operation) => {
+                    self.next_serial =
+                        (operation.serial < self.range.1).then(|| operation.serial + 1)
+                }
+                Err(_) => self.finished = true,
+            }
+            return Some(operation);
+        }
         let Some(serial) = self.next_serial else {
             self.finished = true;
             return self.read_end().err().map(Err);
@@ -179,12 +250,13 @@ struct Lines<R> {
     reader: R,
     remaining: u64,
     number: u64,
+    max_object_bytes: usize,
 }
 
 impl<R: BufRead> Lines<R> {
     fn next(&mut self) -> Result<Option<String>, String> {
         let mut line = String::new();
-        let limit = ((MAX_OBJECT_BYTES + 1) as u64).min(self.remaining.saturating_add(1));
+        let limit = ((self.max_object_bytes + 1) as u64).min(self.remaining.saturating_add(1));
         let count = (&mut self.reader)
             .take(limit)
             .read_line(&mut line)
@@ -197,10 +269,10 @@ impl<R: BufRead> Lines<R> {
             return Err("NRTMv3 input exceeds configured byte limit".into());
         }
         self.remaining -= count as u64;
-        if count > MAX_OBJECT_BYTES {
+        if count > self.max_object_bytes {
             return Err(format!(
-                "NRTMv3 line {} exceeds {MAX_OBJECT_BYTES} bytes",
-                self.number
+                "NRTMv3 line {} exceeds {} bytes",
+                self.number, self.max_object_bytes
             ));
         }
         if logical_line(&line)
@@ -347,6 +419,65 @@ mod tests {
         let operations = parse_all(&input).unwrap();
         assert_eq!(operations.len(), 1);
         assert_eq!(operations[0].serial, u64::MAX);
+    }
+
+    #[test]
+    fn filtered_profile_accepts_upstream_omissions_and_large_bounded_objects() {
+        let input = "%START Version: 3 TEST 10-15\n\nADD 11\n\naut-num: AS64496\nsource: TEST\n\nDEL 13\n\naut-num: AS64497\nsource: TEST\n\n%END TEST\n";
+        let operations = Reader::filtered(input.as_bytes(), "TEST", 4096)
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            operations.iter().map(|op| op.serial).collect::<Vec<_>>(),
+            vec![11, 13]
+        );
+        for bad in [
+            input.replace("DEL 13", "DEL 11"),
+            input.replace("DEL 13", "DEL 16"),
+            input.replace("%END TEST", "%END OTHER"),
+            input.replace("%END TEST", ""),
+            input.replace("source: TEST", "source: OTHER"),
+        ] {
+            assert!(
+                Reader::filtered(bad.as_bytes(), "TEST", 4096)
+                    .unwrap()
+                    .collect::<Result<Vec<_>, _>>()
+                    .is_err()
+            );
+        }
+        let empty = "%START Version: 3 TEST 10-15\n\n%END TEST\n";
+        assert!(
+            Reader::filtered(empty.as_bytes(), "TEST", 4096)
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+                .is_empty()
+        );
+        let large = format!(
+            "%START Version: 3 TEST 10-10\n\nADD 10\n\naut-num: AS64496\nremarks: {}\nsource: TEST\n\n%END TEST\n",
+            "x".repeat(MAX_OBJECT_BYTES + 1)
+        );
+        assert!(
+            Reader::new(large.as_bytes(), "TEST", 200000)
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .is_err()
+        );
+        assert_eq!(
+            Reader::filtered(large.as_bytes(), "TEST", 200000)
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(
+            Reader::filtered(large.as_bytes(), "TEST", 4000)
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .is_err()
+        );
     }
 
     #[test]

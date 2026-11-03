@@ -41,7 +41,7 @@ async fn headers(request: Request, next: Next) -> Response {
     response
 }
 
-pub fn router(metadata: Metadata) -> Result<Router> {
+pub fn router(metadata: Metadata, store: std::sync::Arc<crate::storage::Store>) -> Result<Router> {
     let metadata = Bytes::from(serde_json::to_vec(&metadata)?);
     Ok(Router::new()
         .route(
@@ -78,6 +78,13 @@ pub fn router(metadata: Metadata) -> Result<Router> {
             "/ui/meta.json",
             get(|State(bytes): State<Bytes>| async {
                 ([(CONTENT_TYPE, "application/json")], bytes).into_response()
+            }),
+        )
+        .route(
+            "/ui/mirrors.json",
+            get(move || {
+                let store = store.clone();
+                async move { match store.object_count() { Ok(total) => axum::Json(serde_json::json!({"sources":store.mirror_status(), "total_objects":total})).into_response(), Err(_) => StatusCode::SERVICE_UNAVAILABLE.into_response(), } }
             }),
         )
         .route(

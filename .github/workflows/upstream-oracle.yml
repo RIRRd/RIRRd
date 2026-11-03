@@ -67,6 +67,7 @@ jobs:
           done
           docker compose -p irrd-454-oracle -f tools/oracle/compose.yaml exec -T reference python < tools/oracle/check_policy_set_schema.py
           docker compose -p irrd-454-oracle -f tools/oracle/compose.yaml exec -T reference python < tools/oracle/check_delegation_schema.py
+          docker compose -p irrd-454-oracle -f tools/oracle/compose.yaml exec -T reference python < tools/oracle/check_nrtm3_filtered.py
           docker compose -p irrd-454-oracle -f tools/oracle/compose.yaml exec -T reference python < tools/oracle/check_mirror_admission.py
           python3 tools/oracle/compare_policy_set_auth.py
           python3 tools/oracle/compare_organisation_graphql.py

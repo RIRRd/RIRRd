@@ -60,6 +60,7 @@ const AS_BLOCK_COVER: TableDefinition<RangeCoverKey<'static>, ()> =
 // A row is (source, field, normalized value, class, object key).
 const INVERSE: TableDefinition<InverseKey, ()> = TableDefinition::new("inverse_v1");
 const SERIALS: TableDefinition<&str, u64> = TableDefinition::new("source_serials_v1");
+const MIRROR_FILTERS: TableDefinition<&str, &str> = TableDefinition::new("mirror_class_filters_v1");
 const AUTH_NRTM3_SERIALS: TableDefinition<&str, u64> =
     TableDefinition::new("authoritative_nrtm3_serials_v1");
 const NRTM4_STATE: TableDefinition<&str, &str> = TableDefinition::new("nrtm4_state_v1");
@@ -101,6 +102,8 @@ pub struct Store {
     query_gate: RwLock<()>,
     legacy_md5_sources: HashSet<String>,
     route_policy: RoutePolicy,
+    mirror_status:
+        std::sync::Mutex<std::collections::BTreeMap<String, crate::mirror_worker::Status>>,
 }
 
 impl Store {
@@ -167,6 +170,7 @@ impl Store {
             let mut inetnum_cover = write.open_table(INETNUM_COVER)?;
             let mut as_block_cover = write.open_table(AS_BLOCK_COVER)?;
             write.open_table(SERIALS)?;
+            write.open_table(MIRROR_FILTERS)?;
             write.open_table(AUTH_NRTM3_SERIALS)?;
             write.open_table(NRTM4_STATE)?;
             write.open_table(JOURNAL)?;
@@ -250,12 +254,33 @@ impl Store {
             query_gate: RwLock::new(()),
             legacy_md5_sources: HashSet::new(),
             route_policy: RoutePolicy::default(),
+            mirror_status: std::sync::Mutex::new(std::collections::BTreeMap::new()),
         }
     }
 
     /// Hold a read guard across a service query that performs multiple reads.
     pub fn query_gate(&self) -> &RwLock<()> {
         &self.query_gate
+    }
+
+    pub fn set_mirror_status(&self, source: String, status: crate::mirror_worker::Status) {
+        self.mirror_status
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(source, status);
+    }
+
+    pub fn mirror_status(
+        &self,
+    ) -> std::collections::BTreeMap<String, crate::mirror_worker::Status> {
+        self.mirror_status
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
+    }
+
+    pub fn object_count(&self) -> Result<u64> {
+        Ok(self.db.begin_read()?.open_table(OBJECTS)?.len()?)
     }
 
     pub fn with_legacy_md5_sources(mut self, sources: HashSet<String>) -> Self {
@@ -328,6 +353,7 @@ impl Store {
                 SourceReplacement::Mirror => {
                     reject_authoritative_source(&write, &source)?;
                     write.open_table(SERIALS)?.remove(source.as_str())?;
+                    write.open_table(MIRROR_FILTERS)?.remove(source.as_str())?;
                 }
                 SourceReplacement::Authoritative { serial_floor } => {
                     ensure!(
@@ -387,6 +413,26 @@ impl Store {
         operations: impl IntoIterator<Item = Result<Operation, String>>,
         should_start: impl FnOnce() -> bool,
     ) -> Result<u64> {
+        self.apply_nrtm3_filtered_if(
+            source,
+            declared,
+            initial_base,
+            operations,
+            None,
+            should_start,
+        )
+    }
+
+    /// A filtered mirror consumes a complete stream but must not republish an incomplete journal.
+    pub(crate) fn apply_nrtm3_filtered_if(
+        &self,
+        source: &str,
+        declared: (u64, u64),
+        initial_base: Option<u64>,
+        operations: impl IntoIterator<Item = Result<Operation, String>>,
+        classes: Option<&HashSet<String>>,
+        should_start: impl FnOnce() -> bool,
+    ) -> Result<u64> {
         let source = canonical_source(source)?;
         let (start, end) = declared;
         ensure!(start > 0 && end >= start, "invalid NRTMv3 serial range");
@@ -404,6 +450,33 @@ impl Store {
             let mut records = write.open_table(OBJECTS)?;
             let mut indexes = WriteIndexes::open(&write)?;
             let recorded = serials.get(source.as_str())?.map(|serial| serial.value());
+            let mut filters = write.open_table(MIRROR_FILTERS)?;
+            let policy = classes.map(|classes| {
+                let mut values = classes.iter().map(String::as_str).collect::<Vec<_>>();
+                values.sort_unstable();
+                values.join(",")
+            });
+            if recorded.is_some() {
+                ensure!(
+                    filters
+                        .get(source.as_str())?
+                        .map(|value| value.value().to_owned())
+                        == policy,
+                    "NRTMv3 class filter changed; explicit snapshot reset required"
+                );
+            } else if let Some(policy) = &policy {
+                ensure!(!policy.is_empty(), "empty NRTMv3 class filter");
+                filters.insert(source.as_str(), policy.as_str())?;
+                // Refuse a bootstrap that already contains excluded classes.
+                let upper = format!("{source}\0");
+                for entry in records.range((source.as_str(), "", "")..(upper.as_str(), "", ""))? {
+                    let (identity, _) = entry?;
+                    ensure!(
+                        classes.is_some_and(|classes| classes.contains(identity.value().1)),
+                        "snapshot contains objects outside the mirror class filter"
+                    );
+                }
+            }
             let mut last = if let Some(recorded) = recorded {
                 ensure!(
                     initial_base.is_none(),
@@ -437,21 +510,29 @@ impl Store {
                     object,
                 } = operation.map_err(anyhow::Error::msg)?;
                 ensure!(
-                    last.checked_add(1) == Some(serial) && serial <= end,
+                    last.checked_add(1)
+                        .is_some_and(|next| if classes.is_some() {
+                            serial >= next
+                        } else {
+                            serial == next
+                        })
+                        && serial <= end,
                     "non-contiguous NRTMv3 serial {serial} after {last}"
                 );
                 let identity = validate_identity(&source, &object)?;
-                match kind {
-                    Kind::Add => {
+                let retained = classes.is_none_or(|classes| classes.contains(&object.class));
+                match (kind, retained) {
+                    (Kind::Add, true) => {
                         let (_, skipped) =
                             upsert_object(&mut records, &mut indexes, identity, &object)?;
                         skipped_lookup_values += skipped;
                     }
-                    Kind::Delete => {
+                    (Kind::Delete, true) => {
                         delete_object(&mut records, &mut indexes, identity)?;
                     }
+                    (_, false) => {}
                 }
-                if serial > expire_through {
+                if classes.is_none() && serial > expire_through {
                     let (_, class, key) = identity;
                     ensure!(
                         journal
@@ -466,11 +547,19 @@ impl Store {
                 last = serial;
             }
             ensure!(
-                last == end,
+                (classes.is_some() && last <= end) || last == end,
                 "NRTMv3 stream ended at serial {last}, expected {end}"
             );
             journal.retain_in(
-                (source.as_str(), 0)..=(source.as_str(), expire_through),
+                (source.as_str(), 0)
+                    ..=(
+                        source.as_str(),
+                        if classes.is_some() {
+                            u64::MAX
+                        } else {
+                            expire_through
+                        },
+                    ),
                 |_, _| false,
             )?;
             serials.insert(source.as_str(), end)?;
@@ -1339,9 +1428,53 @@ impl Store {
             );
         }
         verify_journal(&read)?;
+        verify_mirror_filters(&read)?;
         verify_nrtm4_state(&read)?;
         Ok(indexed)
     }
+}
+
+fn verify_mirror_filters(read: &ReadTransaction) -> Result<()> {
+    let filters = match read.open_table(MIRROR_FILTERS) {
+        Ok(table) => table,
+        Err(redb::TableError::TableDoesNotExist(_)) => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    let records = read.open_table(OBJECTS)?;
+    let journal = read.open_table(JOURNAL)?;
+    for entry in filters.iter()? {
+        let (source, policy) = entry?;
+        let source = source.value();
+        ensure!(
+            canonical_source(source)? == source && read_serial(read, SERIALS, source)?.is_some(),
+            "filtered mirror has no corresponding source serial"
+        );
+        let classes = policy.value().split(',').collect::<Vec<_>>();
+        ensure!(
+            !classes.is_empty()
+                && classes
+                    .iter()
+                    .all(|class| crate::rpsl::supported_class(class))
+                && classes.windows(2).all(|pair| pair[0] < pair[1]),
+            "invalid persisted mirror class filter"
+        );
+        ensure!(
+            journal
+                .range((source, 0)..=(source, u64::MAX))?
+                .next()
+                .is_none(),
+            "filtered mirror must not expose a partial journal"
+        );
+        let upper = format!("{source}\0");
+        for entry in records.range((source, "", "")..(upper.as_str(), "", ""))? {
+            let (identity, _) = entry?;
+            ensure!(
+                classes.contains(&identity.value().1),
+                "filtered mirror contains an excluded class"
+            );
+        }
+    }
+    Ok(())
 }
 
 fn write_source_records(

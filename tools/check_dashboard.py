@@ -89,6 +89,9 @@ def main():
                 browser.wait('!document.getElementById("live-panel").hidden && document.getElementById("live-objects").textContent!=="—"')
                 assert 'AS3333' in query('AS3333')
                 assert '193.0.0.0/21' in query('193.0.0.0/21')
+                assert '193.0.0.0/21' in query('193.0.0.1')
+                assert browser.js('document.querySelectorAll(".object-card").length')>0
+                assert '193.0.0.0/21' in query('193.0.0.1','covering')
                 assert '2001:67c:2e8::/48' in query('2001:67c:2e8::/48')
                 assert '193.0.0.0/21' in query('AS3333','origin')
                 assert '2001:' in query('AS3333','origin','6')
@@ -101,6 +104,10 @@ def main():
             else:
                 assert 'AS64496' in query('AS64496')
                 assert '192.0.2.0/24' in query('192.0.2.0/24')
+                if args.mode=='live':
+                    assert '192.0.2.0/24' in query('192.0.2.1')
+                    assert '192.0.2.0/24' in query('192.0.2.1','covering')
+                    assert '192.0.2.0/24' in query('192.0.2.0/23','more')
                 assert '2001:db8:100::/48' in query('2001:db8:100::/48')
                 assert query('AS64496','origin')=='192.0.2.0/24'
                 assert query('AS64496','origin','6')=='2001:db8:100::/48'
@@ -112,12 +119,23 @@ def main():
                 browser.js('document.getElementById("query-source").add(new Option("UNKNOWN","UNKNOWN"))')
                 query('AS64496',source='UNKNOWN')
                 assert 'HTTP 400' in browser.js('document.getElementById("query-status").textContent')
+            if args.mode!='preview':
+                browser.js('location.hash="api";document.getElementById("load-schema").click()')
+                browser.wait('!document.getElementById("load-schema").disabled')
+                assert 'queryType' in browser.js('document.getElementById("schema-result").textContent')
+                browser.js('document.getElementById("graphql-form").requestSubmit()')
+                browser.wait('!document.getElementById("graphql-submit").disabled')
+                assert 'databaseStatus' in browser.js('document.getElementById("graphql-result").textContent')
+            if args.mode=='public':
+                browser.js('location.hash="sources";document.getElementById("source-detail").value="RADB";document.getElementById("source-detail").dispatchEvent(new Event("change"))')
+                assert 'route' in browser.js('document.getElementById("source-detail-content").textContent')
+                assert browser.js('document.querySelectorAll("#source-detail-content details").length')>0
             browser.js('location.hash="network"')
             browser.wait('document.getElementById("network-list").textContent.includes("No verified community nodes")')
             assert browser.js('document.getElementById("network-nodes").textContent')=='0'
             for width in [320,390,1440]:
                 browser.call('Emulation.setDeviceMetricsOverride',{'width':width,'height':1100,'deviceScaleFactor':1,'mobile':width<650},True)
-                for page in ['overview','query','sources','network','connect']:
+                for page in ['overview','query','sources','api','network','connect']:
                     browser.js('location.hash='+json.dumps(page))
                     browser.wait('!document.getElementById("page-'+page+'").hidden')
                     sizes=browser.js('({width:innerWidth,scroll:document.documentElement.scrollWidth})')
@@ -132,7 +150,7 @@ def main():
             if args.mode=='preview':assert not any('/graphql' in url or '/v1/' in url for url in requests),'preview contacted a registry API'
             exceptions=[e for e in browser.events if e.get('method')=='Runtime.exceptionThrown']
             assert not exceptions,'browser JavaScript exception'
-            print(args.mode+': object/prefix/origin/set queries, source handling, empty directory, no external requests; all five views fit 320/390/1440px')
+            print(args.mode+': object/prefix/origin/set queries, source handling, empty directory, no external requests; all six views fit 320/390/1440px')
         finally:browser.close()
 
 if __name__=='__main__':main()

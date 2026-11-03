@@ -65,6 +65,18 @@ class State:
                     raise ValueError('Local query service is not ready')
             finally:
                 health.close()
+            mirror_data = {}
+            monitor = http.client.HTTPConnection('127.0.0.1', self.backend_port, timeout=2)
+            try:
+                monitor.request('GET', '/ui/mirrors.json', headers={'Host': '127.0.0.1'})
+                response = monitor.getresponse()
+                data = response.read(MAX_BODY)
+                if response.status == 200:
+                    mirror_data = json.loads(data)
+                elif response.status != 404:  # Allow a rolling upgrade from the older daemon.
+                    raise ValueError('Mirror status is unavailable')
+            finally:
+                monitor.close()
             cgroup = Path('/sys/fs/cgroup/system.slice/rirrd-live.service')
             cpu = dict(line.split() for line in (cgroup / 'cpu.stat').read_text().splitlines())
             current_cpu, clock = int(cpu['usage_usec']), time.monotonic()
@@ -83,9 +95,13 @@ class State:
                         'cgroup_memory_bytes': int((cgroup / 'memory.current').read_text()),
                         'cgroup_memory_peak_bytes': int((cgroup / 'memory.peak').read_text()),
                         'cpu_percent_one_core': cpu_percent, 'uptime_seconds': max(0, uptime),
-                        'database_bytes': report['database_bytes'], 'total_objects': report['total_objects'],
+                        'database_bytes': (self.generation / 'registry.redb').stat().st_size,
+                        'total_objects': mirror_data.get('total_objects', report['total_objects']),
+                        'snapshot_total_objects': report.get('snapshot_total_objects', report['total_objects']),
                         'snapshot_verified_at': report['verified_at'], 'refresh_mode': report['refresh_mode'],
-                        'classes': report['classes'], 'sources': report['sources']}
+                        'classes': report['classes'],
+                        'sources': [{**row, 'mirror': mirror_data.get('sources', {}).get(row['source'])}
+                                    for row in report['sources']]}
             connections = 0
             for table in ('tcp', 'tcp6'):
                 for row in Path('/proc/net/' + table).read_text().splitlines()[1:]:

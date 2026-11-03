@@ -1074,12 +1074,12 @@ pub async fn serve(
         .merge(crate::whois::http_router(store.clone(), sources, timeout));
     if let Some(update_sources) = update_sources {
         app = app.merge(crate::submission_http::router(
-            store,
+            store.clone(),
             update_sources,
             timeout,
         ));
     }
-    app = app.merge(crate::dashboard::router(dashboard)?);
+    app = app.merge(crate::dashboard::router(dashboard, store.clone())?);
     app = app.layer(middleware::from_fn_with_state(
         listener.local_addr()?.ip(),
         bound_host,

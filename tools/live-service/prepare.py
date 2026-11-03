@@ -13,6 +13,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sqlite3
+import socket
 import tempfile
 import time
 import urllib.parse
@@ -74,6 +75,33 @@ def download(url, target, allow_ftp=False):
     return {'url': url, 'bytes': total, 'sha256': digest.hexdigest(), 'transport': transport,
             'transport_authenticated': transport == 'https',
             'last_modified': modified, 'fetched_at': now()}
+
+
+def snapshot_serial(entry):
+    mirror = entry['nrtm3']
+    url = mirror['snapshot_serial_url']
+    check_transport(url, entry.get('allow_plaintext_ftp', False))
+    with urllib.request.urlopen(url, timeout=15) as response:
+        if response.url != url:
+            raise ValueError('Serial endpoint redirected; refusing an ambiguous bootstrap')
+        value = response.read(65).decode('ascii').strip()
+    if not re.fullmatch(r'[0-9]{1,20}', value) or not 0 < int(value) < 2**64:
+        raise ValueError('Invalid snapshot serial')
+    return int(value)
+
+
+def mirror_schedule(rows, classes):
+    text = ''
+    for row in rows:
+        if 'mirror_bootstrap' not in row:
+            continue
+        mirror = row['mirror_bootstrap']
+        text += '\n[nrtm3_sync.' + row['source'] + ']\n'
+        text += 'endpoint = ' + json.dumps(mirror['endpoint']) + '\n'
+        text += 'interval_seconds = ' + str(mirror['interval_seconds']) + '\n'
+        text += 'base_serial = ' + str(mirror['snapshot_serial']) + '\n'
+        text += 'object_class_filter = ' + json.dumps(classes) + '\n'
+    return ('\n# Generated NRTMv3 schedule\n' + text) if text else ''
 
 
 def records(path):
@@ -222,7 +250,7 @@ max_snapshot_bytes = 1610612736
 name = "RIRRd public test registry"
 '''
     if args.resume:
-        if config.read_text() != config_text:
+        if config.read_text() not in (config_text, config_text + mirror_schedule(completed.values(), catalog['classes'])):
             raise ValueError('Candidate configuration changed; refusing to resume')
     else:
         config.write_text(config_text)
@@ -243,12 +271,15 @@ name = "RIRRd public test registry"
             print(json.dumps({'source': source, 'objects': row['objects'], 'resumed': True}), flush=True)
             continue
         files, downloads = [], []
+        serial = snapshot_serial(entry) if entry.get('nrtm3') else None
         for i, url in enumerate(entry['urls']):
             path = snapshot_dir / f'{source}-{i}.gz'
             if args.resume:
                 path.unlink(missing_ok=True)
             downloads.append(download(url, path, entry.get('allow_plaintext_ftp', False)))
             files.append(path)
+        if serial is not None and snapshot_serial(entry) != serial:
+            raise ValueError('Snapshot publication serial changed during download; retry a new candidate')
         path = snapshot_dir / f'{source}.rpsl'
         if args.resume:
             path.unlink(missing_ok=True)
@@ -270,6 +301,16 @@ name = "RIRRd public test registry"
                'duplicate_identities_last_wins': duplicates,
                'quarantined_records': rejections,
                'import_seconds': time.monotonic() - start}
+        if serial is not None:
+            mirror = entry['nrtm3']
+            # Runtime configuration pins a resolved public peer, never a visitor URL.
+            address = socket.getaddrinfo(mirror['host'], mirror['port'], socket.AF_INET, socket.SOCK_STREAM)[0][4][0]
+            if not ipaddress.ip_address(address).is_global:
+                raise ValueError('Mirror endpoint did not resolve to a public address')
+            row['mirror_bootstrap'] = {'snapshot_serial': serial, 'snapshot_serial_url': mirror['snapshot_serial_url'],
+                'endpoint': f"{address}:{mirror['port']}", 'host': mirror['host'],
+                'interval_seconds': mirror['interval_seconds'], 'serial_verified_at': now(),
+                'transport_authenticated': False}
         warnings = []
         for line in result.stderr.splitlines():
             try:
@@ -290,10 +331,34 @@ name = "RIRRd public test registry"
                           'import_seconds': row['import_seconds']}), flush=True)
     verified = subprocess.run([str(args.binary), '--config', str(config), 'database', 'verify'],
                               capture_output=True, text=True, check=True, timeout=1800)
-    if json.loads(verified.stdout)['objects'] != report['total_objects']:
+    if config.read_text() == config_text and json.loads(verified.stdout)['objects'] != report['total_objects']:
         raise ValueError('Complete candidate integrity/count check failed')
     if sha256(args.binary) != report['binary_sha256']:
         raise ValueError('Binary changed during snapshot build; candidate not published')
+    report['verified_at'] = now()
+    config.write_text(config_text + mirror_schedule(report['sources'], catalog['classes']))
+    subprocess.run([str(args.binary), '--config', str(config), 'config', 'check'], check=True, capture_output=True)
+    for row in report['sources']:
+        if 'mirror_bootstrap' not in row:
+            continue
+        mirror = row['mirror_bootstrap']
+        status = subprocess.run([str(args.binary), '--config', str(config), 'source', 'status', '--source', row['source']],
+                                check=True, capture_output=True, text=True)
+        initial = json.loads(status.stdout)['serial'] is None
+        result = subprocess.run([str(args.binary), '--config', str(config), 'source', 'sync-nrtm3',
+                                 '--source', row['source'], '--endpoint', mirror['endpoint']]
+                                + (['--base-serial', str(mirror['snapshot_serial'])] if initial else []),
+                                capture_output=True, text=True, timeout=120)
+        if result.returncode:
+            (args.output / f"{row['source']}-catchup-error.txt").write_text(result.stderr)
+            raise ValueError('Incremental bootstrap catch-up failed; candidate not published')
+        row['mirror_bootstrap']['catchup'] = json.loads(result.stdout)
+        print(json.dumps({'source':row['source'], 'catchup':row['mirror_bootstrap']['catchup']}), flush=True)
+    # Snapshot counts are retained as provenance; this verification includes catch-up edits.
+    final = subprocess.run([str(args.binary), '--config', str(config), 'database', 'verify'],
+                           check=True, capture_output=True, text=True, timeout=1800)
+    report['snapshot_total_objects'] = report['total_objects']
+    report['total_objects'] = json.loads(final.stdout)['objects']
     report['verified_at'] = now()
     report['database_bytes'] = database.stat().st_size
     write_json(args.output / 'sources.json', report)

@@ -204,7 +204,7 @@ fn parse_with_limit(text: &str, max_bytes: usize) -> Result<Object, String> {
     })
 }
 
-fn supported_class(name: &str) -> bool {
+pub(crate) fn supported_class(name: &str) -> bool {
     matches!(
         name,
         "as-block"
