@@ -25,6 +25,16 @@ oracle results or protocol interop evidence as appropriate. Release
 extensions are tracked separately from upstream behaviour. Each row stays
 open until the stated behaviour and safety checks are demonstrated.
 
+## Live public test registry
+
+The [live checkpoint](LIVE_IRR_CHECKPOINT.md) records read-only WHOIS/HTTPS queries
+on five routing snapshots, source-permission isolation, measured telemetry and
+real bgpq4-generated BIRD/FRR candidates. Larger published policies are bounded
+at 4 MiB for snapshot imports; submission admission stays 64 KiB. Daily snapshot
+refresh is a deployment extension, not proof of continuous NRTM parity. Twelve
+tracked sources remain pending. Native Linux and ARM64 QEMU pass 138 unit/16
+integration/two client tests; full parity and new CI verification remain open.
+
 ## Dashboard and small-host checkpoint
 
 The bundled read-only console uses the same loopback query API, with explicit

@@ -1,3 +1,28 @@
+## Live public read-only continuation — 3 November 2026
+
+The owner authorized a live experimental registry after the static-site checkpoint.
+WHOIS/bgpq4 now uses `rirrd.co.uk:43`; the public HTTPS dashboard queries this
+RIRRd database and reports measured telemetry. Five reviewed routing feeds contain
+1,080,669 objects. ARIN remains TCP-only under its distribution terms. Twelve
+other tracked feeds have explicit pending permission/transport actions rather
+than invented coverage. See the [live checkpoint](docs/compatibility/LIVE_IRR_CHECKPOINT.md)
+and [deployment guide](docs/operations/LIVE_SERVICE.md).
+
+Published large policies exposed the snapshot parser's 64 KiB bound. Snapshot
+admission/index extraction now accepts bounded 4 MiB policies while submission
+admission stays 64 KiB. The mirror preparation controller preserves Unicode
+paragraph separators and resolves duplicate canonical identities using the last
+record, matching pinned upstream's snapshot upsert behavior. Duplicate/malformed
+lookup counts are disclosed. The normal CLI still rejects duplicate imports.
+
+Latest local native and ARM64-QEMU release checks pass 138 unit/16 integration/two
+client tests; formatting, strict Clippy, 227-crate RustSec audit and a 221,757-run
+fuzz smoke pass. The pinned 39 TCP/39 HTTP WHOIS, 47 authoritative decisions and
+GraphQL fixtures still pass. Live browser and real BIRD/FRR candidate checks pass.
+Publication tree/history scans found no secrets under the reviewed default rules.
+The repository remains private, main unchanged, and new Actions evidence unavailable.
+Full parity and production qualification remain incomplete.
+
 ## Dashboard, small-host and publication continuation — 3 November 2026
 
 MIT licensing and explicit AI disclosure/contribution guidance are implemented. A bundled
