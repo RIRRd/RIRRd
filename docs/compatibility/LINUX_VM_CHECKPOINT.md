@@ -1,5 +1,9 @@
 # Linux VM checkpoint — 3 November 2026
 
+See the [upgraded VM checkpoint](UPGRADED_VM_CHECKPOINT.md) for newer code,
+24-CPU measurements and expanded authorisation/ARM64 checks. This file preserves
+the original 8-CPU evidence.
+
 This is bounded compatibility evidence, not full parity or production readiness.
 The development base is `bffd77a`, which was not an ancestor of the fetched main
 (`ef0a31b`). Changes use `codex/linux-parity`; main was not modified.

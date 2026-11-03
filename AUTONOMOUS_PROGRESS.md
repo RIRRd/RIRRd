@@ -1,5 +1,14 @@
 # Autonomous development checkpoint
 
+## Upgraded VM continuation
+
+The [24-CPU checkpoint](docs/compatibility/UPGRADED_VM_CHECKPOINT.md) adds four
+authoritative class profiles, bounded maintainer hash replacement, 47 live HTTP
+authorisation comparisons, ARM64 release tests under QEMU, and repeated timing
+samples. Full parity remains open; native CI and full release/security gates
+remain separate from these local results. The public comparison remains a static
+site on codex/coming-soon and the source repository remains private.
+
 ## Linux VM continuation
 
 See [Linux VM checkpoint](docs/compatibility/LINUX_VM_CHECKPOINT.md) for the

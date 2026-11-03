@@ -181,7 +181,7 @@ This command evaluates validated payloads locally. It does not currently annotat
 
 Set `authoritative_sources = ["EXAMPLE"]` alongside `sources` in TOML. Bootstrap operator-managed records and maintainers through a trusted snapshot using `import snapshot --authoritative-restore`. This flag explicitly permits full source replacement. The NRTMv3 client rejects authoritative sources.
 
-Stop the server and run `rust-irrd update --source EXAMPLE --file changes.rpsl`. Pipe one password per line to standard input. Use `--delete` when every record in the file is a deletion. The supported write profile covers person, role, route, route6, AS-set, route-set and aut-num creation, modification and deletion, and updates to existing maintainers. Operators provision maintainers and AS-blocks. New autonomous system records require authentication against the narrowest covering AS-block in the same source. Missing or equally specific overlapping AS-blocks cause creation to fail. Authoritative identity validation rejects AS0, AS23456, AS65535 and AS4294967295 and accepts private-use ASNs. Authentication requires bounded `BCRYPT-PW` verification. An update requires a valid maintainer for both the existing and proposed record. A maintainer update also verifies the proposed credentials. Strong references are checked and can prevent deletion. New AS-sets and route-sets require a leading ASN in their names. Creation also requires authentication against the same-source parent `aut-num` when it exists.
+Stop the server and run `rust-irrd update --source EXAMPLE --file changes.rpsl`. Pipe one password per line to standard input. Use `--delete` when every record in the file is a deletion. The supported write profile covers person, role, organisation, route, route6, AS-set, route-set, filter-set, peering-set, rtr-set, inet-rtr and aut-num creation, modification and deletion, and existing-maintainer changes. Operators provision maintainers and AS-blocks. New autonomous system records require authentication against the narrowest covering AS-block in the same source. Missing or equally specific overlapping AS-blocks cause creation to fail. Authoritative identity validation rejects AS0, AS23456, AS65535 and AS4294967295 and accepts private-use ASNs. Authentication requires bounded `BCRYPT-PW` verification. An update requires a valid maintainer for both the existing and proposed record. A maintainer update also verifies the proposed credentials. Strong references are checked and can prevent deletion. New AS-, route-, filter-, peering- and router-sets require a leading ASN in their names. Creation also requires authentication against the same-source parent `aut-num` when it exists.
 
 Route creation also checks the same-source parent when one exists. Exact or smallest enclosing address allocations take precedence over the closest strict covering route. Ambiguous equally specific parents reject creation. The authoritative parser requires unambiguous CIDR syntax and rejects AS0, default routes and unspecified host routes. Aggregate policy attributes are outside the supported profile.
 
@@ -190,6 +190,15 @@ Optionally set `authoritative_roa_file = "roas.json"` to reject incoming routes 
 The submission applies atomically. Run `source history --source EXAMPLE` offline to read recent committed identities and actions. The history omits passwords, hashes and object bodies.
 
 To migrate stored `MD5-PW` credentials, temporarily list the authoritative source in `legacy_md5_sources`. Existing MD5-Crypt hashes can then authenticate, but proposed maintainer records must use bcrypt. To rotate a self-maintained record, supply the current password and the password matching the proposed bcrypt hash. Remove the source from this list once migration is complete.
+
+An existing maintainer can submit only `BCRYPT-PW DummyValue` auth placeholders
+with one distinct password. After authenticating the stored maintainers, the
+server replaces all placeholders with a fresh bcrypt hash at the library's
+default cost (currently 12). Duplicate identical passwords count once. Multiple
+distinct passwords, mixed real/dummy hashes and new-maintainer creation fail.
+Replacement hashing shares the authentication work budget and occurs inside the
+transaction before publication. The placeholder and plaintext password are never
+stored. The normal CLI and HTTP paths have local and pinned-oracle coverage.
 
 For local HTTP submission, set `http_authoritative_updates = true` alongside a loopback `http_listen`. Send JSON to `/v1/submit/` using POST to create or modify, or DELETE to remove. Use an `objects` list with one `object_text` per entry and a top-level `passwords` list. Each submission covers a single authoritative source. The server commits the batch and its audit records together. HTTP reports omit object text and secrets. Deleted contact and maintainer names are protected from reuse in their source.
 

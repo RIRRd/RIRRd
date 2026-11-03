@@ -25,6 +25,16 @@ oracle results or protocol interop evidence as appropriate. Release
 extensions are tracked separately from upstream behaviour. Each row stays
 open until the stated behaviour and safety checks are demonstrated.
 
+## Upgraded VM checkpoint
+
+See [the 24-CPU checkpoint](UPGRADED_VM_CHECKPOINT.md) for four additional
+bounded authoritative profiles (filter-set, peering-set, rtr-set and inet-rtr),
+maintainer dummy-hash replacement, 47 upstream HTTP decision cases, 25 policy
+schema cases, 134 unit/13 integration checks on native Linux and ARM64 QEMU
+release builds, and package/runtime measurements. No broad capability row is
+marked fully verified from these limited corpora. Native CI and full parity
+remain open.
+
 ## Linux VM checkpoint
 
 The [3 November Linux evidence](LINUX_VM_CHECKPOINT.md) records authoritative
