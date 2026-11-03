@@ -97,7 +97,7 @@ def main():
                 assert '2001:' in query('AS3333','origin','6')
                 assert '193.0.0.0/21' in query('AS-RIPENCC','set')
                 assert 'No ' in query('RIRRD-NO-SUCH-OBJECT-SECURITY-CHECK')
-                assert 'ARIN' not in browser.js('[...document.getElementById("query-source").options].map(o=>o.value)')
+                assert 'ARIN' in browser.js('[...document.getElementById("query-source").options].map(o=>o.value)')
                 telemetry=browser.js('fetch("live.json").then(r=>r.json())')
                 assert telemetry['service']=='online' and telemetry['total_objects']>900000
                 assert telemetry['http_queries']>=6

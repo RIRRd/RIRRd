@@ -46,12 +46,12 @@ marketing use or downloadable database export. Permission references:
   [database terms](https://docs.db.ripe.net/HTML-Terms-And-Conditions).
 - [ARIN IRR downloads](https://www.arin.net/resources/manage/irr/) and
   [NRPM 3.4.1](https://www.arin.net/participate/policy/nrpm/#3-4-routing-registry).
-  ARIN permits routing-registry mirroring for Internet operations and restricts
-  redistribution to WHOIS absent written permission. Consequently ARIN is
-  available through raw TCP and HTTP WHOIS here. The policy names a Whois
-  service, without specifying port 43. This is our service interpretation, not an
-  ARIN endorsement. `http_sources` excludes ARIN from structured GraphQL and
-  key browsing; `http_whois_sources` independently permits raw WHOIS.
+  ARIN routing objects are included in TCP WHOIS, raw HTTP WHOIS, GraphQL and
+  bounded key browsing. The operator explicitly requested the operational IRR
+  service to use the published sources across its query interfaces. The generic
+  `http_sources` and `http_whois_sources` settings remain available to operators
+  who want narrower local query scopes; this deployment serves every loaded source.
+
 - [AFRINIC's mirroring instructions](https://afrinic.net/ast/pdf/afrinic-irr-guide-20180927.pdf).
   Continuous NRTM needs IP whitelisting, which is not assumed from snapshot access.
 - [LACNIC's open mirroring policy](https://www.lacnic.net/5009/2/lacnic/update-on-lacnics-irr:-near-real-time-mirroring-now-available).

@@ -53,10 +53,9 @@ whois -h rirrd.co.uk -- '-s RIPE -x 193.0.0.0/21'
 curl --fail --get --data-urlencode 'q=-s RIPE AS-RIPENCC' https://rirrd.co.uk/v1/whois/
 ```
 
-ARIN routing data is served by the raw TCP and HTTP WHOIS interfaces for IRR
-operations. ARIN is excluded from structured GraphQL and key-list browsing.
-This service interpretation follows NRPM 3.4.1's reference to a Whois service;
-it is not a statement that ARIN has endorsed this project.
+All loaded sources, including ARIN, use the public WHOIS, GraphQL and bounded
+browsing interfaces. Queries are for Internet routing operations; results come
+from this local RIRRd database.
 
 ## Structured GraphQL
 
@@ -83,7 +82,7 @@ The response contains `keys` and `next_cursor`. Send that cursor as the `after`
 parameter for the next page. Limits are 1–100 keys; pages use an index seek,
 not a full database scan. Changes can occur between pages. Classes: `aut-num`,
 `as-set`, `route-set`, `route`, `route6`, `filter-set`, `peering-set`, `rtr-set`,
-`inet-rtr`. ARIN is excluded from this structured listing.
+`inet-rtr`.
 
 ## Live origin validation and telemetry
 
