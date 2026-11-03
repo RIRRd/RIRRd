@@ -1,9 +1,10 @@
 name: Native Linux packages
 
 on:
+  workflow_call:
   workflow_dispatch:
   push:
-    branches: [main, 'codex/**']
+    branches: [main, 'release/**', 'feature/**', 'fix/**']
     paths:
       - '.github/workflows/native-packages.yml'
       - 'deploy/packages/**'

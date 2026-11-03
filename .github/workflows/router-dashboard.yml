@@ -2,7 +2,7 @@ name: Router tools and bundled dashboard
 on:
   workflow_dispatch:
   push:
-    branches: ['codex/**']
+    branches: [main, 'release/**', 'feature/**', 'fix/**']
   pull_request:
     paths:
       - '.github/workflows/router-dashboard.yml'

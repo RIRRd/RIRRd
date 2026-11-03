@@ -1,0 +1,33 @@
+name: Beta bug report
+description: Report a reproducible RIRRd behavior, compatibility or performance problem.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: 'Thanks for testing the beta. Use synthetic examples and redact secrets, private contacts and registry credentials. Follow SECURITY.md for security reports.'
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: Include rust-irrd --version, OS and architecture.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Minimal configuration, request and steps. No private keys or runtime databases.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected and actual behavior
+      description: For compatibility differences, include the official IRRd version and a synthetic example.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Redacted evidence
+      description: Relevant logs, responses or measurements. Performance reports need dataset, concurrency and host conditions.

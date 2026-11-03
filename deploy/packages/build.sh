@@ -41,10 +41,17 @@ if [[ $package_machine != "$(uname -m)" ]]; then
     rpm_cross_args+=(--define "__strip $(command -v "$strip_tool")")
 fi
 version=$("$binary" --version)
-[[ $version =~ ^rust-irrd[[:space:]]([0-9]+\.[0-9]+\.[0-9]+)$ ]] ||
-    die "expected an x.y.z rust-irrd release binary"
-version=${BASH_REMATCH[1]}
+[[ $version =~ ^rust-irrd[[:space:]]([0-9]+\.[0-9]+\.[0-9]+)(-((alpha|beta|rc)\.[0-9]+))?$ ]] ||
+    die "expected an x.y.z or x.y.z-beta.N rust-irrd binary"
+base_version=${BASH_REMATCH[1]}
+prerelease=${BASH_REMATCH[3]-}
+version=$base_version
 release=1
+deb_version=$base_version
+if [[ -n $prerelease ]]; then
+    deb_version="$base_version~$prerelease"
+    release="0.1.$prerelease"
+fi
 mkdir -p -- "$2"
 output=$(realpath -- "$2")
 
@@ -73,7 +80,7 @@ done
 printf '%s\n' /etc/rust-irrd/irrd.toml > "$stage/DEBIAN/conffiles"
 cat > "$stage/DEBIAN/control" <<EOF
 Package: rust-irrd
-Version: $version-$release
+Version: $deb_version-1
 Section: net
 Priority: optional
 Architecture: $deb_arch
@@ -83,7 +90,7 @@ Homepage: https://github.com/Peravix/Rirrd
 Description: Rust Internet Routing Registry daemon
  The service requires an operator-provided snapshot and explicit startup.
 EOF
-dpkg-deb --root-owner-group --build "$stage" "$output/rust-irrd_${version}-${release}_${deb_arch}.deb"
+dpkg-deb --root-owner-group --build "$stage" "$output/rust-irrd_${deb_version}-1_${deb_arch}.deb"
 
 top="$work/rpm"
 mkdir -p -- "$top/SOURCES"

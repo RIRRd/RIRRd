@@ -3,7 +3,7 @@ name: IRRd upstream oracle
 on:
   workflow_dispatch:
   push:
-    branches: ['codex/**']
+    branches: [main, 'release/**', 'feature/**', 'fix/**']
   pull_request:
     paths:
       - '.github/workflows/upstream-oracle.yml'

@@ -1,31 +1,44 @@
 # RIRRd
 
-**AI disclosure:** RIRRd is built with AI assistance. AI tools and agents are welcome contributors; submitted changes still require review, reproducible tests and license/provenance checks. AI authorship does not establish correctness, security or full IRRd parity. See [the disclosure](docs/AI_DISCLOSURE.md) and [contribution guide](CONTRIBUTING.md).
+**Beta 0.1.0-beta.1** · [MIT license](LICENSE) · [Project website](https://rirrd.co.uk/)
+· [Community tools](https://irrd.tools/) · [Beta status](docs/BETA_STATUS.md)
 
-**Two independent components:** the Rust daemon and `web/dashboard/` are the
-self-hosted product. The community website in [`site/community/`](site/community/README.md)
-provides public node discovery, hosting/sponsor credits and reviewed submissions.
-Running your own RIRRd instance requires neither a community account nor a listing.
+A Rust Internet Routing Registry daemon with embedded storage, bounded WHOIS,
+HTTP and GraphQL queries, a self-hosted console and an optional in-process RPKI
+validator. PostgreSQL and Redis are not runtime dependencies. The project aims
+to make running an IRR service practical on smaller Linux hosts.
 
-Project code is [MIT-licensed](LICENSE). The repository remains private during development; a public open-source release is planned.
+**This is beta software. Full IRRd parity and production qualification remain
+incomplete.** The baseline is official IRRd v4.5.4 at
+`8e8080dab744a348b7d0e6efcb53f403301dd075`. Check the
+[compatibility matrix](docs/compatibility/IRRD_FEATURE_MATRIX.md),
+[known gaps](docs/BETA_STATUS.md) and [progress record](AUTONOMOUS_PROGRESS.md).
+The source is being prepared for public beta publication; release artifacts
+must not be inferred from a source version alone.
 
-The project combines a compact Rust IRR service, a source/query dashboard and
-optional in-process RPKI validation. The first public test node is
-[**RIRRd UK 01**](https://rirrd.co.uk), hosted in the United Kingdom by
-**HYEHOST LLC**. See the [API and command guide](docs/operations/API_COMMANDS.md),
-[BIRD/FRR integration](docs/operations/ROUTER_INTEGRATION.md),
-[embedded validator profile](docs/operations/INTEGRATED_RPKI.md) and
-[community node directory](docs/community/NETWORK.md). The embedded validator
-uses the attributed Routinator Rust library. Full parity and release
-qualification remain incomplete.
+## Software and community network
 
+- **rirrd.co.uk** showcases the project, measured benchmarks and beta documentation.
+- **irrd.tools** hosts public routing tools, the reviewed node directory and
+  private node submissions. The first node is in the UK, hosted by HYEHOST LLC.
+- The Rust daemon and `web/dashboard/` run independently. Running your own instance
+  needs neither a community account nor a directory listing.
 
-This development branch contains a transactional embedded registry, local snapshot and incremental mirroring commands, a TCP WHOIS listener and an optional read-only GraphQL service. The compatibility baseline is IRRd v4.5.4 at commit `8e8080dab744a348b7d0e6efcb53f403301dd075`. See the [compatibility matrix](docs/compatibility/IRRD_FEATURE_MATRIX.md), [upstream issue backlog](docs/compatibility/IRRD_ISSUE_BACKLOG.md) and [development checkpoint](AUTONOMOUS_PROGRESS.md) for release blockers and evidence.
+Start with [self-hosting](docs/operations/GETTING_STARTED.md),
+[API commands](docs/operations/API_COMMANDS.md),
+[BIRD/FRR integration](docs/operations/ROUTER_INTEGRATION.md) and
+[embedded RPKI](docs/operations/INTEGRATED_RPKI.md). The validator integrates
+NLnet Labs Routinator/rpki-rs in the same process, with attribution; it is not
+an independently rewritten cryptographic validator.
 
-RIRRd aims to provide the features of a self-hosted IRRd service on smaller Linux
-hosts, with a bundled dashboard, straightforward BIRD/FRR filter-generation
-workflows and a reviewed community directory with hosting and sponsor credits.
-See [the project direction](docs/PROJECT_DIRECTION.md).
+## Contributions and AI disclosure
+
+RIRRd is built with AI assistance. Human and AI-assisted contributions are welcome,
+with review, reproducible tests and clear provenance. Code can be used, modified
+and redistributed under MIT. Authorship does not establish correctness or security.
+See [CONTRIBUTING](CONTRIBUTING.md), [AI disclosure](docs/AI_DISCLOSURE.md) and
+[SECURITY](SECURITY.md). Report beta bugs using
+[GitHub Issues](https://github.com/Peravix/Rirrd/issues) once publication completes.
 
 ## Dashboard and router integration
 
@@ -34,8 +47,8 @@ read-only dashboard queries the same local WHOIS/GraphQL APIs, shows source and
 replication status, and displays optional `[node]` name/location/sponsor labels.
 No Node process or external page assets are required. Missing freshness remains
 unreported; a configured source is not a freshness claim. Account/update UI is
-not implemented. The public site hosts a labeled synthetic preview, not a public
-registry API.
+not implemented. The public community service hosts a real, read-only registry at irrd.tools.
+Its node directory and submission service are deployed separately from the daemon.
 
 Start with [the small-host profile](examples/small-host/irrd.toml),
 [small-host operation](docs/operations/SMALL_HOSTS.md), and the
@@ -260,8 +273,8 @@ The [100,000-object Linux synthetic comparison](docs/benchmarks/LINUX_SYNTHETIC_
 
 ## Experimental public test service
 
-The live dashboard is https://rirrd.co.uk/dashboard/ and read-only TCP WHOIS/bgpq4
-uses `rirrd.co.uk:43`. Inspect the dashboard's loaded sources, missing feeds and
+The live dashboard is https://irrd.tools/dashboard/ and read-only TCP WHOIS/bgpq4
+uses `irrd.tools:43`. Inspect the dashboard's loaded sources, missing feeds and
 snapshot times before testing. Seven sources follow NRTMv3 every sixty seconds; the remaining sources use daily snapshots.
 Submissions and administration are not public; full parity and production
 qualification remain incomplete. See the [router guide](docs/operations/ROUTER_INTEGRATION.md)
