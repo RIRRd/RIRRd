@@ -15,8 +15,10 @@ mod nrtm4_local;
 mod nrtm4_records;
 mod nrtm4_state;
 mod nrtm_client;
+mod route_policy;
 mod rpki;
 mod rpsl;
+mod scope;
 mod sets;
 mod storage;
 mod submission_http;
@@ -37,7 +39,7 @@ use tokio::{net::TcpListener, sync::watch, task::JoinSet};
 use tracing_subscriber::EnvFilter;
 use zeroize::Zeroizing;
 
-use crate::{config::Config, storage::Store};
+use crate::{config::Config, route_policy::RoutePolicy, storage::Store};
 
 #[derive(Parser)]
 #[command(version, about)]
@@ -285,7 +287,10 @@ fn main() -> Result<()> {
         }
         Command::Config {
             command: ConfigCommand::Check,
-        } => println!("configuration valid"),
+        } => {
+            RoutePolicy::load(&config)?;
+            println!("configuration valid");
+        }
         Command::Database {
             command: DatabaseCommand::Verify,
         } => {
@@ -332,9 +337,11 @@ fn main() -> Result<()> {
             );
         }
         Command::Server => {
+            let route_policy = RoutePolicy::load(&config)?;
             let store = Arc::new(
                 Store::open_for_service(&config.database)?
-                    .with_legacy_md5_sources(config.legacy_md5_sources.clone()),
+                    .with_legacy_md5_sources(config.legacy_md5_sources.clone())
+                    .with_route_policy(route_policy),
             );
             tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
@@ -503,7 +510,8 @@ fn main() -> Result<()> {
                 });
             }
             let passwords = read_update_passwords()?;
-            let store = open_source(&config, &source)?;
+            let route_policy = RoutePolicy::load(&config)?;
+            let store = open_source(&config, &source)?.with_route_policy(route_policy);
             let changed = store.apply_authoritative(&source, changes, &passwords)?;
             println!(
                 "{}",

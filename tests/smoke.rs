@@ -22,13 +22,22 @@ fn authoritative_cli_checks_maintainers_and_rolls_back_a_mixed_batch() {
         r#"database = "test.redb"
 sources = ["TEST", "MIRROR"]
 authoritative_sources = ["TEST"]
+authoritative_roa_file = "roas.json"
 listen = "127.0.0.1:0"
 http_listen = "127.0.0.1:0"
 http_authoritative_updates = true
 max_connections = 4
 io_timeout_seconds = 2
 max_snapshot_bytes = 4096
+
+[authoritative_scope]
+prefixes = ["198.51.100.128/25"]
 "#,
+    )
+    .unwrap();
+    fs::write(
+        workspace.path().join("roas.json"),
+        r#"{"roas":[{"prefix":"192.0.2.0/24","asn":"AS64496","maxLength":25}]}"#,
     )
     .unwrap();
     let snapshot = workspace.path().join("snapshot.rpsl");
@@ -200,6 +209,24 @@ max_snapshot_bytes = 4096
             "POST",
             "/v1/submit/",
             route_payload(&["new test secret"], route)
+        )["summary"]["failed"],
+        1
+    );
+    let too_specific = route.replace("/25", "/26");
+    assert_eq!(
+        request(
+            "POST",
+            "/v1/submit/",
+            route_payload(&["root test secret", "new test secret"], &too_specific)
+        )["summary"]["failed"],
+        1
+    );
+    let outside_scope = route.replace("192.0.2.128/25", "198.51.100.0/24");
+    assert_eq!(
+        request(
+            "POST",
+            "/v1/submit/",
+            route_payload(&["new test secret"], &outside_scope)
         )["summary"]["failed"],
         1
     );

@@ -17,6 +17,10 @@ pub struct Config {
     pub authoritative_sources: HashSet<String>,
     #[serde(default)]
     pub legacy_md5_sources: HashSet<String>,
+    pub authoritative_roa_file: Option<PathBuf>,
+    #[serde(default)]
+    pub authoritative_roa_exempt_sources: HashSet<String>,
+    pub authoritative_scope: Option<ScopeConfig>,
     pub listen: SocketAddr,
     pub http_listen: Option<SocketAddr>,
     #[serde(default)]
@@ -39,6 +43,17 @@ pub struct MirrorConfig {
     pub endpoint: SocketAddr,
     pub interval_seconds: u64,
     pub base_serial: Option<u64>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScopeConfig {
+    #[serde(default)]
+    pub prefixes: Vec<String>,
+    #[serde(default)]
+    pub asns: Vec<String>,
+    #[serde(default)]
+    pub exempt_sources: HashSet<String>,
 }
 
 impl Config {
@@ -92,6 +107,22 @@ impl Config {
                 .is_subset(&config.authoritative_sources),
             "legacy_md5_sources must be authoritative"
         );
+        ensure!(
+            config
+                .authoritative_roa_exempt_sources
+                .is_subset(&config.authoritative_sources)
+                && (config.authoritative_roa_exempt_sources.is_empty()
+                    || config.authoritative_roa_file.is_some()),
+            "ROA exemptions require an enabled policy and authoritative sources"
+        );
+        if let Some(scope) = &config.authoritative_scope {
+            ensure!(
+                scope
+                    .exempt_sources
+                    .is_subset(&config.authoritative_sources),
+                "scope exemptions must be authoritative sources"
+            );
+        }
         for (source, peers) in &mut config.nrtm3_serve {
             ensure!(
                 seen.contains(source),
@@ -151,11 +182,14 @@ impl Config {
             (1..=64 * 1024 * 1024 * 1024).contains(&config.max_snapshot_bytes),
             "max_snapshot_bytes must be between 1 byte and 64 GiB"
         );
+        let directory = path.parent().unwrap_or_else(|| Path::new("."));
         if config.database.is_relative() {
-            config.database = path
-                .parent()
-                .unwrap_or_else(|| Path::new("."))
-                .join(&config.database);
+            config.database = directory.join(&config.database);
+        }
+        if let Some(roas) = &mut config.authoritative_roa_file
+            && roas.is_relative()
+        {
+            *roas = directory.join(roas.as_path());
         }
         Ok(config)
     }

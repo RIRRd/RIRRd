@@ -23,6 +23,7 @@ use crate::{
     nrtm3::{Kind, Operation},
     nrtm4_records::Record as Nrtm4Record,
     nrtm4_state::CommittedState,
+    route_policy::RoutePolicy,
     rpsl::{Object, lookup_attributes},
 };
 
@@ -89,6 +90,7 @@ pub struct Store {
     db: Database,
     query_gate: RwLock<()>,
     legacy_md5_sources: HashSet<String>,
+    route_policy: RoutePolicy,
 }
 
 impl Store {
@@ -180,6 +182,7 @@ impl Store {
             db,
             query_gate: RwLock::new(()),
             legacy_md5_sources: HashSet::new(),
+            route_policy: RoutePolicy::default(),
         })
     }
 
@@ -190,6 +193,7 @@ impl Store {
             db,
             query_gate: RwLock::new(()),
             legacy_md5_sources: HashSet::new(),
+            route_policy: RoutePolicy::default(),
         })
     }
 
@@ -200,6 +204,11 @@ impl Store {
 
     pub fn with_legacy_md5_sources(mut self, sources: HashSet<String>) -> Self {
         self.legacy_md5_sources = sources;
+        self
+    }
+
+    pub fn with_route_policy(mut self, policy: RoutePolicy) -> Self {
+        self.route_policy = policy;
         self
     }
 
@@ -554,6 +563,17 @@ impl Store {
                 |route| indexes.route_parent(&records, route),
                 self.legacy_md5_sources.contains(&source),
             )?;
+            for change in &changes {
+                if let Change::Upsert(object) = change
+                    && let Some((prefix, origin)) = route_index_parts(&object.class, &object.key)?
+                {
+                    let origin = origin
+                        .strip_prefix("AS")
+                        .context("invalid route origin")?
+                        .parse()?;
+                    self.route_policy.validate(&source, prefix, origin)?;
+                }
+            }
 
             let mut audit = write.open_table(AUTH_AUDIT)?;
             let mut protected = write.open_table(PROTECTED_NAMES)?;

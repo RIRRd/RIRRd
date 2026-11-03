@@ -155,6 +155,8 @@ Stop the server and run `rust-irrd update --source EXAMPLE --file changes.rpsl`.
 
 Route creation also checks the same-source parent when one exists. Exact or smallest enclosing address allocations take precedence over the closest strict covering route. Ambiguous equally specific parents reject creation. The authoritative parser requires unambiguous CIDR syntax and rejects AS0, default routes and unspecified host routes. Aggregate policy attributes are outside the supported profile.
 
+Optionally set `authoritative_roa_file = "roas.json"` to reject incoming routes whose origin is invalid against a trusted, validator-produced feed. The daemon loads the file at startup. `authoritative_roa_exempt_sources` can exempt selected authoritative sources. Configure `[authoritative_scope]` with `prefixes`, `asns` or both to reject overlapping routes and excluded origin ranges. Its `exempt_sources` applies only to scope. These policies apply to new and modified authoritative routes. They leave existing and mirrored query results visible.
+
 The submission applies atomically. Run `source history --source EXAMPLE` offline to read recent committed identities and actions. The history omits passwords, hashes and object bodies.
 
 To migrate stored `MD5-PW` credentials, temporarily list the authoritative source in `legacy_md5_sources`. Existing MD5-Crypt hashes can then authenticate, but proposed maintainer records must use bcrypt. To rotate a self-maintained record, supply the current password and the password matching the proposed bcrypt hash. Remove the source from this list once migration is complete.

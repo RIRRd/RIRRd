@@ -18,6 +18,10 @@ IRRd v4.5.4, commit `8e8080dab744a348b7d0e6efcb53f403301dd075`, is the pinned co
 
 ## Verification
 
+- The authoritative ROA and scope admission checkpoint passed 108 unit and nine end-to-end tests, strict Clippy, and a 207-dependency RustSec scan. HTTP tests reject a route beyond the ROA maximum length and a covering route that overlaps an excluded network.
+- The expanded live Linux oracle matched all 25 WHOIS cases against pinned IRRd 4.5.4. [Oracle run](https://github.com/Peravix/Rirrd/actions/runs/41613377860)
+- Native Debian and RPM packages passed install, bootstrap, WHOIS and post-SIGTERM verification on x86-64 and ARM64. The CI test launches the installed binary as the package service account. Systemd-supervised startup and release signing remain open. [Package run](https://github.com/Peravix/Rirrd/actions/runs/41613861451)
+- A Linux libFuzzer smoke run completed 2,460,454 executions in 61 seconds. Long fuzz campaigns remain open. [Fuzz run](https://github.com/Peravix/Rirrd/actions/runs/41613974874)
 - Opt-in legacy `MD5-PW` supports migration of existing maintainers to bcrypt. Independent OpenSSL vectors checked the verifier; the CLI test covers default denial, source opt-in and rotation. New legacy credentials remain rejected.
 - Scheduled NRTMv3 sync, additional RIPE modifiers and GraphQL root-source pinning passed 101 unit tests and eight end-to-end tests on Windows. The real TCP mirror test retries a malformed response and publishes the next valid update. Debian/RPM packaging definitions were linted and are queued for native Linux runtime checks.
 - The NRTMv4 apply checkpoint passed 96 unit tests and seven end-to-end tests on Windows. A signed but malformed delta rolled back data and version, and a later valid delta advanced both. Signed-fixture tests cover key rotation and session rollover. The Linux oracle passed 13 exact-key WHOIS cases against pinned upstream 4.5.4. The 25-case expanded corpus has a local self-check and is queued for live comparison.
