@@ -1944,6 +1944,9 @@ fn small_host_controls_fail_before_open_and_persist_with_a_small_cache() {
         "worker_threads = 65",
         "max_blocking_threads = 0",
         "max_blocking_threads = 257",
+        "http_sources = []",
+        "http_sources = [\"OTHER\"]",
+        "http_sources = [\"TEST\", \"TEST\"]",
         "[node]\nname = \"\"",
         "[node]\nlocation = \"bad\\nlabel\"",
     ] {
@@ -1971,6 +1974,61 @@ fn small_host_controls_fail_before_open_and_persist_with_a_small_cache() {
         assert!(whois(address, b"!maut-num,AS64496\n").contains("AS64496"));
         drop(server);
     }
+    successful(cli(&config).args(["database", "verify"]).output().unwrap());
+}
+
+#[test]
+fn snapshot_policies_survive_restart_and_http_source_subset_is_enforced() {
+    let workspace = tempfile::tempdir().unwrap();
+    let config = workspace.path().join("irrd.toml");
+    fs::write(&config, "database = \"registry.redb\"\nsources = [\"TEST\", \"OTHER\"]\nhttp_sources = [\"TEST\"]\nlisten = \"127.0.0.1:0\"\nhttp_listen = \"127.0.0.1:0\"\nmax_connections = 8\nio_timeout_seconds = 2\nmax_snapshot_bytes = 4194304\n").unwrap();
+    let fixture = workspace.path().join("fixture.rpsl");
+    for (source, marker) in [("TEST", "WEB_ALLOWED"), ("OTHER", "TCP_ONLY")] {
+        let mut text = format!("aut-num: AS64496\ndescr: {marker}\nsource: {source}\n\n");
+        if source == "TEST" {
+            text.push_str(&format!(
+                "filter-set: FLTR-LARGE\nfilter: {}\nsource: TEST\n",
+                "AS64496 OR ".repeat(100_000) + "AS64497"
+            ));
+        }
+        fs::write(&fixture, text).unwrap();
+        successful(
+            cli(&config)
+                .args(["import", "snapshot", "--source", source, "--file"])
+                .arg(&fixture)
+                .output()
+                .unwrap(),
+        );
+    }
+    successful(cli(&config).args(["database", "verify"]).output().unwrap());
+    let (server, address) = Server::start(&config);
+    assert!(whois(address, b"-s OTHER AS64496\n").contains("TCP_ONLY"));
+    drop(server);
+    let (server, address) = Server::start_listener(&config, "GraphQL listening");
+    let result = whois(
+        address,
+        b"GET /v1/whois/?q=AS64496 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+    );
+    assert!(result.contains("WEB_ALLOWED") && !result.contains("TCP_ONLY"));
+    let denied = whois(address, b"GET /v1/whois/?q=-s%20OTHER%20AS64496 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+    assert!(denied.starts_with("HTTP/1.1 400 ") && !denied.contains("TCP_ONLY"));
+    for query in [
+        "{ databaseStatus { source } }",
+        "{ databaseStatus(sources:[\"OTHER\"]) { source } }",
+    ] {
+        let body = serde_json::json!({"query":query}).to_string();
+        let raw = whois(address, format!("POST /graphql/ HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes());
+        let value: Value = serde_json::from_str(raw.split_once("\r\n\r\n").unwrap().1).unwrap();
+        if query.contains("OTHER") {
+            assert!(value.get("errors").is_some());
+        } else {
+            assert_eq!(
+                value["data"]["databaseStatus"],
+                serde_json::json!([{"source":"TEST"}])
+            );
+        }
+    }
+    drop(server);
     successful(cli(&config).args(["database", "verify"]).output().unwrap());
 }
 

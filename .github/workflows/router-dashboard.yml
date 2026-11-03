@@ -10,6 +10,7 @@ on:
       - 'src/**'
       - 'web/**'
       - 'tools/router-integration/**'
+      - 'tools/live-service/**'
       - 'tools/check_dashboard.py'
       - 'examples/routers/**'
 permissions:
@@ -23,6 +24,8 @@ jobs:
         with:
           persist-credentials: false
       - run: cargo build --locked --release
+      - name: Check read-only public gateway isolation and source normalization
+        run: python3 tools/live-service/test_gateway.py
       - name: Install real client and isolated router parsers
         run: |
           sudo apt-get update

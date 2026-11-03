@@ -713,7 +713,10 @@ async fn serve(config: Config, store: Arc<Store>) -> Result<()> {
     }
     if let Some(http) = http {
         let store = store.clone();
-        let sources = config.sources.clone();
+        let sources = config
+            .http_sources
+            .clone()
+            .unwrap_or_else(|| config.sources.clone());
         let update_sources = config
             .http_authoritative_updates
             .then(|| config.authoritative_sources.clone());

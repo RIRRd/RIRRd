@@ -10,7 +10,10 @@ fuzz_target!(|bytes: &[u8]| {
     let Ok(input) = std::str::from_utf8(bytes) else {
         return;
     };
-    let Ok(object) = rpsl::parse(input) else {
+    if input.len() > rpsl::MAX_OBJECT_BYTES {
+        assert!(rpsl::parse(input).is_err());
+    }
+    let Ok(object) = rpsl::parse_snapshot(input) else {
         return;
     };
     assert_eq!(object.text, input);
@@ -18,7 +21,7 @@ fuzz_target!(|bytes: &[u8]| {
     assert!(object.key.bytes().all(|byte| !byte.is_ascii_lowercase()));
 
     let public = object.public_text();
-    let reparsed = rpsl::parse(&public).expect("public text must preserve a valid identity");
+    let reparsed = rpsl::parse_snapshot(&public).expect("public text must preserve a valid identity");
     assert_eq!(reparsed.source, object.source);
     assert_eq!(reparsed.class, object.class);
     assert_eq!(reparsed.key, object.key);

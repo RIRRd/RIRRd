@@ -1,0 +1,36 @@
+[Unit]
+Description=RIRRd experimental public read-only IRR
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=rust-irrd
+Group=rust-irrd
+WorkingDirectory=/var/lib/rirrd-live
+ExecStartPre=/usr/local/libexec/rirrd-live --config /var/lib/rirrd-live/current/irrd.toml config check
+ExecStart=/usr/local/libexec/rirrd-live --config /var/lib/rirrd-live/current/irrd.toml server
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+MemoryMax=2G
+MemorySwapMax=0
+CPUQuota=300%
+TasksMax=64
+LimitNOFILE=4096
+NoNewPrivileges=true
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/var/lib/rirrd-live
+
+[Install]
+WantedBy=multi-user.target

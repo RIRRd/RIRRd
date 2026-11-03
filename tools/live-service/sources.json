@@ -1,0 +1,164 @@
+{
+  "schema_version": 1,
+  "classes": [
+    "aut-num",
+    "as-set",
+    "route-set",
+    "route",
+    "route6",
+    "filter-set",
+    "peering-set",
+    "rtr-set",
+    "inet-rtr"
+  ],
+  "refresh": "daily snapshots; not near-real-time replication",
+  "sources": [
+    {
+      "source": "RIPE",
+      "state": "enabled",
+      "permission": "https://docs.db.ripe.net/FAQ",
+      "terms": "https://docs.db.ripe.net/HTML-Terms-And-Conditions",
+      "encoding": "utf-8",
+      "urls": [
+        "https://ftp.ripe.net/ripe/dbase/split/ripe.db.aut-num.utf8.gz",
+        "https://ftp.ripe.net/ripe/dbase/split/ripe.db.as-set.utf8.gz",
+        "https://ftp.ripe.net/ripe/dbase/split/ripe.db.route-set.utf8.gz",
+        "https://ftp.ripe.net/ripe/dbase/split/ripe.db.route.utf8.gz",
+        "https://ftp.ripe.net/ripe/dbase/split/ripe.db.route6.utf8.gz",
+        "https://ftp.ripe.net/ripe/dbase/split/ripe.db.filter-set.utf8.gz",
+        "https://ftp.ripe.net/ripe/dbase/split/ripe.db.peering-set.utf8.gz",
+        "https://ftp.ripe.net/ripe/dbase/split/ripe.db.rtr-set.utf8.gz",
+        "https://ftp.ripe.net/ripe/dbase/split/ripe.db.inet-rtr.utf8.gz"
+      ]
+    },
+    {
+      "source": "ARIN",
+      "state": "enabled",
+      "permission": "https://www.arin.net/resources/manage/irr/",
+      "terms": "https://www.arin.net/participate/policy/nrpm/#3-4-routing-registry",
+      "encoding": "utf-8",
+      "urls": [
+        "https://ftp.arin.net/pub/rr/arin.db.gz"
+      ],
+      "http_access": false,
+      "distribution": "TCP WHOIS only under current ARIN NRPM 3.4.1. HTTP/GraphQL redistribution requires written permission."
+    },
+    {
+      "source": "AFRINIC",
+      "state": "enabled",
+      "permission": "https://afrinic.net/ast/pdf/afrinic-irr-guide-20180927.pdf",
+      "terms": "https://www.afrinic.net/internet-routing-registry.html",
+      "encoding": "iso-8859-1",
+      "urls": [
+        "https://ftp.afrinic.net/pub/dbase/afrinic.db.gz"
+      ]
+    },
+    {
+      "source": "LACNIC",
+      "state": "enabled",
+      "permission": "https://www.lacnic.net/5009/2/lacnic/update-on-lacnics-irr:-near-real-time-mirroring-now-available",
+      "terms": "https://irr.lacnic.net/",
+      "encoding": "utf-8",
+      "urls": [
+        "https://irr.lacnic.net/lacnic.db.gz"
+      ]
+    },
+    {
+      "source": "APNIC",
+      "state": "pending",
+      "reason": "APNIC signed bulk-access AUP required; owner must arrange access.",
+      "permission": "https://www.apnic.net/manage-ip/using-whois/bulk-access/",
+      "urls": []
+    },
+    {
+      "source": "BELL",
+      "state": "pending",
+      "reason": "Source permission and supported transport review pending; not loaded or queried.",
+      "permission": "https://irr.net/registry/",
+      "urls": []
+    },
+    {
+      "source": "JPIRR",
+      "state": "pending",
+      "reason": "JPNIC mirror-policy/onboarding review required before enabling this feed.",
+      "permission": "https://www.nic.ad.jp/ja/ip/irr/",
+      "urls": []
+    },
+    {
+      "source": "IDNIC",
+      "state": "pending",
+      "reason": "Official HTTPS mirror endpoint fails TLS negotiation; mirror access/permission pending.",
+      "permission": "https://irr.net/registry/",
+      "urls": []
+    },
+    {
+      "source": "ALTDB",
+      "state": "pending",
+      "reason": "Official HTTPS snapshot hostname has a certificate-name mismatch; approved transport and permission pending.",
+      "permission": "https://irr.net/registry/",
+      "urls": []
+    },
+    {
+      "source": "TC",
+      "state": "pending",
+      "reason": "Source permission and supported transport review pending; not loaded or queried.",
+      "permission": "https://irr.net/registry/",
+      "urls": []
+    },
+    {
+      "source": "REACH",
+      "state": "pending",
+      "reason": "Source permission and supported transport review pending; not loaded or queried.",
+      "permission": "https://irr.net/registry/",
+      "urls": []
+    },
+    {
+      "source": "LEVEL3",
+      "state": "pending",
+      "reason": "Official HTTPS snapshot endpoint timed out from this VM; permission review also pending.",
+      "permission": "https://irr.net/registry/",
+      "urls": []
+    },
+    {
+      "source": "NTTCOM",
+      "state": "pending",
+      "reason": "NTT asks prospective mirrors to contact db-admin@rr.ntt.net; mirror onboarding pending.",
+      "permission": "https://www.gin.ntt.net/support-center/policies-procedures/routing-registry/",
+      "urls": []
+    },
+    {
+      "source": "RADB",
+      "state": "pending",
+      "reason": "Official FTP snapshot is reachable; public redistribution terms and plaintext transport review pending.",
+      "permission": "https://irr.net/overview/",
+      "urls": []
+    },
+    {
+      "source": "RIPE-NONAUTH",
+      "state": "enabled",
+      "permission": "https://docs.db.ripe.net/FAQ",
+      "urls": [
+        "https://ftp.ripe.net/ripe/dbase/split/ripe-nonauth.db.aut-num.utf8.gz",
+        "https://ftp.ripe.net/ripe/dbase/split/ripe-nonauth.db.as-set.utf8.gz",
+        "https://ftp.ripe.net/ripe/dbase/split/ripe-nonauth.db.route.utf8.gz",
+        "https://ftp.ripe.net/ripe/dbase/split/ripe-nonauth.db.route6.utf8.gz"
+      ],
+      "terms": "https://docs.db.ripe.net/HTML-Terms-And-Conditions",
+      "encoding": "utf-8"
+    },
+    {
+      "source": "CANARIE",
+      "state": "pending",
+      "reason": "Source permission and supported transport review pending; not loaded or queried.",
+      "permission": "https://irr.net/registry/",
+      "urls": []
+    },
+    {
+      "source": "BBOI",
+      "state": "pending",
+      "reason": "Source permission and supported transport review pending; not loaded or queried.",
+      "permission": "https://irr.net/registry/",
+      "urls": []
+    }
+  ]
+}

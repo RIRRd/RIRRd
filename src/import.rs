@@ -7,7 +7,7 @@ use std::{
 use anyhow::{Context, Result, anyhow, ensure};
 use flate2::bufread::MultiGzDecoder;
 
-use crate::rpsl::{MAX_OBJECT_BYTES, Object, parse};
+use crate::rpsl::{MAX_SNAPSHOT_OBJECT_BYTES as MAX_OBJECT_BYTES, Object, parse_snapshot};
 
 pub fn snapshot(path: &Path, max_bytes: u64) -> Result<impl Iterator<Item = Result<Object>>> {
     let file = File::open(path).context("opening snapshot")?;
@@ -32,8 +32,8 @@ pub fn snapshot(path: &Path, max_bytes: u64) -> Result<impl Iterator<Item = Resu
                 return Ok(None);
             };
             record += 1;
-            let object =
-                parse(&raw).map_err(|error| anyhow!("snapshot record {record}: {error}"))?;
+            let object = parse_snapshot(&raw)
+                .map_err(|error| anyhow!("snapshot record {record}: {error}"))?;
             Ok(Some(object))
         });
         finished = !matches!(result, Ok(Some(_)));
@@ -79,6 +79,35 @@ fn next_record(input: &mut impl BufRead, remaining: &mut u64) -> Result<Option<S
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn snapshot_accepts_large_policy_without_relaxing_submission_limit() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("policy.rpsl");
+        let text = format!(
+            "filter-set: FLTR-EXAMPLE\nfilter: {}\nsource: TEST\n",
+            "AS64496 OR ".repeat(200_000) + "AS64497"
+        );
+        assert!(text.len() > crate::rpsl::MAX_OBJECT_BYTES);
+        assert!(crate::rpsl::parse(&text).is_err());
+        std::fs::write(&path, &text)?;
+        let objects = snapshot(&path, text.len() as u64)?.collect::<Result<Vec<_>>>()?;
+        assert_eq!(objects.len(), 1);
+        assert_eq!(objects[0].key, "FLTR-EXAMPLE");
+        assert_eq!(objects[0].text, text);
+        assert!(crate::rpsl::lookup_attributes(&objects[0].class, &objects[0].text).is_ok());
+        let excessive = format!(
+            "filter-set: FLTR-EXAMPLE\nfilter: {}\nsource: TEST\n",
+            "A".repeat(MAX_OBJECT_BYTES)
+        );
+        std::fs::write(&path, &excessive)?;
+        assert!(
+            snapshot(&path, excessive.len() as u64)?
+                .collect::<Result<Vec<_>>>()
+                .is_err()
+        );
+        Ok(())
+    }
 
     #[test]
     fn bounds_gzip_stream_and_detects_corrupt_trailer() -> Result<()> {

@@ -2,7 +2,9 @@
 
 use std::{borrow::Cow, fmt, net::Ipv6Addr};
 
-use super::{MAX_OBJECT_BYTES, Object, asn, dns_name, generic_name, ipv4_address, ipv4_network};
+use super::{
+    MAX_SNAPSHOT_OBJECT_BYTES, Object, asn, dns_name, generic_name, ipv4_address, ipv4_network,
+};
 use super::{canonical_prefix, is_continuation, prefix_length, set_name};
 
 const INVERSE_FIELDS: &[&str] = &[
@@ -122,7 +124,7 @@ impl Object {
 
 /// Extract lookup fields from borrowed storage text for an already parsed object.
 pub(crate) fn lookup_attributes(class: &str, text: &str) -> Result<LookupAttributes, String> {
-    if text.len() > MAX_OBJECT_BYTES {
+    if text.len() > MAX_SNAPSHOT_OBJECT_BYTES {
         return Err("object exceeds lookup extraction limit".into());
     }
     let mut result = LookupAttributes::default();

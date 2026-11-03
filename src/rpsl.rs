@@ -13,6 +13,9 @@ pub mod lookup;
 pub(crate) use lookup::{is_inverse_field, lookup_attributes};
 
 pub const MAX_OBJECT_BYTES: usize = 64 * 1024;
+/// Large published routing policies are valid snapshot inputs. Submission and
+/// NRTM paths retain their independent, smaller admission limits.
+pub const MAX_SNAPSHOT_OBJECT_BYTES: usize = 4 * 1024 * 1024;
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct Object {
@@ -79,8 +82,16 @@ struct Identity {
 
 /// Parse one UTF-8 object, keeping the input text and canonicalising its key.
 pub fn parse(text: &str) -> Result<Object, String> {
-    if text.len() > MAX_OBJECT_BYTES {
-        return Err(format!("RPSL object exceeds {MAX_OBJECT_BYTES} bytes"));
+    parse_with_limit(text, MAX_OBJECT_BYTES)
+}
+
+pub fn parse_snapshot(text: &str) -> Result<Object, String> {
+    parse_with_limit(text, MAX_SNAPSHOT_OBJECT_BYTES)
+}
+
+fn parse_with_limit(text: &str, max_bytes: usize) -> Result<Object, String> {
+    if text.len() > max_bytes {
+        return Err(format!("RPSL object exceeds {max_bytes} bytes"));
     }
 
     let mut identity = Identity::default();

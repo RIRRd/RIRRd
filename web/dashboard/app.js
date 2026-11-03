@@ -2,7 +2,7 @@
 (() => {
   const el = id => document.getElementById(id);
   const pages = {overview:'Overview',query:'Registry explorer',sources:'Sources',network:'Community network',connect:'Connect your router'};
-  let metadata = null, sample = null, currentResult = '', activeQuery = null, network = [];
+  let metadata = null, sample = null, currentResult = '', activeQuery = null, network = [], refreshingLive = false;
   const text = (id, value) => { el(id).textContent = value; };
   const errorText = error => String(error.message || error).slice(0, 700);
   function page() {
@@ -50,6 +50,7 @@
   }
   async function refreshSources() {
     if (!metadata) return;
+    if (metadata.public_service) return refreshLive();
     el('refresh').disabled=el('refresh-sources').disabled=true;
     try {
       const rows=metadata.mode==='preview' ? sample.sources : (await graphql('{ databaseStatus { source authoritative serialNewestMirror nrtm4ClientVersion lastUpdate rpslDataUpdated } }',{})).data.databaseStatus;
@@ -67,19 +68,68 @@
       if (preview) {text('connection-label','Example connection cap');text('cache-label','Example cache budget');}
       text('source-count',value.sources.length);text('connection-cap',value.max_connections ?? '—');
       text('cache-budget',value.database_cache_mib ? value.database_cache_mib+' MiB' : '—');
-      text('interface-state',preview?'Preview':'Local API');text('interface-note',preview?'Bundled synthetic data':'Read-only dashboard');
+      text('interface-state',preview?'Preview':value.public_service?'Live API':'Local API');text('interface-note',preview?'Bundled synthetic data':'Read-only dashboard');
       text('node-name',value.node.name);text('node-location',value.node.location || 'Not configured');text('node-sponsor',value.node.sponsor || 'Not configured');
       text('whois-address',value.whois_listen || 'No public endpoint');
-      text('sidebar-mode',preview?'Synthetic preview':'Private HTTP instance');text('version','RIRRd '+value.version);
-      text('mode-badge',preview?'Synthetic preview':'Private instance');el('mode-badge').className='badge '+(preview?'amber':'positive');
-      notice(preview ? 'Dashboard preview · Bundled synthetic records only. No live registry is connected and no public registry endpoint is deployed here.' : 'Private instance · Read-only queries use this local RIRRd service. Full IRRd compatibility and production qualification remain in development.',preview?'preview':'');
+      text('sidebar-mode',preview?'Synthetic preview':value.public_service?'Public test registry':'Private HTTP instance');text('version','RIRRd '+value.version);
+      text('mode-badge',preview?'Synthetic preview':value.public_service?'Live · Experimental':'Private instance');el('mode-badge').className='badge '+(preview?'amber':'positive');
+      if (value.public_service) {
+        text('quick-example','AS3333');el('query-value').placeholder='AS3333 or 193.0.6.0/24';
+        const replacements={'AS64496':'AS3333','192.0.2.0/24':'193.0.6.0/24','2001:db8:100::/48':'2001:67c:2e8::/48','AS64496:AS-DOCS':'AS-RIPE'};
+        document.querySelectorAll('[data-example]').forEach(button=>{const next=replacements[button.dataset.example];if(next){if(button.textContent===button.dataset.example)button.textContent=next;button.dataset.example=next;}});
+        text('connect-command','bgpq4 -4 -b -h rirrd.co.uk:43 -S RIPE -l RIPE_TEST AS3333');
+        text('whois-address','rirrd.co.uk:43');
+      }
+      notice(value.public_service ? 'Live experimental IRR · Read-only queries run on this RIRRd instance using real routing snapshots. Check source coverage and timestamps before testing router policy. Full parity, live RPKI filtering and production qualification remain incomplete.' : preview ? 'Dashboard preview · Bundled synthetic records only. No live registry is connected and no public registry endpoint is deployed here.' : 'Private instance · Read-only queries use this local RIRRd service. Full IRRd compatibility and production qualification remain in development.',preview?'preview':'');
       el('query-source').replaceChildren(new Option('All configured sources',''));
-      value.sources.forEach(source=>el('query-source').add(new Option(source,source)));
+      (value.http_sources || value.sources).forEach(source=>el('query-source').add(new Option(source,source)));
       el('query-submit').disabled=false;
       if (!preview && value.whois_listen) text('connect-endpoint','Your configured WHOIS listener: '+value.whois_listen+'. Choose your own source and AS-set.');
       await refreshSources();
     } catch (error) { metadata=null;notice('Unable to connect: '+errorText(error),'error');text('mode-badge','Unavailable');el('query-submit').disabled=true; }
   }
+  async function refreshLive() {
+    if (refreshingLive || !metadata?.public_service) return;
+    refreshingLive=true;
+    try {
+      const live=await json('live.json',{signal:AbortSignal.timeout(12000)});
+      el('live-panel').hidden=false;
+      const mib=bytes=>Number.isFinite(bytes)?(bytes/1048576).toFixed(1)+' MiB':'—';
+      text('live-objects',Number(live.total_objects || 0).toLocaleString());
+      text('live-rss',mib(live.process_rss_bytes));text('live-memory',mib(live.cgroup_memory_bytes));text('live-disk',mib(live.database_bytes));
+      text('live-cpu',live.cpu_percent_one_core == null?'—':Number(live.cpu_percent_one_core).toFixed(1)+'%');
+      const hours=Math.floor((live.uptime_seconds || 0)/3600),minutes=Math.floor((live.uptime_seconds || 0)%3600/60);
+      text('live-uptime',hours+'h '+minutes+'m');text('live-queries',Number(live.http_queries || 0).toLocaleString());
+      text('live-errors',(live.http_errors || 0)+' HTTP error responses · since gateway restart');
+      text('live-latency',live.http_recent_p95_ms == null?'No sample':Number(live.http_recent_p95_ms).toFixed(2)+' ms');
+      text('live-observed','Observed '+(live.observed_at || 'unavailable')+' · '+(live.refresh_mode || 'refresh unreported'));
+      text('interface-state',live.service==='online'?'Live API':'Unavailable');
+      text('interface-note',live.service==='online'?'Public read-only test service':'Telemetry unavailable');
+      const rows=live.sources || [],loaded=rows.filter(row=>row.state==='loaded');
+      text('source-count',loaded.length+' / '+rows.length);
+      el('source-rows').replaceChildren();el('overview-sources').replaceChildren();
+      const head=el('source-rows').closest('table').querySelector('thead tr');head.replaceChildren();
+      ['Source','State','Objects','Upstream snapshot','Imported locally','Scope / remaining action'].forEach(label=>{const th=document.createElement('th');th.scope='col';th.textContent=label;head.append(th);});
+      for(const source of rows){
+        const row=document.createElement('tr');cell(row,source.source,'th');cell(row,source.state==='loaded'?(source.http_access===false?'Snapshot · TCP only':'Daily snapshot'):source.state);
+        cell(row,source.objects==null?'—':Number(source.objects).toLocaleString());
+        const modified=[...new Set((source.downloads || []).map(file=>file.last_modified).filter(Boolean))];
+        cell(row,modified.join(' / ') || 'Not fetched');cell(row,source.imported_at || 'Not imported');
+        cell(row,source.state==='loaded'?Object.keys(source.classes || {}).join(', ')+(source.http_access===false?' · TCP WHOIS only; excluded from web queries.':''):source.reason || 'Not loaded');el('source-rows').append(row);
+        const pill=document.createElement('div');pill.className='source-pill';const title=document.createElement('strong');title.textContent=source.source;
+        const detail=document.createElement('span');detail.textContent=source.state==='loaded'?Number(source.objects).toLocaleString()+' objects · snapshot':source.reason || source.state;
+        pill.append(title,detail);el('overview-sources').append(pill);
+      }
+      const current=el('query-source').value;
+      el('query-source').replaceChildren(new Option('All loaded sources',''));loaded.filter(row=>row.http_access!==false).forEach(row=>el('query-source').add(new Option(row.source,row.source)));
+      if(loaded.some(row=>row.source===current))el('query-source').value=current;
+      text('sources-state',loaded.length+' loaded / '+rows.length+' tracked. Only loaded sources can be queried. ARIN is available through TCP WHOIS; web queries exclude it under its distribution terms. Upstream snapshot time and local import time differ. No near-real-time claim.');
+    } catch(error) {
+      text('live-observed','Live telemetry unavailable: '+errorText(error));text('interface-state','Unavailable');
+      text('sources-state','Source status unavailable; previously displayed timestamps may be stale.');
+    } finally {refreshingLive=false;}
+  }
+  setInterval(()=>{if(!document.hidden && metadata?.public_service)refreshLive();},15000);
   function objectQuery(value, source) {
     const ipv4=/^(?:\d{1,3}\.){3}\d{1,3}(?:\/\d{1,2})?$/.test(value);
     const ipv6=value.includes(':') && /^[0-9a-f:]+(?:\/\d{1,3})?$/i.test(value);

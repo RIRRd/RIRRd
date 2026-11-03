@@ -241,3 +241,16 @@ cargo test --locked --all-targets
 ```
 
 The [100,000-object Linux synthetic comparison](docs/benchmarks/LINUX_SYNTHETIC_100K.md) records pinned-baseline import, query, memory and storage measurements. It is a bounded development checkpoint, separate from full parity and release qualification. The generator and validating load client are in [tools/bench](tools/bench/README.md).
+
+## Experimental public test service
+
+The live dashboard is https://rirrd.co.uk/dashboard/ and read-only TCP WHOIS/bgpq4
+uses `rirrd.co.uk:43`. Inspect the dashboard's loaded sources, missing feeds and
+snapshot times before testing. Daily snapshots are not near-real-time replication.
+Submissions and administration are not public; full parity and production
+qualification remain incomplete. See the [router guide](docs/operations/ROUTER_INTEGRATION.md)
+and [live deployment guide](docs/operations/LIVE_SERVICE.md).
+
+`http_sources` optionally restricts HTTP WHOIS/GraphQL to a nonempty subset of
+`sources`. TCP uses the full source list. This supports per-source distribution
+requirements; the public deployment keeps ARIN's objects on TCP WHOIS only.

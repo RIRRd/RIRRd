@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily refresh of experimental RIRRd public routing snapshots
+
+[Timer]
+OnCalendar=*-*-* 03:30:00 UTC
+RandomizedDelaySec=30m
+Persistent=true
+Unit=rirrd-live-refresh.service
+
+[Install]
+WantedBy=timers.target

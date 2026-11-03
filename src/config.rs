@@ -25,6 +25,8 @@ pub struct Config {
     pub worker_threads: Option<usize>,
     pub max_blocking_threads: Option<usize>,
     pub sources: Vec<String>,
+    /// Optional HTTP query subset for source-specific distribution policies.
+    pub http_sources: Option<Vec<String>>,
     #[serde(default)]
     pub authoritative_sources: HashSet<String>,
     #[serde(default)]
@@ -152,6 +154,15 @@ impl Config {
                 "invalid configured source {source:?}"
             );
             ensure!(seen.insert(source), "duplicate configured source {source}");
+        }
+        if let Some(sources) = &config.http_sources {
+            let unique: HashSet<_> = sources.iter().collect();
+            ensure!(
+                !sources.is_empty()
+                    && unique.len() == sources.len()
+                    && sources.iter().all(|source| seen.contains(source)),
+                "http_sources must be a nonempty unique subset of configured sources"
+            );
         }
         ensure!(
             config

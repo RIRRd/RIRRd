@@ -5,9 +5,34 @@ produces routing policy that BIRD or FRR can consume. Changing an IRR endpoint i
 normally a change to the generator's `-h` argument and its explicit `-S` source
 selection, followed by validation of the candidate router configuration.
 
-This is a development integration guide. `rirrd.co.uk` serves project information
-and a synthetic dashboard preview; it is not a public IRR endpoint. Use your own
-private evaluation instance. Full IRRd parity remains incomplete.
+This is a development integration guide. The experimental public test service uses
+`rirrd.co.uk:43` for read-only TCP WHOIS and bgpq4, and
+https://rirrd.co.uk/dashboard/ for live queries/status. Check the source list and
+snapshot timestamps there first. Full parity, live policy filtering and production
+qualification remain incomplete. Keep last-known-good filters and review candidates.
+
+For a public test using RIPE's real AS3333 records:
+
+```sh
+whois -h rirrd.co.uk -- '-s RIPE AS3333'
+bgpq4 -4 -b -h rirrd.co.uk:43 -S RIPE -l RIPE_TEST AS3333
+bgpq4 -6 -b -h rirrd.co.uk:43 -S RIPE -l RIPE_TEST6 AS3333
+```
+
+Generate a new BIRD/FRR candidate bundle using the same guarded helper below:
+
+```sh
+python3 tools/router-integration/generate_filters.py \
+  --endpoint rirrd.co.uk:43 --sources RIPE --object AS3333 \
+  --name RIPE_TEST --output "$HOME/rirrd-public-candidate-001"
+```
+
+These commands generate candidate text, not router changes. The example ASN is
+RIPE NCC's; substitute your actual peer/customer ASN or AS-set when building your
+own policy. Do not permit an example ASN on a real customer session. Source
+permissions are independent of the project's MIT license. ARIN is available only
+through TCP WHOIS in this deployment; it is excluded from web/GraphQL queries.
+The following synthetic workflow also works entirely on your own private instance.
 
 ## 1. Start a private evaluation instance
 
