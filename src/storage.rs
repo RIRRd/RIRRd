@@ -6,16 +6,18 @@ use std::{
     net::{Ipv4Addr, Ipv6Addr},
     ops::RangeInclusive,
     path::Path,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, Result, ensure};
 use redb::{
     Database, Durability, MultimapTable, MultimapTableDefinition, MultimapTableHandle,
-    ReadOnlyTable, ReadTransaction, ReadableMultimapTable, ReadableTable, ReadableTableMetadata,
-    Table, TableDefinition, TableHandle, WriteTransaction,
+    ReadTransaction, ReadableMultimapTable, ReadableTable, ReadableTableMetadata, Table,
+    TableDefinition, TableHandle, WriteTransaction,
 };
 
 use crate::{
+    authoritative::{Change, authorize},
     nrtm3::{Kind, Operation},
     rpsl::{Object, lookup_attributes},
 };
@@ -32,6 +34,8 @@ type InverseKey = (
 );
 type JournalKey = (&'static str, u64);
 type JournalValue = (bool, &'static str, &'static str, &'static str);
+type ObjectWriteTable<'txn> = Table<'txn, Identity<'static>, &'static str>;
+type AuditValue = (u64, &'static str, &'static str, &'static str);
 
 // Identity is (source, class, key). The exact index maps (source, key) to classes.
 const OBJECTS: TableDefinition<Identity<'static>, &str> = TableDefinition::new("objects_v1");
@@ -46,6 +50,9 @@ const INVERSE: TableDefinition<InverseKey, ()> = TableDefinition::new("inverse_v
 const SERIALS: TableDefinition<&str, u64> = TableDefinition::new("source_serials_v1");
 // The journal value is (is_add, object class, object key, raw object text).
 const JOURNAL: TableDefinition<JournalKey, JournalValue> = TableDefinition::new("nrtm3_journal_v1");
+// Keyed by source and sequence. The value is (timestamp, class, key, action).
+const AUTH_AUDIT: TableDefinition<JournalKey, AuditValue> =
+    TableDefinition::new("authoritative_audit_v1");
 const NRTM3_RETAINED_OPERATIONS: u64 = 4096;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -54,6 +61,16 @@ pub enum PrefixMatch {
     ClosestCovering,
     AllCovering,
     MoreSpecific,
+}
+
+#[derive(serde::Serialize)]
+pub struct AuditEntry {
+    pub sequence: u64,
+    pub timestamp_unix_seconds: u64,
+    pub source: String,
+    pub class: String,
+    pub key: String,
+    pub action: String,
 }
 
 pub struct Store {
@@ -99,6 +116,7 @@ impl Store {
             let mut inverse = write.open_table(INVERSE)?;
             write.open_table(SERIALS)?;
             write.open_table(JOURNAL)?;
+            write.open_table(AUTH_AUDIT)?;
             if backfill_origins || backfill_prefixes || backfill_inverse {
                 for entry in records.iter()? {
                     let (identity, text) = entry?;
@@ -258,15 +276,12 @@ impl Store {
                 let identity = validate_identity(&source, &object)?;
                 match kind {
                     Kind::Add => {
-                        if let Some(previous) = records.insert(identity, object.text.as_str())? {
-                            indexes.remove(identity, previous.value())?;
-                        }
-                        skipped_lookup_values += indexes.insert(&object)?;
+                        let (_, skipped) =
+                            upsert_object(&mut records, &mut indexes, identity, &object)?;
+                        skipped_lookup_values += skipped;
                     }
                     Kind::Delete => {
-                        if let Some(previous) = records.remove(identity)? {
-                            indexes.remove(identity, previous.value())?;
-                        }
+                        delete_object(&mut records, &mut indexes, identity)?;
                     }
                 }
                 if serial > expire_through {
@@ -309,6 +324,108 @@ impl Store {
             Err(error) => return Err(error.into()),
         };
         Ok(serials.get(source.as_str())?.map(|serial| serial.value()))
+    }
+
+    /// Authorize and commit a submission against the same registry write transaction.
+    pub fn apply_authoritative(
+        &self,
+        source: &str,
+        changes: Vec<Change>,
+        passwords: &[String],
+    ) -> Result<u64> {
+        let source = canonical_source(source)?;
+        let count = changes.len() as u64;
+        let mut write = self.db.begin_write()?;
+        write.set_durability(Durability::Immediate);
+        {
+            let serials = write.open_table(SERIALS)?;
+            ensure!(
+                serials.get(source.as_str())?.is_none(),
+                "cannot write to a source with a committed NRTM serial"
+            );
+            let mut records = write.open_table(OBJECTS)?;
+            let mut indexes = WriteIndexes::open(&write)?;
+            authorize(
+                &source,
+                &changes,
+                passwords,
+                |class, key| read_object(&records, &source, class, key),
+                |class, key| indexes.has_strong_reference(&source, class, key),
+            )?;
+
+            let mut audit = write.open_table(AUTH_AUDIT)?;
+            let mut sequence = audit
+                .range((source.as_str(), 0)..=(source.as_str(), u64::MAX))?
+                .next_back()
+                .transpose()?
+                .map_or(0, |(key, _)| key.value().1);
+            let timestamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .context("system time before Unix epoch")?
+                .as_secs();
+            for change in changes {
+                let (identity, action) = match &change {
+                    Change::Upsert(object) => {
+                        let identity = validate_identity(&source, object)?;
+                        let (updated, skipped) =
+                            upsert_object(&mut records, &mut indexes, identity, object)?;
+                        ensure!(
+                            skipped == 0,
+                            "invalid lookup attributes in authoritative object"
+                        );
+                        (identity, if updated { "update" } else { "create" })
+                    }
+                    Change::Delete(object) => {
+                        let identity = validate_identity(&source, object)?;
+                        ensure!(
+                            delete_object(&mut records, &mut indexes, identity)?,
+                            "object to delete does not exist"
+                        );
+                        (identity, "delete")
+                    }
+                };
+                let (source, class, key) = identity;
+                sequence = sequence
+                    .checked_add(1)
+                    .context("authoritative audit sequence exhausted")?;
+                audit.insert((source, sequence), (timestamp, class, key, action))?;
+            }
+        }
+        write.commit()?;
+        Ok(count)
+    }
+
+    /// Read recent successful authoritative operations, most recent first.
+    pub fn source_history(&self, source: &str, limit: usize) -> Result<Vec<AuditEntry>> {
+        ensure!(limit <= 1000, "authoritative history limit exceeds 1000");
+        let source = canonical_source(source)?;
+        let read = self.db.begin_read()?;
+        read.open_table(OBJECTS)
+            .context("missing or invalid registry objects table")?;
+        let audit = match read.open_table(AUTH_AUDIT) {
+            Ok(table) => table,
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
+            Err(error) => return Err(error.into()),
+        };
+        let mut entries = Vec::new();
+        for entry in audit
+            .range((source.as_str(), 0)..=(source.as_str(), u64::MAX))?
+            .rev()
+            .take(limit)
+        {
+            let (audit_key, metadata) = entry?;
+            let (source, sequence) = audit_key.value();
+            let (timestamp_unix_seconds, class, key, action) = metadata.value();
+            entries.push(AuditEntry {
+                sequence,
+                timestamp_unix_seconds,
+                source: source.to_owned(),
+                class: class.to_owned(),
+                key: key.to_owned(),
+                action: action.to_owned(),
+            });
+        }
+        Ok(entries)
     }
 
     /// Read one retained contiguous interval and its ending serial from a single snapshot.
@@ -832,6 +949,27 @@ impl<'txn> WriteIndexes<'txn> {
         })
     }
 
+    fn has_strong_reference(&self, source: &str, class: &str, key: &str) -> Result<bool> {
+        let fields: &[&str] = match class {
+            "mntner" => &["mnt-by"],
+            "person" | "role" => &["admin-c", "tech-c", "zone-c"],
+            _ => &[],
+        };
+        let end = format!("{key}\0");
+        for &field in fields {
+            let lower = (source, field, key, "", "");
+            let upper = (source, field, end.as_str(), "", "");
+            for entry in self.inverse.range(lower..upper)?.take(2) {
+                let (identity, _) = entry?;
+                let (_, _, _, referring_class, referring_key) = identity.value();
+                if (referring_class, referring_key) != (class, key) {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
+    }
+
     fn insert(&mut self, object: &Object) -> Result<usize> {
         let source = object.source.as_str();
         let class = object.class.as_str();
@@ -888,6 +1026,31 @@ impl<'txn> WriteIndexes<'txn> {
         }
         Ok(())
     }
+}
+
+fn upsert_object(
+    records: &mut ObjectWriteTable<'_>,
+    indexes: &mut WriteIndexes<'_>,
+    identity: Identity<'_>,
+    object: &Object,
+) -> Result<(bool, usize)> {
+    let previous = records.insert(identity, object.text.as_str())?;
+    if let Some(text) = &previous {
+        indexes.remove(identity, text.value())?;
+    }
+    Ok((previous.is_some(), indexes.insert(object)?))
+}
+
+fn delete_object(
+    records: &mut ObjectWriteTable<'_>,
+    indexes: &mut WriteIndexes<'_>,
+    identity: Identity<'_>,
+) -> Result<bool> {
+    let Some(previous) = records.remove(identity)? else {
+        return Ok(false);
+    };
+    indexes.remove(identity, previous.value())?;
+    Ok(true)
 }
 
 fn canonical_source(source: &str) -> Result<String> {
@@ -995,7 +1158,7 @@ fn route_index_parts<'a>(class: &str, key: &'a str) -> Result<Option<(&'a str, &
 }
 
 fn read_object(
-    records: &ReadOnlyTable<Identity<'static>, &str>,
+    records: &impl ReadableTable<Identity<'static>, &'static str>,
     source: &str,
     class: &str,
     key: &str,
@@ -1041,6 +1204,167 @@ mod tests {
             key: key.to_owned(),
             text: format!("{class}: {key}\nsource: {source}\n"),
         }
+    }
+
+    fn authoritative_contact(name: &str, key: &str) -> Result<Object> {
+        crate::rpsl::parse(&format!(
+            "person: {name}\naddress: Example Office\nphone: +1 555 0100\ne-mail: operator@example.net\nnic-hdl: {key}\nmnt-by: TEST-MNT\nsource: TEST\n"
+        )).map_err(anyhow::Error::msg)
+    }
+
+    fn seed_authoritative_maintainer(store: &Store, password: &str) -> Result<()> {
+        let hash = bcrypt::hash(password, 4)?;
+        let maintainer = crate::rpsl::parse(&format!(
+            "mntner: TEST-MNT\nauth: BCRYPT-PW {hash}\nmnt-by: TEST-MNT\nsource: TEST\n"
+        ))
+        .map_err(anyhow::Error::msg)?;
+        store.replace_source("TEST", [Ok(maintainer)])?;
+        Ok(())
+    }
+
+    #[test]
+    fn authoritative_writes_require_auth_and_preserve_identity_audit_on_reopen() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("registry.redb");
+        let store = Store::open(&path)?;
+        let passwords = [String::from("fixture password")];
+        let sources = [String::from("TEST")];
+        seed_authoritative_maintainer(&store, &passwords[0])?;
+        let original = authoritative_contact("Example Operator", "EO1-TEST")?;
+        let updated = authoritative_contact("Second Operator", "EO1-TEST")?;
+
+        assert!(
+            store
+                .apply_authoritative("TEST", vec![Change::Upsert(original.clone())], &[])
+                .is_err()
+        );
+        assert!(store.exact("EO1-TEST", &sources, 1)?.is_empty());
+        assert_eq!(
+            store.apply_authoritative("test", vec![Change::Upsert(original)], &passwords)?,
+            1
+        );
+        assert_eq!(
+            store.apply_authoritative("TEST", vec![Change::Upsert(updated.clone())], &passwords)?,
+            1
+        );
+        assert_eq!(
+            store.exact("EO1-TEST", &sources, 1)?,
+            std::slice::from_ref(&updated)
+        );
+        assert!(
+            store
+                .inverse("person", "Example Operator", &sources, 1)?
+                .is_empty()
+        );
+        assert_eq!(
+            store.inverse("person", "Second Operator", &sources, 1)?,
+            std::slice::from_ref(&updated)
+        );
+        assert_eq!(
+            store.apply_authoritative("TEST", vec![Change::Delete(updated)], &passwords)?,
+            1
+        );
+        drop(store);
+
+        let store = Store::open_existing(&path)?;
+        assert!(store.exact("EO1-TEST", &sources, 1)?.is_empty());
+        assert_eq!(store.verify()?, 1);
+        let audit = store.source_history("TEST", 10)?;
+        assert_eq!(audit.len(), 3);
+        for (offset, (entry, action)) in
+            audit.iter().zip(["delete", "update", "create"]).enumerate()
+        {
+            assert_eq!(entry.sequence, 3 - offset as u64);
+            assert!(entry.timestamp_unix_seconds > 0);
+            assert_eq!(
+                (
+                    entry.source.as_str(),
+                    entry.class.as_str(),
+                    entry.key.as_str(),
+                    entry.action.as_str()
+                ),
+                ("TEST", "person", "EO1-TEST", action)
+            );
+        }
+        assert_eq!(store.source_history("TEST", 2)?.len(), 2);
+        assert!(store.source_history("OTHER", 10)?.is_empty());
+        assert!(store.source_history("TEST", 1001).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn authoritative_write_rolls_back_audit_and_objects_on_late_index_failure() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = Store::open(&dir.path().join("registry.redb"))?;
+        let passwords = [String::from("fixture password")];
+        let sources = [String::from("TEST")];
+        seed_authoritative_maintainer(&store, &passwords[0])?;
+        let first = authoritative_contact("First Operator", "FO1-TEST")?;
+        let second = authoritative_contact("Second Operator", "SO1-TEST")?;
+
+        let write = store.db.begin_write()?;
+        write
+            .open_multimap_table(EXACT)?
+            .insert(("TEST", "SO1-TEST"), "person")?;
+        write.commit()?;
+        let error = store
+            .apply_authoritative(
+                "TEST",
+                vec![Change::Upsert(first.clone()), Change::Upsert(second)],
+                &passwords,
+            )
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("duplicate entry in the exact lookup index")
+        );
+        assert!(store.exact("FO1-TEST", &sources, 1)?.is_empty());
+        assert!(store.db.begin_read()?.open_table(AUTH_AUDIT)?.is_empty()?);
+
+        // The NRTM guard runs within the same write transaction as the update.
+        store.apply_nrtm3(
+            "TEST",
+            (1, 1),
+            Some(0),
+            [Ok(Operation {
+                kind: Kind::Delete,
+                serial: 1,
+                object: object("TEST", "aut-num", "AS64496"),
+            })],
+        )?;
+        let error = store
+            .apply_authoritative("TEST", vec![Change::Upsert(first)], &passwords)
+            .unwrap_err();
+        assert!(error.to_string().contains("committed NRTM serial"));
+        assert!(store.db.begin_read()?.open_table(AUTH_AUDIT)?.is_empty()?);
+        Ok(())
+    }
+
+    #[test]
+    fn authoritative_reference_probe_excludes_self_and_other_sources() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = Store::open(&dir.path().join("registry.redb"))?;
+        seed_authoritative_maintainer(&store, "fixture password")?;
+        let mut elsewhere = object("OTHER", "role", "RO1-OTHER");
+        elsewhere
+            .text
+            .push_str("mnt-by: TEST-MNT\nadmin-c: EO1-TEST\n");
+        store.replace_source("OTHER", [Ok(elsewhere)])?;
+        {
+            let write = store.db.begin_write()?;
+            let indexes = WriteIndexes::open(&write)?;
+            assert!(!indexes.has_strong_reference("TEST", "mntner", "TEST-MNT")?);
+            assert!(!indexes.has_strong_reference("TEST", "person", "EO1-TEST")?);
+        }
+        let mut role = object("TEST", "role", "RO1-TEST");
+        role.text.push_str("mnt-by: TEST-MNT\ntech-c: EO1-TEST\n");
+        store.replace_source("TEST", [Ok(role)])?;
+        let write = store.db.begin_write()?;
+        let indexes = WriteIndexes::open(&write)?;
+        assert!(indexes.has_strong_reference("TEST", "mntner", "TEST-MNT")?);
+        assert!(indexes.has_strong_reference("TEST", "person", "EO1-TEST")?);
+        Ok(())
     }
 
     #[test]

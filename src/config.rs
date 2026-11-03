@@ -13,6 +13,8 @@ use serde::Deserialize;
 pub struct Config {
     pub database: PathBuf,
     pub sources: Vec<String>,
+    #[serde(default)]
+    pub authoritative_sources: HashSet<String>,
     pub listen: SocketAddr,
     pub http_listen: Option<SocketAddr>,
     pub max_connections: usize,
@@ -58,6 +60,13 @@ impl Config {
             );
             ensure!(seen.insert(source), "duplicate configured source {source}");
         }
+        ensure!(
+            config
+                .authoritative_sources
+                .iter()
+                .all(|source| seen.contains(source)),
+            "authoritative_sources must be configured in sources"
+        );
         for (source, peers) in &mut config.nrtm3_serve {
             ensure!(
                 seen.contains(source),

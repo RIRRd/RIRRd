@@ -1,8 +1,11 @@
 #![forbid(unsafe_code)]
 
+mod authoritative;
+mod authoritative_validation;
 mod config;
 mod graphql;
 mod import;
+mod maintainer_auth;
 mod nrtm3;
 mod nrtm4;
 mod nrtm4_local;
@@ -16,7 +19,7 @@ mod whois;
 
 use std::{
     fs::{self, File},
-    io::{BufRead, BufReader, BufWriter, Write},
+    io::{self, BufRead, BufReader, BufWriter, IsTerminal, Read, Write},
     net::SocketAddr,
     path::{Path, PathBuf},
     sync::Arc,
@@ -27,6 +30,7 @@ use anyhow::{Context, Result, ensure};
 use clap::{Parser, Subcommand};
 use tokio::{net::TcpListener, sync::watch, task::JoinSet};
 use tracing_subscriber::EnvFilter;
+use zeroize::Zeroizing;
 
 use crate::{config::Config, storage::Store};
 
@@ -66,6 +70,16 @@ enum Command {
         #[command(subcommand)]
         command: RpkiCommand,
     },
+    /// Apply an offline, maintainer-authenticated RPSL submission.
+    Update {
+        #[arg(long)]
+        source: String,
+        #[arg(long)]
+        file: PathBuf,
+        /// Treat every record in the file as a deletion.
+        #[arg(long)]
+        delete: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -84,6 +98,13 @@ enum RpkiCommand {
 
 #[derive(Subcommand)]
 enum SourceCommand {
+    /// Read committed authoritative changes, newest first.
+    History {
+        #[arg(long)]
+        source: String,
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+    },
     /// Verify a signed NRTMv4 notification and optionally a referenced local file.
     VerifyNrtm4 {
         #[arg(long)]
@@ -168,6 +189,9 @@ enum ImportCommand {
         source: String,
         #[arg(long)]
         file: PathBuf,
+        /// Acknowledge replacement of an authoritative source by a trusted operator.
+        #[arg(long)]
+        authoritative_restore: bool,
     },
 }
 
@@ -237,9 +261,18 @@ fn main() -> Result<()> {
             );
         }
         Command::Import {
-            command: ImportCommand::Snapshot { source, file },
+            command:
+                ImportCommand::Snapshot {
+                    source,
+                    file,
+                    authoritative_restore,
+                },
         } => {
             ensure!(config.sources.contains(&source), "source is not configured");
+            ensure!(
+                config.authoritative_sources.contains(&source) == authoritative_restore,
+                "authoritative sources require --authoritative-restore for snapshot replacement"
+            );
             let start = Instant::now();
             let records = import::snapshot(&file, config.max_snapshot_bytes)?;
             let store = Store::open(&config.database)?;
@@ -294,6 +327,13 @@ fn main() -> Result<()> {
             print_serial(&source, serial);
         }
         Command::Source {
+            command: SourceCommand::History { source, limit },
+        } => {
+            let store = open_source(&config, &source)?;
+            let history = store.source_history(&source, limit)?;
+            println!("{}", serde_json::to_string(&history)?);
+        }
+        Command::Source {
             command:
                 SourceCommand::ApplyNrtm3 {
                     source,
@@ -301,6 +341,10 @@ fn main() -> Result<()> {
                     base_serial,
                 },
         } => {
+            ensure!(
+                !config.authoritative_sources.contains(&source),
+                "source is authoritative"
+            );
             let store = open_source(&config, &source)?;
             let input = BufReader::new(File::open(file).context("opening NRTMv3 transcript")?);
             let serial = apply_nrtm3(
@@ -320,6 +364,10 @@ fn main() -> Result<()> {
                     base_serial,
                 },
         } => {
+            ensure!(
+                !config.authoritative_sources.contains(&source),
+                "source is authoritative"
+            );
             let store = open_source(&config, &source)?;
             let committed = store.source_serial(&source)?;
             let base = match (committed, base_serial) {
@@ -374,8 +422,63 @@ fn main() -> Result<()> {
                 })
             );
         }
+        Command::Update {
+            source,
+            file,
+            delete,
+        } => {
+            ensure!(
+                config.authoritative_sources.contains(&source),
+                "source is not authoritative"
+            );
+            let mut changes = Vec::new();
+            for object in import::snapshot(&file, config.max_snapshot_bytes.min(2 * 1024 * 1024))? {
+                ensure!(
+                    changes.len() < authoritative::MAX_CHANGES,
+                    "too many authoritative changes"
+                );
+                let object = object?;
+                changes.push(if delete {
+                    authoritative::Change::Delete(object)
+                } else {
+                    authoritative::Change::Upsert(object)
+                });
+            }
+            let passwords = read_update_passwords()?;
+            let store = open_source(&config, &source)?;
+            let changed = store.apply_authoritative(&source, changes, &passwords)?;
+            println!(
+                "{}",
+                serde_json::json!({ "source": source, "changed": changed })
+            );
+        }
     }
     Ok(())
+}
+
+fn read_update_passwords() -> Result<Zeroizing<Vec<String>>> {
+    const LIMIT: u64 = 2048;
+    let stdin = io::stdin();
+    ensure!(
+        !stdin.is_terminal(),
+        "pipe one password per line to standard input"
+    );
+    let mut input = Zeroizing::new(String::new());
+    stdin
+        .lock()
+        .take(LIMIT + 1)
+        .read_to_string(&mut input)
+        .context("reading submission credentials")?;
+    ensure!(
+        input.len() as u64 <= LIMIT,
+        "submission credentials exceed byte limit"
+    );
+    let passwords = Zeroizing::new(input.lines().map(str::to_owned).collect::<Vec<_>>());
+    ensure!(
+        (1..=20).contains(&passwords.len()),
+        "provide between 1 and 20 passwords"
+    );
+    Ok(passwords)
 }
 
 fn open_source(config: &Config, source: &str) -> Result<Store> {

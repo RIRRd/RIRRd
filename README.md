@@ -125,6 +125,14 @@ rust-irrd rpki validate --roas validated-roas.json --prefix 192.0.2.0/24 --origi
 
 This command evaluates validated payloads locally. It does not currently annotate or suppress live registry results.
 
+## Authoritative submissions
+
+Set `authoritative_sources = ["EXAMPLE"]` alongside `sources` in TOML. Bootstrap operator-managed records and maintainers through a trusted snapshot using `import snapshot --authoritative-restore`. This flag explicitly permits full source replacement. The NRTMv3 client rejects authoritative sources.
+
+Stop the server and run `rust-irrd update --source EXAMPLE --file changes.rpsl`. Pipe one password per line to standard input. Use `--delete` when every record in the file is a deletion. The supported write profile covers person and role creation, updates and deletion, and updates to existing maintainers. Maintainer provisioning is operator-managed. Authentication requires bounded `BCRYPT-PW` verification. An update requires a valid maintainer for both the existing and proposed record. A maintainer update also verifies the proposed credentials. Strong references are checked and can prevent deletion.
+
+The submission applies atomically. Run `source history --source EXAMPLE` offline to read recent committed identities and actions. The history omits passwords, hashes and object bodies.
+
 ## Development checks
 
 See the [deployment examples](deploy/README.md) for Docker Compose and native systemd setup. A separate Linux CI job defines container bootstrap, WHOIS and shutdown verification.

@@ -2,6 +2,16 @@ name: IRRd upstream oracle
 
 on:
   workflow_dispatch:
+  push:
+    branches: ['codex/**']
+  pull_request:
+    paths:
+      - '.github/workflows/upstream-oracle.yml'
+      - 'Cargo.*'
+      - 'src/**'
+      - 'tools/oracle/**'
+      - 'tools/differential_whois.py'
+      - 'docs/compatibility/differential-whois.rpsl'
   schedule:
     - cron: '45 5 * * 1'
 

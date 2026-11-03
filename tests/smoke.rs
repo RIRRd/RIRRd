@@ -13,6 +13,152 @@ use serde_json::Value;
 
 const IO_DEADLINE: Duration = Duration::from_secs(5);
 
+#[test]
+fn authoritative_cli_checks_maintainers_and_rolls_back_a_mixed_batch() {
+    let workspace = tempfile::tempdir().unwrap();
+    let config = workspace.path().join("irrd.toml");
+    fs::write(
+        &config,
+        r#"database = "test.redb"
+sources = ["TEST", "MIRROR"]
+authoritative_sources = ["TEST"]
+listen = "127.0.0.1:0"
+max_connections = 4
+io_timeout_seconds = 2
+max_snapshot_bytes = 4096
+"#,
+    )
+    .unwrap();
+    let snapshot = workspace.path().join("snapshot.rpsl");
+    let root_hash = bcrypt::hash_with_salt("root test secret", 4, [7; 16]).unwrap();
+    let new_hash = bcrypt::hash_with_salt("new test secret", 4, [8; 16]).unwrap();
+    let person = |name: &str, key: &str, mnt: &str| {
+        format!(
+            "person: {name}\naddress: Example Road\nphone: +1 202 555 0100\ne-mail: noc@example.net\nnic-hdl: {key}\nmnt-by: {mnt}\nsource: TEST\n"
+        )
+    };
+    let mntner = |key: &str, hash: &str, mnt: &str| {
+        format!(
+            "mntner: {key}\nadmin-c: ADMIN-TEST\nupd-to: noc@example.net\nauth: BCRYPT-PW {hash}\nmnt-by: {mnt}\nsource: TEST\n"
+        )
+    };
+    fs::write(
+        &snapshot,
+        format!(
+            "{}\n{}\n{}",
+            mntner("ROOT-MNT", &root_hash.to_string(), "ROOT-MNT"),
+            person("Test Admin", "ADMIN-TEST", "ROOT-MNT"),
+            mntner("NEW-MNT", &new_hash.to_string(), "NEW-MNT")
+        ),
+    )
+    .unwrap();
+    let import = || {
+        let mut command = cli(&config);
+        command
+            .args(["import", "snapshot", "--source", "TEST", "--file"])
+            .arg(&snapshot);
+        command
+    };
+    assert!(!import().output().unwrap().status.success());
+    successful(import().arg("--authoritative-restore").output().unwrap());
+    let submission = workspace.path().join("submission.rpsl");
+    let submit = |source: &str, body: &str, secrets: &str, delete: bool| {
+        fs::write(&submission, body).unwrap();
+        let mut command = cli(&config);
+        command
+            .args(["update", "--source", source, "--file"])
+            .arg(&submission)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        if delete {
+            command.arg("--delete");
+        }
+        let mut child = command.spawn().unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(secrets.as_bytes())
+            .unwrap();
+        child.wait_with_output().unwrap()
+    };
+    let contact = person("Test Operator", "OPER-TEST", "ROOT-MNT");
+    assert!(
+        !submit("MIRROR", &contact, "root test secret\n", false)
+            .status
+            .success()
+    );
+    let failed = submit("TEST", &contact, "bad test secret\n", false);
+    assert!(!failed.status.success());
+    assert!(!String::from_utf8_lossy(&failed.stderr).contains("bad test secret"));
+    let mixed = format!(
+        "{contact}\n{}",
+        person("Missing Owner", "MISS-TEST", "MISSING-MNT")
+    );
+    assert!(
+        !submit("TEST", &mixed, "root test secret\n", false)
+            .status
+            .success()
+    );
+    let verification = successful(cli(&config).args(["database", "verify"]).output().unwrap());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&verification).unwrap()["objects"],
+        3
+    );
+    successful(submit("TEST", &contact, "root test secret\n", false));
+    let unprovisioned = mntner("UNPROVISIONED-MNT", &new_hash.to_string(), "ROOT-MNT");
+    assert!(
+        !submit(
+            "TEST",
+            &unprovisioned,
+            "root test secret\nnew test secret\n",
+            false
+        )
+        .status
+        .success()
+    );
+    let new = mntner("NEW-MNT", &new_hash.to_string(), "ROOT-MNT, NEW-MNT");
+    successful(submit(
+        "TEST",
+        &new,
+        "root test secret\nnew test secret\n",
+        false,
+    ));
+    let transferred = person("Test Operator", "OPER-TEST", "NEW-MNT");
+    for single in ["root test secret\n", "new test secret\n"] {
+        assert!(!submit("TEST", &transferred, single, false).status.success());
+    }
+    successful(submit(
+        "TEST",
+        &transferred,
+        "root test secret\nnew test secret\n",
+        false,
+    ));
+    let admin = "person: Test Admin\nnic-hdl: ADMIN-TEST\nsource: TEST\n";
+    assert!(
+        !submit("TEST", admin, "root test secret\n", true)
+            .status
+            .success()
+    );
+    let operator = "person: Test Operator\nnic-hdl: OPER-TEST\nsource: TEST\n";
+    successful(submit("TEST", operator, "new test secret\n", true));
+    let history = successful(
+        cli(&config)
+            .args(["source", "history", "--source", "TEST"])
+            .output()
+            .unwrap(),
+    );
+    let entries: Vec<Value> = serde_json::from_slice(&history).unwrap();
+    assert_eq!(entries.len(), 4);
+    assert_eq!(entries[0]["action"], "delete");
+    assert_eq!(entries[0]["key"], "OPER-TEST");
+    assert!(!String::from_utf8_lossy(&history).contains("test secret"));
+    let (_server, address) = Server::start(&config);
+    assert_eq!(whois(address, b"!mperson,OPER-TEST\n"), "D\n");
+    assert!(!whois(address, b"!mmntner,NEW-MNT\n").contains("BCRYPT-PW"));
+}
+
 fn cli(config: &Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_rust-irrd"));
     command.arg("--config").arg(config).env("RUST_LOG", "info");
