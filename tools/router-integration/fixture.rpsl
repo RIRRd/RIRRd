@@ -1,0 +1,71 @@
+person: Router Integration Contact
+address: Synthetic documentation fixture
+phone: +1 202 555 0100
+nic-hdl: DOC1-TEST
+mnt-by: DOCS-MNT
+source: EXAMPLE
+
+mntner: DOCS-MNT
+admin-c: DOC1-TEST
+upd-to: docs@example.invalid
+auth: BCRYPT-PW DummyValue
+mnt-by: DOCS-MNT
+source: EXAMPLE
+
+aut-num: AS64496
+as-name: DOCS-ONE
+admin-c: DOC1-TEST
+mnt-by: DOCS-MNT
+source: EXAMPLE
+
+aut-num: AS64497
+as-name: DOCS-TWO
+admin-c: DOC1-TEST
+mnt-by: DOCS-MNT
+source: EXAMPLE
+
+route: 192.0.2.0/24
+origin: AS64496
+mnt-by: DOCS-MNT
+source: EXAMPLE
+
+route: 198.51.100.0/24
+origin: AS64497
+mnt-by: DOCS-MNT
+source: EXAMPLE
+
+route6: 2001:db8:100::/48
+origin: AS64496
+mnt-by: DOCS-MNT
+source: EXAMPLE
+
+route6: 2001:db8:200::/48
+origin: AS64497
+mnt-by: DOCS-MNT
+source: EXAMPLE
+
+as-set: AS64496:AS-DOCS
+members: AS64496, AS64496:AS-CHILD
+admin-c: DOC1-TEST
+mnt-by: DOCS-MNT
+source: EXAMPLE
+
+as-set: AS64496:AS-CHILD
+members: AS64497
+admin-c: DOC1-TEST
+mnt-by: DOCS-MNT
+source: EXAMPLE
+
+route-set: RS-DOCS
+members: 192.0.2.0/24, RS-DOCS-CHILD
+mp-members: 2001:db8:100::/48
+admin-c: DOC1-TEST
+mnt-by: DOCS-MNT
+source: EXAMPLE
+
+route-set: RS-DOCS-CHILD
+members: 198.51.100.0/24
+mp-members: 2001:db8:200::/48
+admin-c: DOC1-TEST
+mnt-by: DOCS-MNT
+source: EXAMPLE

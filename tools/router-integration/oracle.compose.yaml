@@ -1,0 +1,27 @@
+# Combine with tools/oracle/compose.yaml; both listeners stay on loopback.
+services:
+  reference:
+    image: irrd-454-oracle-reference
+    volumes:
+      - type: bind
+        source: ${RIRRD_REPO:?set RIRRD_REPO}/tools/router-integration/oracle.yaml
+        target: /etc/irrd.yaml
+        read_only: true
+      - type: bind
+        source: ${RIRRD_REPO:?set RIRRD_REPO}/tools/router-integration/fixture.rpsl
+        target: /fixture/differential-whois.rpsl
+        read_only: true
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        irrd_database_upgrade --config /etc/irrd.yaml
+        irrd_load_database --config /etc/irrd.yaml --source EXAMPLE /fixture/differential-whois.rpsl
+        exec irrd --config /etc/irrd.yaml --foreground
+networks:
+  default:
+    driver_opts:
+      com.docker.network.bridge.name: irrd-router0
+    ipam:
+      config:
+        - subnet: 172.30.57.0/24

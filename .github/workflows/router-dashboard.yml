@@ -1,0 +1,55 @@
+name: Router tools and bundled dashboard
+on:
+  workflow_dispatch:
+  push:
+    branches: ['codex/**']
+  pull_request:
+    paths:
+      - '.github/workflows/router-dashboard.yml'
+      - 'Cargo.*'
+      - 'src/**'
+      - 'web/**'
+      - 'tools/router-integration/**'
+      - 'tools/check_dashboard.py'
+      - 'examples/routers/**'
+permissions:
+  contents: read
+jobs:
+  integration:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - run: cargo build --locked --release
+      - name: Install real client and isolated router parsers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends bgpq4
+          docker build -t rirrd-router-tools:local tools/router-integration
+      - name: Check client profiles, failed generations and browser workflows
+        shell: bash
+        run: |
+          state="$RUNNER_TEMP/router-integration"
+          mkdir -m 700 "$state"
+          cat > "$state/irrd.toml" <<TOML
+          database = "$state/registry.redb"
+          sources = ["EXAMPLE"]
+          listen = "127.0.0.1:9143"
+          http_listen = "127.0.0.1:9180"
+          database_cache_mib = 16
+          worker_threads = 1
+          max_blocking_threads = 4
+          max_connections = 8
+          io_timeout_seconds = 5
+          max_snapshot_bytes = 65536
+          TOML
+          target/release/rust-irrd --config "$state/irrd.toml" import snapshot --source EXAMPLE --file tools/router-integration/fixture.rpsl
+          target/release/rust-irrd --config "$state/irrd.toml" server > "$state/server.log" 2>&1 &
+          registry_pid=$!
+          trap 'kill "$registry_pid" 2>/dev/null || true; wait "$registry_pid" 2>/dev/null || true' EXIT
+          curl -sSf --retry 10 --retry-all-errors --retry-delay 1 --max-time 2 http://127.0.0.1:9180/ui/meta.json
+          python3 tools/router-integration/check.py --candidate 127.0.0.1:9143
+          browser=$(command -v google-chrome || command -v chromium)
+          python3 tools/check_dashboard.py --url http://127.0.0.1:9180/ui/ --mode live --browser "$browser"

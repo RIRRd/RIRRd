@@ -1,0 +1,31 @@
+# Synthetic fixture settings for the isolated Compose oracle.
+irrd:
+  database_url: postgresql://irrd:oracle-fixture-only@postgres:5432/irrd
+  redis_url: redis://redis:6379/0
+  piddir: /var/lib/irrd
+  auth:
+    gnupg_keyring: /var/lib/irrd/gnupg
+  email:
+    from: oracle@example.invalid
+    smtp: localhost:1025
+  rpki:
+    roa_source: null
+  server:
+    http:
+      interface: 0.0.0.0
+      port: 8000
+      url: http://127.0.0.1:8000/
+      workers: 1
+    whois:
+      interface: 0.0.0.0
+      port: 8043
+      max_connections: 1
+  sources_default:
+    - EXAMPLE
+  sources:
+    EXAMPLE:
+      authoritative: false
+    AUTH-TEST:
+      authoritative: true
+    AUTH-OTHER:
+      authoritative: true
