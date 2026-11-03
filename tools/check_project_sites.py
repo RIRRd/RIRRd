@@ -38,6 +38,7 @@ with tempfile.TemporaryDirectory(prefix='rirrd-two-sites-browser-') as profile:
         for width in [320,390,1440]:
             browser.call('Emulation.setDeviceMetricsOverride',{'width':width,'height':1100,'deviceScaleFactor':1,'mobile':width<650},True)
             assert browser.js('document.documentElement.scrollWidth<=innerWidth'),('network',width)
+            assert browser.js('Array.from(document.querySelectorAll(".summary strong")).every(e=>{const r=document.createRange();r.selectNodeContents(e);return r.getClientRects().length===1 && e.scrollWidth<=e.clientWidth})'),('counter wrapping',width)
             if args.screenshots:
                 image=browser.call('Page.captureScreenshot',{'format':'png'},True)
                 (args.screenshots/f'network-{width}.png').write_bytes(base64.b64decode(image['data']))

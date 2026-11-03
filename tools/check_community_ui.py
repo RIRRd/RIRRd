@@ -68,6 +68,7 @@ with tempfile.TemporaryDirectory(prefix='rirrd-community-browser-') as profile:
             for page in ['overview','query','sources','rpki','api','connect','system']:
                 browser.js('location.hash='+json.dumps(page));browser.wait('!document.getElementById("page-'+page+'").hidden')
                 assert browser.js('document.documentElement.scrollWidth<=innerWidth'),(width,page)
+                if page=='overview':assert browser.js('Array.from(document.querySelectorAll("#overview-metrics strong")).every(e=>{const r=document.createRange();r.selectNodeContents(e);return r.getClientRects().length===1 && e.scrollWidth<=e.clientWidth})'),('counter wrapping',width)
             if args.screenshots:
                 browser.js('location.hash="overview"');browser.wait('!document.getElementById("page-overview").hidden')
                 shot=browser.call('Page.captureScreenshot',{'format':'png'},True);(args.screenshots/f'console-{width}.png').write_bytes(base64.b64decode(shot['data']))
