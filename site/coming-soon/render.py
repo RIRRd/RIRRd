@@ -10,6 +10,8 @@ import statistics
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('results', type=Path)
+parser.add_argument('--small-host',type=Path)
+parser.add_argument('--cold-start',type=Path)
 args = parser.parse_args()
 root = Path(__file__).resolve().parent
 raw = json.loads(args.results.read_text())
@@ -86,8 +88,35 @@ old = [p['queries_per_second'] for p in optimization if p['variant'] == 'before'
 new = [p['queries_per_second'] for p in optimization if p['variant'] == 'current']
 assert len(old) == len(new) == 3
 more += f'<p>Three alternating 10-second runs of the previous checkpoint binary and this checkpoint on the same database: median {qps(median(old))} → {qps(median(new))} q/s. This checks the common identity-only query after removing eager GraphQL text copies and attribute parsing. It does not measure all field selections. The run ranges overlap, so this short check does not establish a throughput improvement.</p>'
+small_html=''
+if args.small_host:
+    assert args.cold_start
+    small=json.loads(args.small_host.read_text());cold=json.loads(args.cold_start.read_text())
+    assert small.get('completed_at') and cold.get('completed_at')
+    assert all(not p['errors'] for p in small['profiles']+cold['profiles'])
+    assert len(small['imports'])==9 and len(small['profiles'])==18
+    names=['before','default64','small16']
+    small_rows=[]
+    def small_row(label, values):
+        small_rows.append('<tr><th scope="row">'+html.escape(label)+'</th>'+''.join('<td>'+html.escape(value)+'</td>' for value in values)+'</tr>')
+    for key,label,scale in [('seconds','Import median',1),('cli_peak_rss_bytes','Peak import-process RSS, median',1048576)]:
+        values=[median([i[key]/scale for i in small['imports'] if i['variant']==name]) for name in names]
+        small_row(label,[f'{value:.2f} '+('s' if key=='seconds' else 'MiB') for value in values])
+    values=[median([s['process_pss_bytes']/1048576 for group in small['memory_samples'] if group['variant']==name for s in group['samples']]) for name in names]
+    small_row('Idle process memory, median PSS',[f'{value:.2f} MiB' for value in values])
+    for mode in ['Whois','Graphql']:
+        values=[]
+        for name in names:
+            group=[p for p in small['profiles'] if p['variant']==name and p['mode']==mode]
+            values.append(f'{median([p["queries_per_second"] for p in group]):,.0f} q/s; p95 ≤{math.ceil(max(p["p95_ms"] for p in group)*100)/100:.2f} ms')
+        small_row(('WHOIS' if mode=='Whois' else 'GraphQL')+' · median throughput / worst per-run p95',values)
+    small_html='<section class="shell section small-host-section" id="small-hosts" aria-labelledby="small-host-title"><div class="section-heading"><div><p class="eyebrow">SMALLER HOSTS / RESOURCE BUDGETS</p><h2 id="small-host-title">Less memory.<br><span class="muted">The trade-offs, measured.</span></h2></div><p>RIRRd profiles on one CPU, querying the same 100,000-object synthetic database with four clients. Three imports and three runs per main workload.</p></div><div class="benchmark-panel"><div class="table-heading"><div><h3>One-CPU RIRRd profile comparison</h3><p>Import limit: 256 MiB · Query service limit: 128 MiB</p></div></div><div class="table-wrap" role="region" aria-label="Small-host profile results" tabindex="0"><table><caption class="sr-only">RIRRd profiles under systemd CPU and memory limits</caption><thead><tr><th scope="col">Measurement</th><th scope="col">Previous defaults<span>1 GiB cache budget</span></th><th scope="col">New defaults<span>64 MiB cache budget</span></th><th scope="col">Small profile<span>16 MiB cache budget</span></th></tr></thead><tbody>'+''.join(small_rows)+'</tbody></table></div></div>'
+    small_html+='<p class="benchmark-note">The new default reduced median peak import-process RSS by about 84% here, while import time increased. The smaller profile uses less memory and has lower median query throughput. Budget tuning trades memory against speed; these are short common-query tests.</p>'
+    small_html+=f'<details><summary>Cache-eviction recheck and limits <span aria-hidden="true">+</span></summary><div class="detail-body"><p>We evicted only the measured database file’s clean pages and verified zero resident file pages before restarting the 16 MiB-cache profile. On one CPU with a 128 MiB service limit, another {sum(p["successful"] for p in cold["profiles"]):,} responses validated without errors or OOM events. Peak cgroup memory was {cold["cgroup_peak_bytes"]/1048576:.2f} MiB; process PSS after queries was {cold["process_pss_bytes"]/1048576:.2f} MiB.</p><p>The host still has about 62 GiB RAM. These tests do not cold-boot the OS or establish a whole-VM minimum, a full Internet dataset capacity, sustained-load qualification or full IRRd parity. The repeated phase may use warm host cache; the separate file-eviction result is identified explicitly. Import cgroup accounting includes the measuring helper and charged cache, while CLI RSS is the import process only.</p><p><a href="/small-host.json">Download all profile results</a> · <a href="/small-host-cold.json">Download the cache-eviction recheck</a></p></div></details></section>'
+    (root/'public/small-host.json').write_text(json.dumps(small,indent=2)+'\n')
+    (root/'public/small-host-cold.json').write_text(json.dumps(cold,indent=2)+'\n')
 text = (root/'templates/index.html').read_text()
-values = {'HIGHLIGHTS':highlights,'ROWS':''.join(rows),'DATE':datetime.datetime.fromisoformat(raw['completed_at'].replace('Z','+00:00')).strftime('%d %b %Y'),'REQUESTS':f'{sum(p["successful"] for p in raw["profiles"]):,}','MORE':more,'COMMIT':html.escape(raw['candidate_commit'])}
+values = {'SMALL_HOST':small_html,'HIGHLIGHTS':highlights,'ROWS':''.join(rows),'DATE':datetime.datetime.fromisoformat(raw['completed_at'].replace('Z','+00:00')).strftime('%d %b %Y'),'REQUESTS':f'{sum(p["successful"] for p in raw["profiles"]):,}','MORE':more,'COMMIT':html.escape(raw['candidate_commit'])}
 for key,value in values.items():
     text=text.replace('@@'+key+'@@',value)
 assert '@@' not in text
