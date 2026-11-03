@@ -1,3 +1,38 @@
+## Continuous mirror console — 3 November 2026, 16:12 UTC
+
+The published dashboard uses core UI revision
+`c5aa9727c268573ab7a2f274dc2fc103cf3c3a13`; the live daemon uses that runtime too.
+The source dataset activated at 16:10:22 UTC. RADB, ALTDB, BELL, REACH and BBOI
+passed two automatic polls 60 seconds apart with committed cursors. Seven other
+loaded feeds remain daily snapshots, and five tracked feeds remain pending.
+The aggregate committed count reached 2,611,104 at the recorded second poll;
+per-source class counts remain explicitly the bootstrap counts.
+
+The six console views pass real Chromium checks at 320/390/1440 px, including
+IP covering routes, object summaries, live GraphQL schema/query execution and
+per-source class/publication details, without third-party page requests. Source
+and artifact labels disclose NRTMv3/FTP transport limits and cache accounting.
+Dashboard static assets force revalidation. Contact/sponsor/location details
+remain unreported pending operator input.
+
+External verified RADB AS3 requests returned trusted HTTPS 200 from Helsinki
+IPv4 and Falkenstein IPv6:
+[IPv4](https://api.globalping.io/v1/measurements/2kRekcLOV3kMcHbnk00021R9P),
+[IPv6](https://api.globalping.io/v1/measurements/263R8noHxNyvoUwQ200021R9P).
+TCP WHOIS succeeds at both advertised addresses. Public admin/submission,
+configuration, Git and private native-monitor paths remain 404. TLS expires
+1 February 2027 and Caddy automatic renewal is enabled. No DNS action is needed.
+
+Current local evidence is 143 unit/18 integration/two client tests on Linux and
+ARM64 QEMU, nine deployment checks, 71 upstream authorization and 45 cases for
+each WHOIS transport, plus five official NRTMv3 omission/framing vectors.
+No new passing private Actions run or full parity is claimed. The detailed core
+checkpoint is `docs/compatibility/CONTINUOUS_MIRROR_CHECKPOINT.md` on
+`codex/linux-parity`. The benchmark charts retain their original separate
+synthetic dataset and commits; live counts are not a new upstream benchmark.
+
+The sections below are earlier deployment evidence.
+
 # Expanded live verification — 3 November 2026, 15:20 UTC
 
 Current static-content commit: `9b946f0bbeee938e394fb1e084bbfd7dac73e451`.
