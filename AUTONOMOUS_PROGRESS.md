@@ -1,5 +1,12 @@
 # Autonomous development checkpoint
 
+## Linux VM continuation
+
+See [Linux VM checkpoint](docs/compatibility/LINUX_VM_CHECKPOINT.md) for the
+organisation implementation, expanded oracle and local Linux evidence. Full
+parity remains open. New CI run verification needs authenticated Actions access.
+The public coming-soon site is deployed independently from `codex/coming-soon`.
+
 ## Baseline
 
 IRRd v4.5.4, commit `8e8080dab744a348b7d0e6efcb53f403301dd075`, is the pinned compatibility oracle. The [feature matrix](docs/compatibility/IRRD_FEATURE_MATRIX.md) records the reference behaviour, requirements and evidence for each area. [Architecture decisions](docs/ARCHITECTURE.md) record the initial storage selection and threat model. [Benchmark methodology](docs/benchmarks/METHODOLOGY.md) defines the controls for comparative testing.

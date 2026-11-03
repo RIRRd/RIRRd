@@ -32,3 +32,12 @@ phone:          +1 202 555 0100
 nic-hdl:        DIFF1-TEST
 mnt-by:         DIFFERENTIAL-MNT
 source:         DIFFERENTIAL
+
+organisation:   ORG-DIFFERENTIAL
+org-name:       Differential Documentation Organisation
+country:        GB
+address:        Documentation
+e-mail:         hostmaster@example.invalid
+admin-c:        DIFF1-TEST
+mnt-by:         DIFFERENTIAL-MNT
+source:         DIFFERENTIAL

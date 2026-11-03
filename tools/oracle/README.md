@@ -87,3 +87,33 @@ attribute-padding and filtered-auth placeholder allowances.
 The expanded fixture matched all 25 TCP cases and all 25 HTTP cases in Linux
 CI. The workflow waits for both listeners and reloads the pinned daemon's
 preload cache after they have started. [Expanded Linux run](https://github.com/Peravix/Rirrd/actions/runs/41616928804)
+
+## Organisation schema and comparison smoke
+
+The expanded candidate corpus adds a synthetic organisation and dual-stack
+nearest/all-covering and more-specific boundary queries. After bringing up the
+pinned reference, check the organisation schema independently:
+
+```sh
+docker compose -p irrd-454-oracle -f tools/oracle/compose.yaml exec -T reference python < tools/oracle/check_organisation_schema.py
+```
+
+The schema cases match the Rust validator's required fields, single-valued
+organisation/name, repeatable contact details and rejection of invalid fields.
+They do not establish upstream submission authorization parity.
+
+For a small same-host comparative timing check after correctness passes:
+
+```sh
+python3 tools/oracle/benchmark_pair.py --reference 127.0.0.1:8043 --candidate 127.0.0.1:9043 --candidate-commit "$(git rev-parse HEAD)"
+```
+
+Run without concurrent builds or fuzzing; record image ID, `pip freeze`, process
+memory and persistent storage separately. This six-object smoke includes a new
+TCP connection per request and is not sustained-load or release evidence. Use
+`docs/benchmarks/METHODOLOGY.md` for qualification.
+
+With both HTTP listeners ready, `python3 tools/oracle/compare_organisation_graphql.py`
+compares organisation values and nine supported field types against pinned upstream.
+It intentionally does not treat missing relationship/journal/updated fields as parity.
+The WHOIS corpus now contains 39 cases per transport.
