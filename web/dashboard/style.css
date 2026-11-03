@@ -5,3 +5,5 @@
 .query-options>div{min-width:0}.query-options select{min-width:0}@media(max-width:760px){footer span:nth-child(2){display:block;flex-basis:100%}}
 
 .page{animation:none}
+
+#live-panel .stat strong{font-size:clamp(20px,2.2vw,32px);overflow-wrap:anywhere}#live-panel .stat-grid{margin-bottom:0}.source-pill span{overflow-wrap:anywhere}

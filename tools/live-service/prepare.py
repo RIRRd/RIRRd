@@ -6,10 +6,13 @@ import datetime
 import gzip
 import hashlib
 import json
+import ipaddress
 import os
 from pathlib import Path
 import shutil
 import subprocess
+import sqlite3
+import tempfile
 import time
 import urllib.parse
 import urllib.request
@@ -66,11 +69,22 @@ def records(path):
 
 def normalize(paths, target, source, classes, encoding):
     counts, excluded = collections.Counter(), collections.Counter()
-    with target.open('x', encoding='utf-8') as output:
+    duplicates = 0
+    # Published ARIN snapshots can contain the same canonical route identity
+    # with differently cased origins. Match pinned IRRd's last-upsert-wins
+    # snapshot behavior without weakening the normal CLI's duplicate rejection.
+    with tempfile.TemporaryDirectory(prefix='normalizing-', dir=target.parent) as work:
+      connection = sqlite3.connect(Path(work) / 'identities.sqlite')
+      connection.execute('PRAGMA cache_size=-8192')
+      connection.execute('CREATE TABLE identities (class TEXT, identity TEXT, offset INTEGER, length INTEGER, ordinal INTEGER, PRIMARY KEY(class, identity))')
+      ordinal = 0
+      with (Path(work) / 'records').open('w+b') as spool:
         for path in paths:
             for raw in records(path):
                 text = raw.decode(encoding)
-                lines = text.splitlines()
+                # RPSL records use LF/CRLF, not Unicode paragraph separators
+                # that can legitimately occur inside a published description.
+                lines = text.split('\n')
                 fields = []
                 for line in lines:
                     if line.startswith(('%', '#', ' ', '\t', '+')):
@@ -89,13 +103,47 @@ def normalize(paths, target, source, classes, encoding):
                     raise ValueError('Snapshot source identity mismatch')
                 if any(k in ('password', 'override', 'api-key', 'auth', 'certif') for k, _ in fields):
                     raise ValueError('Unexpected credential field in routing-class snapshot')
-                output.write('\n'.join(lines) + '\n\n')
-                counts[cls] += 1
+                identity = fields[0][1].upper()
+                if cls in ('route', 'route6'):
+                    origins = [v for k, v in fields if k == 'origin']
+                    if len(origins) != 1 or not origins[0].upper().startswith('AS'):
+                        raise ValueError('Invalid route origin identity')
+                    network, length = identity.split('/')
+                    if cls == 'route':
+                        # RPSL accepts decimal IPv4 octets with leading zeroes;
+                        # Python deliberately rejects their ambiguous spelling.
+                        octets = network.split('.')
+                        if len(octets) != 4 or not all(o.isascii() and o.isdigit() for o in octets):
+                            raise ValueError('Invalid IPv4 route identity')
+                        network = '.'.join(str(int(o)) for o in octets)
+                    identity = str(ipaddress.ip_network(network + '/' + str(int(length)))).upper() + 'AS' + str(int(origins[0][2:]))
+                elif cls == 'aut-num':
+                    if not identity.startswith('AS'):
+                        raise ValueError('Invalid aut-num identity')
+                    identity = 'AS' + str(int(identity[2:]))
+                previous = connection.execute('SELECT 1 FROM identities WHERE class=? AND identity=?', (cls, identity)).fetchone()
+                if previous:
+                    duplicates += 1
+                else:
+                    counts[cls] += 1
+                record = ('\n'.join(lines) + '\n\n').encode('utf-8')
+                offset = spool.tell()
+                if offset + len(record) > MAX_SOURCE:
+                    raise ValueError('Combined source exceeds normalized byte budget')
+                spool.write(record)
+                connection.execute('INSERT OR REPLACE INTO identities VALUES (?,?,?,?,?)', (cls, identity, offset, len(record), ordinal))
+                ordinal += 1
+        connection.commit()
+        with target.open('xb') as output:
+            for offset, length in connection.execute('SELECT offset,length FROM identities ORDER BY ordinal'):
+                spool.seek(offset)
+                output.write(spool.read(length))
+      connection.close()
     if not counts:
         raise ValueError('No routing objects in snapshot')
     if target.stat().st_size > MAX_SOURCE:
         raise ValueError('Combined source exceeds normalized byte budget')
-    return dict(counts), dict(excluded)
+    return dict(counts), dict(excluded), duplicates
 
 
 def run(args):
@@ -137,7 +185,7 @@ name = "RIRRd public test registry"
             downloads.append(download(url, path))
             files.append(path)
         path = snapshot_dir / f'{source}.rpsl'
-        counts, excluded = normalize(files, path, source, set(catalog['classes']), entry['encoding'])
+        counts, excluded, duplicates = normalize(files, path, source, set(catalog['classes']), entry['encoding'])
         start = time.monotonic()
         result = subprocess.run([str(args.binary), '--config', str(config), 'import', 'snapshot',
                                  '--source', source, '--file', str(path)],
@@ -151,6 +199,7 @@ name = "RIRRd public test registry"
             raise ValueError('Imported object count does not match normalized snapshot')
         row = {**entry, 'state': 'loaded', 'objects': imported['objects'], 'classes': counts,
                'excluded_classes': excluded, 'downloads': downloads, 'imported_at': now(),
+               'duplicate_identities_last_wins': duplicates,
                'import_seconds': time.monotonic() - start}
         warnings = []
         for line in result.stderr.splitlines():

@@ -52,6 +52,7 @@ def main():
         destination = ROOT / 'generations' / datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%SZ')
         previous = (ROOT / 'current').resolve(strict=True)
         try:
+            save_state({'state': 'running', 'attempted_at': datetime.datetime.now(datetime.timezone.utc).isoformat()})
             subprocess.run([sys.executable, str(TOOLS / 'prepare.py'), '--catalog', str(TOOLS / 'sources.json'),
                             '--binary', BINARY, '--output', str(destination)], check=True)
             report = json.loads((destination / 'sources.json').read_text())

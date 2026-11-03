@@ -48,7 +48,7 @@
       "state": "enabled",
       "permission": "https://afrinic.net/ast/pdf/afrinic-irr-guide-20180927.pdf",
       "terms": "https://www.afrinic.net/internet-routing-registry.html",
-      "encoding": "iso-8859-1",
+      "encoding": "utf-8",
       "urls": [
         "https://ftp.afrinic.net/pub/dbase/afrinic.db.gz"
       ]

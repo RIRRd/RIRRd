@@ -89,6 +89,21 @@ class GatewayChecks(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     prepare.normalize([path], root / f'output-{index}', 'EXAMPLE', {'route'}, 'utf-8')
 
+    def test_snapshot_duplicate_canonical_route_uses_last_record(self):
+        import gzip
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / 'input.gz'
+            path.write_bytes(gzip.compress(('route: 192.0.2.0/24\norigin: as64496\nremarks: first\nsource: EXAMPLE\n\nroute: 192.000.002.000/24\norigin: AS64496\nremarks: final\u2028paragraph\nsource: EXAMPLE\n').encode('utf-8')))
+            output = root / 'normalized'
+            counts, excluded, duplicates = prepare.normalize([path], output, 'EXAMPLE', {'route'}, 'utf-8')
+            self.assertEqual(counts, {'route': 1})
+            self.assertEqual(excluded, {})
+            self.assertEqual(duplicates, 1)
+            self.assertIn('remarks: final', output.read_text())
+            self.assertIn('\u2028paragraph', output.read_text())
+            self.assertNotIn('remarks: first', output.read_text())
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -53,6 +53,18 @@ class State:
     def collect(self):
         try:
             report = json.loads((self.generation / 'sources.json').read_text())
+            health = http.client.HTTPConnection('127.0.0.1', self.backend_port, timeout=2)
+            try:
+                health.request('POST', '/graphql/', body=b'{"query":"{ databaseStatus { source } }"}',
+                               headers={'Host': '127.0.0.1', 'Content-Type': 'application/json'})
+                response = health.getresponse()
+                body = response.read(MAX_BODY)
+                actual = json.loads(body)
+                expected = {row['source'] for row in report['sources'] if row['state'] == 'loaded' and row.get('http_access', True)}
+                if response.status != 200 or {row['source'] for row in actual['data']['databaseStatus']} != expected:
+                    raise ValueError('Local query service is not ready')
+            finally:
+                health.close()
             cgroup = Path('/sys/fs/cgroup/system.slice/rirrd-live.service')
             cpu = dict(line.split() for line in (cgroup / 'cpu.stat').read_text().splitlines())
             current_cpu, clock = int(cpu['usage_usec']), time.monotonic()
@@ -80,7 +92,7 @@ class State:
                 snapshot['last_refresh'] = json.loads(refresh_state.read_text())
             with self.lock:
                 self.telemetry = snapshot
-        except (OSError, ValueError, KeyError, subprocess.SubprocessError):
+        except (OSError, ValueError, KeyError, http.client.HTTPException, subprocess.SubprocessError):
             with self.lock:
                 self.telemetry = {**self.telemetry, 'service': 'unavailable',
                                   'error': 'Live telemetry unavailable; do not assume source freshness.'}

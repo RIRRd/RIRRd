@@ -111,7 +111,7 @@
       const head=el('source-rows').closest('table').querySelector('thead tr');head.replaceChildren();
       ['Source','State','Objects','Upstream snapshot','Imported locally','Scope / remaining action'].forEach(label=>{const th=document.createElement('th');th.scope='col';th.textContent=label;head.append(th);});
       for(const source of rows){
-        const row=document.createElement('tr');cell(row,source.source,'th');cell(row,source.state==='loaded'?(source.http_access===false?'Snapshot · TCP only':'Daily snapshot'):source.state);
+        const row=document.createElement('tr');cell(row,source.source,'th');const age=source.imported_at?(Date.now()-Date.parse(source.imported_at))/3600000:null;cell(row,source.state==='loaded'?(age>48?'Stale snapshot':source.http_access===false?'Snapshot · TCP only':'Daily snapshot'):source.state);
         cell(row,source.objects==null?'—':Number(source.objects).toLocaleString());
         const modified=[...new Set((source.downloads || []).map(file=>file.last_modified).filter(Boolean))];
         cell(row,modified.join(' / ') || 'Not fetched');cell(row,source.imported_at || 'Not imported');
@@ -123,7 +123,7 @@
       const current=el('query-source').value;
       el('query-source').replaceChildren(new Option('All loaded sources',''));loaded.filter(row=>row.http_access!==false).forEach(row=>el('query-source').add(new Option(row.source,row.source)));
       if(loaded.some(row=>row.source===current))el('query-source').value=current;
-      text('sources-state',loaded.length+' loaded / '+rows.length+' tracked. Only loaded sources can be queried. ARIN is available through TCP WHOIS; web queries exclude it under its distribution terms. Upstream snapshot time and local import time differ. No near-real-time claim.');
+      text('sources-state',(live.last_refresh?.state==='failed'?'Refresh failed; last verified generation retained. ':'')+loaded.length+' loaded / '+rows.length+' tracked. Only loaded sources can be queried. ARIN is available through TCP WHOIS; web queries exclude it under its distribution terms. Upstream snapshot time and local import time differ. No near-real-time claim.');
     } catch(error) {
       text('live-observed','Live telemetry unavailable: '+errorText(error));text('interface-state','Unavailable');
       text('sources-state','Source status unavailable; previously displayed timestamps may be stale.');

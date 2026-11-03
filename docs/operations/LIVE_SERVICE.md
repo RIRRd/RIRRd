@@ -27,7 +27,9 @@ Initial enabled feeds are RIPE, RIPE-NONAUTH, ARIN, AFRINIC and LACNIC. Only rou
 classes are retained: aut-num, as-set, route-set, route, route6, filter-set,
 peering-set, rtr-set and inet-rtr (where published). Person/role, maintainer,
 key-cert, address-allocation and organisation classes are not imported. Class
-exclusions are counted; selected malformed records fail the entire candidate.
+exclusions are counted; selected malformed records fail the entire candidate. Published duplicate canonical
+identities use the last record, matching the pinned upstream snapshot upsert policy;
+collapsed duplicates are counted. Normal CLI imports retain duplicate rejection.
 Malformed optional lookup values can remain in source text without indexing;
 the importer reports their count separately. UTF-8 RIPE exports and explicitly
 declared source encodings are used; no lossy decode is allowed.
