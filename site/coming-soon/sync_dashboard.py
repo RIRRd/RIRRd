@@ -25,6 +25,11 @@ for name in ['index.html','style.css','app.js','network.json']:
 meta={'mode':'preview','version':'0.1.0','source_revision':revision,'node':{'name':'RIRRd dashboard preview','location':None,'sponsor':None},'sources':['EXAMPLE'],'whois_listen':None,'max_connections':8,'database_cache_mib':16}
 if args.live:
  meta.update(mode='live',public_service=True,node={'name':'RIRRd public test registry','location':None,'sponsor':None},sources=[r['source'] for r in json.loads((core/'tools/live-service/sources.json').read_text())['sources'] if r['state']=='enabled'],whois_listen='rirrd.co.uk:43',max_connections=128,database_cache_mib=64)
+if args.live:
+ profile=json.loads((core/'tools/live-service/node.json').read_text())
+ meta['node']={**profile,'sponsor':profile['provider']}
+ for source,name in [('index.html','index.html'),('style.css','node.css'),('app.js','node.js')]:
+  shutil.copyfile(core/'web/node'/source,root/'public'/name)
 (out/'meta.json').write_text(json.dumps(meta,indent=2)+'\n')
 fixture=(core/'tools/router-integration/fixture.rpsl').read_text()
 records=[]
@@ -72,4 +77,10 @@ html='''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="v
 (guide/'index.html').write_text(html)
 for name in ['bird.conf','frr.conf']:shutil.copyfile(core/'examples/routers'/name,guide/name)
 (guide/'style.css').write_text('''*{box-sizing:border-box}body{margin:0;background:#101c22;color:#edf3ef;font:16px/1.75 system-ui,sans-serif}a{color:#a7efcc;text-underline-offset:3px}a:focus-visible{outline:3px solid #a7efcc;outline-offset:5px}header,footer,main{width:min(900px,100% - 40px);margin:auto}header,footer{display:flex;justify-content:space-between;gap:20px;flex-wrap:wrap;padding-block:25px;border-bottom:1px solid #30434b}header>a{font-size:25px;font-weight:700;text-decoration:none}nav{display:flex;gap:20px;font-size:13px}main{padding-block:30px 60px}h1{font-size:clamp(30px,5vw,44px);line-height:1.2;letter-spacing:-.04em}h2{font-size:25px;line-height:1.3;margin-top:50px}p,li{color:#c1d0d2;font-size:15px}pre{overflow:auto;max-width:100%;background:#1b3036;border:1px solid #38534f;border-radius:7px;padding:20px;font:12px/1.8 ui-monospace,Consolas,monospace;color:#bef0d6}code{font:0.85em ui-monospace,Consolas,monospace;overflow-wrap:anywhere}pre code{overflow-wrap:normal}footer{border-top:1px solid #30434b;border-bottom:0;font-size:11px;color:#a7b9bf}.notice{padding:15px;background:#1c3530;border:1px solid #3b5e4e;border-radius:5px;font-size:12px}.skip{position:absolute;top:-100px;left:20px}.skip:focus{top:10px}''')
+api=root/'public/guides/api';api.mkdir(parents=True,exist_ok=True)
+api_body=markdown.markdown((core/'docs/operations/API_COMMANDS.md').read_text(),extensions=['fenced_code','tables'])
+api_html=html[:html.index('<h1>')]+api_body+html[html.index('</main>'):]
+api_html=api_html.replace('RIRRd · BIRD and FRR integration','RIRRd · IRR API and commands')
+(api/'index.html').write_text(api_html)
+shutil.copyfile(guide/'style.css',api/'style.css')
 print('Synced dashboard',meta['mode'],'from',revision)
