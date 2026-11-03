@@ -2,6 +2,11 @@
 
 **AI disclosure:** RIRRd is built with AI assistance. AI tools and agents are welcome contributors; submitted changes still require review, reproducible tests and license/provenance checks. AI authorship does not establish correctness, security or full IRRd parity. See [the disclosure](docs/AI_DISCLOSURE.md) and [contribution guide](CONTRIBUTING.md).
 
+**Two independent components:** the Rust daemon and `web/dashboard/` are the
+self-hosted product. The community website in [`site/community/`](site/community/README.md)
+provides public node discovery, hosting/sponsor credits and reviewed submissions.
+Running your own RIRRd instance requires neither a community account nor a listing.
+
 Project code is [MIT-licensed](LICENSE). The repository remains private during development; a public open-source release is planned.
 
 The project combines a compact Rust IRR service, a source/query dashboard and

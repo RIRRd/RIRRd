@@ -29,7 +29,7 @@ if args.live:
  profile=json.loads((core/'tools/live-service/node.json').read_text())
  meta['node']={**profile,'sponsor':profile['provider']}
  for source,name in [('index.html','index.html'),('style.css','node.css'),('app.js','node.js')]:
-  shutil.copyfile(core/'web/node'/source,root/'public'/name)
+  shutil.copyfile(core/'site/coming-soon/legacy-node'/source,root/'public'/name)
 (out/'meta.json').write_text(json.dumps(meta,indent=2)+'\n')
 fixture=(core/'tools/router-integration/fixture.rpsl').read_text()
 records=[]

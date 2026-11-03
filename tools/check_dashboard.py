@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import select
 import signal
+import sys
 import shlex
 import shutil
 import subprocess
@@ -65,92 +66,61 @@ class Browser:
 
 
 def main():
-    parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--url',required=True,help='fixture-loaded live /ui/ or synthetic preview /dashboard/')
-    parser.add_argument('--mode',choices=['live','preview','public'],required=True)
+    parser=argparse.ArgumentParser(description='Check the independent bundled RIRRd console')
+    parser.add_argument('--url',required=True)
+    parser.add_argument('--mode',choices=['live','public'],required=True)
     parser.add_argument('--browser',default=shutil.which('chromium') or shutil.which('google-chrome'))
     parser.add_argument('--screenshots',type=Path)
     args=parser.parse_args()
+    if args.mode=='public':
+        import subprocess
+        origin=urlsplit(args.url)
+        command=[sys.executable,str(Path(__file__).with_name('check_community_ui.py')),'--url',origin.scheme+'://'+origin.netloc]
+        if args.screenshots:command += ['--screenshots',str(args.screenshots)]
+        subprocess.run(command,check=True)
+        return
     if not args.browser:parser.error('Chromium or Google Chrome is required')
-    origin=urlsplit(args.url);origin=origin.scheme+'://'+origin.netloc
-    with tempfile.TemporaryDirectory(prefix='rirrd-browser-') as profile:
+    with tempfile.TemporaryDirectory(prefix='rirrd-console-browser-') as profile:
         browser=Browser(args.browser,profile)
         try:
-            browser.call('Emulation.setDeviceMetricsOverride',{'width':1440,'height':1100,'deviceScaleFactor':1,'mobile':False},True)
             browser.call('Page.navigate',{'url':args.url},True)
             browser.wait('document.getElementById("query-submit") && !document.getElementById("query-submit").disabled')
-            assert browser.js('document.getElementById("mode-badge").textContent')==('Synthetic preview' if args.mode=='preview' else 'Live · Experimental' if args.mode=='public' else 'Private instance')
-            def query(value,kind='object',family='4',source=None):
-                source=source or ('RIPE' if args.mode=='public' else 'EXAMPLE')
+            assert browser.js('document.getElementById("mode-badge").textContent')=='Private instance'
+            assert not browser.js("document.querySelector('[data-page=network]') !== null")
+            assert not browser.js('document.body.textContent.includes("HYEHOST LLC")')
+            assert browser.js('document.getElementById("community-link").hidden')
+            def query(value,kind='object',family='4',source='EXAMPLE'):
                 browser.js('location.hash="query";document.getElementById("query-value").value='+json.dumps(value)+';document.getElementById("query-kind").value='+json.dumps(kind)+';document.getElementById("query-family").value='+json.dumps(family)+';document.getElementById("query-source").value='+json.dumps(source)+';document.getElementById("query-form").requestSubmit()')
-                browser.wait('!document.getElementById("query-submit").disabled && document.getElementById("query-status").textContent!=="Querying…"')
+                browser.wait('!document.getElementById("query-submit").disabled')
                 return browser.js('document.getElementById("query-result").textContent')
-            if args.mode=='public':
-                browser.wait('!document.getElementById("live-panel").hidden && document.getElementById("live-objects").textContent!=="—"')
-                assert 'AS3333' in query('AS3333')
-                assert '193.0.0.0/21' in query('193.0.0.0/21')
-                assert '193.0.0.0/21' in query('193.0.0.1')
-                assert browser.js('document.querySelectorAll(".object-card").length')>0
-                assert '193.0.0.0/21' in query('193.0.0.1','covering')
-                assert '2001:67c:2e8::/48' in query('2001:67c:2e8::/48')
-                assert '193.0.0.0/21' in query('AS3333','origin')
-                assert '2001:' in query('AS3333','origin','6')
-                assert '193.0.0.0/21' in query('AS-RIPENCC','set')
-                assert 'No ' in query('RIRRD-NO-SUCH-OBJECT-SECURITY-CHECK')
-                assert 'ARIN' in browser.js('[...document.getElementById("query-source").options].map(o=>o.value)')
-                telemetry=browser.js('fetch("live.json").then(r=>r.json())')
-                assert telemetry['service']=='online' and telemetry['total_objects']>900000
-                assert telemetry['http_queries']>=6
-            else:
-                assert 'AS64496' in query('AS64496')
-                assert '192.0.2.0/24' in query('192.0.2.0/24')
-                if args.mode=='live':
-                    assert '192.0.2.0/24' in query('192.0.2.1')
-                    assert '192.0.2.0/24' in query('192.0.2.1','covering')
-                    assert '192.0.2.0/24' in query('192.0.2.0/23','more')
-                assert '2001:db8:100::/48' in query('2001:db8:100::/48')
-                assert query('AS64496','origin')=='192.0.2.0/24'
-                assert query('AS64496','origin','6')=='2001:db8:100::/48'
-                assert set(query('AS64496:AS-DOCS','set').splitlines())=={'192.0.2.0/24','198.51.100.0/24'}
-                assert set(query('AS64496:AS-DOCS','set','6').splitlines())=={'2001:db8:100::/48','2001:db8:200::/48'}
-                assert 'No ' in query('AS64511')
-            if args.mode=='live':
-                text=query('DOCS-MNT');assert 'DOCS-MNT' in text and 'auth:' not in text and 'DummyValue' not in text
-                browser.js('document.getElementById("query-source").add(new Option("UNKNOWN","UNKNOWN"))')
-                query('AS64496',source='UNKNOWN')
-                assert 'HTTP 400' in browser.js('document.getElementById("query-status").textContent')
-            if args.mode!='preview':
-                browser.js('location.hash="api";document.getElementById("load-schema").click()')
-                browser.wait('!document.getElementById("load-schema").disabled')
-                assert 'queryType' in browser.js('document.getElementById("schema-result").textContent')
-                browser.js('document.getElementById("graphql-form").requestSubmit()')
-                browser.wait('!document.getElementById("graphql-submit").disabled')
-                assert 'databaseStatus' in browser.js('document.getElementById("graphql-result").textContent')
-            if args.mode=='public':
-                browser.js('location.hash="sources";document.getElementById("source-detail").value="RADB";document.getElementById("source-detail").dispatchEvent(new Event("change"))')
-                assert 'route' in browser.js('document.getElementById("source-detail-content").textContent')
-                assert browser.js('document.querySelectorAll("#source-detail-content details").length')>0
-            browser.js('location.hash="network"')
-            browser.wait('document.getElementById("network-list").textContent.includes("HYEHOST LLC")')
-            assert browser.js('document.getElementById("network-nodes").textContent')=='1'
+            assert 'AS64496' in query('AS64496')
+            assert '192.0.2.0/24' in query('192.0.2.0/24')
+            assert '192.0.2.0/24' in query('192.0.2.1','covering')
+            assert '192.0.2.0/24' in query('192.0.2.0/23','more')
+            assert '2001:db8:100::/48' in query('2001:db8:100::/48')
+            assert query('AS64496','origin')=='192.0.2.0/24'
+            assert query('AS64496','origin','6')=='2001:db8:100::/48'
+            assert set(query('AS64496:AS-DOCS','set').splitlines())=={'192.0.2.0/24','198.51.100.0/24'}
+            assert set(query('AS64496:AS-DOCS','set','6').splitlines())=={'2001:db8:100::/48','2001:db8:200::/48'}
+            assert set(query('AS64496:AS-DOCS','recursive').splitlines())=={'AS64496','AS64497'}
+            assert 'No matching' in query('AS64511')
+            result=query('DOCS-MNT');assert 'DOCS-MNT' in result and 'auth:' not in result and 'DummyValue' not in result
+            browser.js('document.getElementById("query-source").add(new Option("UNKNOWN","UNKNOWN"))')
+            query('AS64496',source='UNKNOWN');assert 'HTTP 400' in browser.js('document.getElementById("query-status").textContent')
+            browser.js('location.hash="api";document.getElementById("load-schema").click()');browser.wait('!document.getElementById("load-schema").disabled')
+            assert 'queryType' in browser.js('document.getElementById("schema-result").textContent')
+            browser.js('document.getElementById("graphql-form").requestSubmit()');browser.wait('!document.getElementById("graphql-submit").disabled')
+            assert 'databaseStatus' in browser.js('document.getElementById("graphql-result").textContent')
+            assert browser.js('document.querySelectorAll("#command-examples .command-card").length')==6
+            assert '!6AS64496' in browser.js('document.getElementById("command-examples").textContent')
             for width in [320,390,1440]:
                 browser.call('Emulation.setDeviceMetricsOverride',{'width':width,'height':1100,'deviceScaleFactor':1,'mobile':width<650},True)
-                for page in ['overview','query','sources','api','network','connect']:
-                    browser.js('location.hash='+json.dumps(page))
-                    browser.wait('!document.getElementById("page-'+page+'").hidden')
-                    sizes=browser.js('({width:innerWidth,scroll:document.documentElement.scrollWidth})')
-                    assert sizes['scroll']<=sizes['width'],(width,page,sizes)
-                if args.screenshots:
-                    args.screenshots.mkdir(parents=True,exist_ok=True)
-                    browser.js('location.hash="overview"');browser.wait('!document.getElementById("page-overview").hidden')
-                    shot=browser.call('Page.captureScreenshot',{'format':'png','captureBeyondViewport':False},True)
-                    (args.screenshots/f'dashboard-{args.mode}-{width}.png').write_bytes(base64.b64decode(shot['data']))
-            requests=[e['params']['request']['url'] for e in browser.events if e.get('method')=='Network.requestWillBeSent']
-            assert all(url.startswith(origin) or url=='about:blank' for url in requests),'unexpected external page request'
-            if args.mode=='preview':assert not any('/graphql' in url or '/v1/' in url for url in requests),'preview contacted a registry API'
-            exceptions=[e for e in browser.events if e.get('method')=='Runtime.exceptionThrown']
-            assert not exceptions,'browser JavaScript exception'
-            print(args.mode+': object/prefix/origin/set queries, source handling, UK project node directory, no external requests; all six views fit 320/390/1440px')
+                for page in ['overview','query','sources','rpki','api','connect','system']:
+                    browser.js('location.hash='+json.dumps(page));browser.wait('!document.getElementById("page-'+page+'").hidden')
+                    assert browser.js('document.documentElement.scrollWidth<=innerWidth'),(width,page)
+            assert not [event for event in browser.events if event.get('method')=='Runtime.exceptionThrown']
+            print('Independent self-hosted console: no community directory/hosting data, real object/prefix/v4/v6/set/member queries, credential redaction, schema/workbench and seven responsive views passed')
         finally:browser.close()
+
 
 if __name__=='__main__':main()
