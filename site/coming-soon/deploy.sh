@@ -22,7 +22,7 @@ if [ -f public/comparison.json ]; then
     install -m 644 public/comparison.json /var/www/rirrd-coming-soon/
 fi
 # Exact allowlist: no repository/configuration/runtime files enter the public root.
-for file in node.css node.js project/index.html small-host.json small-host-cold.json license.txt dashboard/index.html dashboard/style.css dashboard/app.js dashboard/meta.json dashboard/sample-results.json dashboard/network.json guides/routers/index.html guides/routers/style.css guides/routers/bird.conf guides/routers/frr.conf; do
+for file in node.css node.js project/index.html small-host.json small-host-cold.json license.txt dashboard/index.html dashboard/style.css dashboard/app.js dashboard/meta.json dashboard/sample-results.json dashboard/network.json guides/api/index.html guides/api/style.css guides/routers/index.html guides/routers/style.css guides/routers/bird.conf guides/routers/frr.conf; do
     if [ -f "public/$file" ]; then
         install -d -m 755 "/var/www/rirrd-coming-soon/$(dirname "$file")"
         install -m 644 "public/$file" "/var/www/rirrd-coming-soon/$file"

@@ -127,7 +127,7 @@
     return age<60?Math.floor(age)+'s ago':age<3600?Math.floor(age/60)+'m ago':age<86400?Math.floor(age/3600)+'h ago':Math.floor(age/86400)+'d ago';
   }
   function syncState(source) {
-    if(source.state!=='loaded')return {label:'Awaiting access / feed',kind:'amber'};
+    if(source.state!=='loaded')return {label:'Feed unavailable',kind:'amber'};
     const mirror=source.mirror;
     if(mirror) {
       const stale=Date.now()/1000-mirror.checked_at_unix_seconds>Math.max(180,mirror.interval_seconds*3);
@@ -137,14 +137,14 @@
     return {label:Date.now()-Date.parse(source.imported_at)>48*3600000?'Snapshot refresh overdue':'Daily snapshot',kind:'neutral'};
   }
   function renderLiveSources(live) {
-    const rows=live.sources || [],loaded=rows.filter(row=>row.state==='loaded');
+    const rows=(live.sources || []).map(row=>{const counts=live.class_counts?.[row.source];return counts?{...row,classes:counts,objects:Object.values(counts).reduce((a,b)=>a+b,0),live_counts:true}:row;}),loaded=rows.filter(row=>row.state==='loaded');
     text('source-count',loaded.length+' / '+rows.length);
     const following=loaded.filter(row=>syncState(row).kind==='positive').length;
     const scheduled=loaded.filter(row=>row.mirror || row.mirror_bootstrap).length;
-    text('freshness-summary',following+' following incremental feeds · '+(scheduled-following)+' mirrors need attention · '+(loaded.length-scheduled)+' snapshot feeds · '+(rows.length-loaded.length)+' awaiting access/feed');
+    text('freshness-summary',following+' following incremental feeds · '+(scheduled-following)+' mirrors need attention · '+(loaded.length-scheduled)+' snapshot feeds · '+(rows.length-loaded.length)+' unavailable feeds');
     el('source-rows').replaceChildren();el('overview-sources').replaceChildren();
     const head=el('source-rows').closest('table').querySelector('thead tr');head.replaceChildren();
-    ['Source','Sync mode / health','Snapshot objects','Last mirror check / cursor','Snapshot published / imported','Scope / remaining action'].forEach(label=>{const th=document.createElement('th');th.scope='col';th.textContent=label;head.append(th);});
+    ['Source','Sync mode / health',live.class_counts?'Current objects':'Snapshot objects','Last mirror check / cursor','Snapshot published / imported','Scope / remaining action'].forEach(label=>{const th=document.createElement('th');th.scope='col';th.textContent=label;head.append(th);});
     for(const source of rows) {
       const row=document.createElement('tr'),status=syncState(source);cell(row,source.source,'th');
       const state=document.createElement('td'),badge=document.createElement('span');badge.className='badge '+status.kind;badge.textContent=status.label;state.append(badge);row.append(state);
@@ -153,13 +153,13 @@
       cell(row,mirror?new Date(mirror.checked_at_unix_seconds*1000).toISOString()+' · '+ago(mirror.checked_at_unix_seconds*1000)+' · cursor '+(mirror.serial ?? 'uncommitted')+(mirror.last_success_unix_seconds?' · last success '+ago(mirror.last_success_unix_seconds*1000):' · no successful check since restart'):'No incremental cursor');
       const modified=[...new Set((source.downloads || []).map(file=>file.last_modified).filter(Boolean))];
       cell(row,(modified.join(' / ') || (source.state==='loaded'?'Provider time unreported':'Not fetched'))+' · imported '+(source.imported_at?ago(source.imported_at):'never'));
-      cell(row,source.state==='loaded'?Object.keys(source.classes || {}).join(', ')+(source.http_access===false?' · TCP WHOIS only; excluded from web queries.':'')+(source.skipped_lookup_values?' · '+source.skipped_lookup_values+' malformed lookup values not indexed.':'')+(source.duplicate_identities_last_wins?' · '+source.duplicate_identities_last_wins+' duplicate identities collapsed (last record).':'')+(Object.keys(source.quarantined_records || {}).length?' · '+Object.values(source.quarantined_records).reduce((a,b)=>a+b,0)+' unsafe records withheld.':'')+(source.provider?' · Via '+source.provider+'.':'')+(source.transport_note?' · '+source.transport_note:''):source.reason || 'Not loaded');
+      cell(row,source.state==='loaded'?Object.keys(source.classes || {}).join(', ')+(source.http_access===false?' · Raw HTTP and TCP WHOIS; excluded from structured GraphQL.':'')+(source.skipped_lookup_values?' · '+source.skipped_lookup_values+' malformed lookup values not indexed.':'')+(source.duplicate_identities_last_wins?' · '+source.duplicate_identities_last_wins+' duplicate identities collapsed (last record).':'')+(Object.keys(source.quarantined_records || {}).length?' · '+Object.values(source.quarantined_records).reduce((a,b)=>a+b,0)+' unsafe records withheld.':'')+(source.provider?' · Via '+source.provider+'.':'')+(source.transport_note?' · '+source.transport_note:''):source.reason || 'Not loaded');
       if(source.permission?.startsWith('https://')){const policy=document.createElement('a');policy.href=source.permission;policy.textContent='Source policy / access';row.lastElementChild.append(document.createElement('br'),policy);}
       el('source-rows').append(row);
       if(source.state==='loaded') {
         const pill=document.createElement('button');pill.type='button';pill.className='source-pill';
         const title=document.createElement('strong');title.textContent=source.source;
-        const detail=document.createElement('span');detail.textContent=count(source.objects)+' snapshot objects · '+status.label;
+        const detail=document.createElement('span');detail.textContent=count(source.objects)+(source.live_counts?' current objects · ':' snapshot objects · ')+status.label;
         const share=document.createElement('progress');share.max=live.snapshot_total_objects || live.total_objects || 1;share.value=source.objects;share.setAttribute('aria-label',source.source+' share of bootstrap objects');pill.append(title,detail,share);
         pill.addEventListener('click',()=>{el('source-detail').value=source.source;renderSourceDetail();location.hash='sources';});el('overview-sources').append(pill);
       }
@@ -170,12 +170,12 @@
     const selected=el('source-detail').value;el('source-detail').replaceChildren();rows.forEach(row=>el('source-detail').add(new Option(row.source,row.source)));
     if(rows.some(row=>row.source===selected))el('source-detail').value=selected;
     el('source-detail-panel').hidden=false;renderSourceDetail();
-    text('sources-state',(live.last_refresh?.state==='failed'?'Snapshot refresh failed; the last verified generation was retained. ':live.last_refresh?.state==='running'?'A new snapshot generation is building privately. ':'')+loaded.length+' loaded / '+rows.length+' tracked. Snapshot counts and timestamps describe the bootstrap; the current total includes incremental edits. ARIN is TCP-only. NRTMv3 is unencrypted and unauthenticated; following a peer does not prove zero upstream propagation delay.');
+    text('sources-state',(live.last_refresh?.state==='failed'?'Snapshot refresh failed; the last verified generation was retained. ':live.last_refresh?.state==='running'?'A new snapshot generation is building privately. ':'')+loaded.length+' loaded / '+rows.length+' tracked. Class counts use the live index when available; publication receipts and timestamps describe the bootstrap. ARIN uses raw HTTP/TCP WHOIS; structured GraphQL excludes it. NRTMv3 is unencrypted and unauthenticated; following a peer does not prove zero upstream propagation delay.');
   }
   function renderSourceDetail() {
-    const source=latestLive?.sources?.find(row=>row.source===el('source-detail').value);if(!source)return;
+    let source=latestLive?.sources?.find(row=>row.source===el('source-detail').value);if(!source)return;const currentCounts=latestLive.class_counts?.[source.source];if(currentCounts)source={...source,classes:currentCounts,objects:Object.values(currentCounts).reduce((a,b)=>a+b,0)};
     const out=el('source-detail-content');out.replaceChildren();
-    const summary=document.createElement('p');summary.textContent=source.source+' · '+syncState(source).label+' · '+(source.http_access===false?'TCP WHOIS only':'Web and TCP queries')+' · '+(source.reason || 'Routing classes only; contact, maintainer and allocation classes are excluded.');out.append(summary);
+    const summary=document.createElement('p');summary.textContent=source.source+' · '+syncState(source).label+' · '+(source.http_access===false?'Raw HTTP / TCP WHOIS; GraphQL excluded':'Web and TCP queries')+' · '+(source.reason || 'Routing classes only; contact, maintainer and allocation classes are excluded.');out.append(summary);
     const classes=document.createElement('div');classes.className='class-grid';
     for(const [name,total] of Object.entries(source.classes || {}).sort((a,b)=>b[1]-a[1])){
       const item=document.createElement('div'),label=document.createElement('span'),value=document.createElement('strong'),bar=document.createElement('progress');label.textContent=name;value.textContent=count(total);bar.max=source.objects || 1;bar.value=total;bar.setAttribute('aria-label',name+' share of source snapshot');item.append(label,value,bar);classes.append(item);

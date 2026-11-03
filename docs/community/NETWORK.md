@@ -1,12 +1,15 @@
-# Community IRR network — planned
+# Community IRR network — first node
 
 The intended service combines MIT-licensed registry software with a community
 of independently operated hosts. People and organisations can sponsor compute,
-connectivity or operational work. A public directory will credit the confirmed
-sponsor and show where each verified node operates.
+connectivity or operational work. A public directory credits hosting providers and, where confirmed, sponsors,
+and shows where reviewed nodes operate.
 
-This is a plan, not an announcement of live nodes, sponsor commitments, service
-levels or enrollment availability. The initial directory is deliberately empty.
+The first project node is **RIRRd UK 01**, hosted in the **United Kingdom** by
+**HYEHOST LLC**, as supplied by the project owner. Its public WHOIS and HTTPS
+service are checked separately. No city, financial sponsorship, service level
+or community enrollment availability is inferred. Additional community nodes
+and governance remain planned.
 The code repository remains private until its public release is authorized.
 
 ## What a listing should tell a network operator
@@ -39,7 +42,8 @@ or fabricated nodes in the shipped directory. A future verifier must not blindly
 fetch arbitrary submitted URLs: endpoint ownership, address policy, TLS and
 bounded checks need review before automated enrollment.
 
-Example data shape, with no announced node:
+Canonical node metadata is in `tools/live-service/node.json`; the dashboard
+uses `web/dashboard/network.json`. Example empty directory shape for a new fork:
 
 ```json
 {"schema_version": 1, "status": "planned", "nodes": []}

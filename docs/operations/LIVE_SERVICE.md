@@ -48,8 +48,10 @@ marketing use or downloadable database export. Permission references:
   [NRPM 3.4.1](https://www.arin.net/participate/policy/nrpm/#3-4-routing-registry).
   ARIN permits routing-registry mirroring for Internet operations and restricts
   redistribution to WHOIS absent written permission. Consequently ARIN is
-  available through TCP WHOIS only here: `http_sources` excludes it from **all**
-  HTTP queries, including implicit defaults and explicit source selection.
+  available through raw TCP and HTTP WHOIS here. The policy names a Whois
+  service, without specifying port 43. This is our service interpretation, not an
+  ARIN endorsement. `http_sources` excludes ARIN from structured GraphQL and
+  key browsing; `http_whois_sources` independently permits raw WHOIS.
 - [AFRINIC's mirroring instructions](https://afrinic.net/ast/pdf/afrinic-irr-guide-20180927.pdf).
   Continuous NRTM needs IP whitelisting, which is not assumed from snapshot access.
 - [LACNIC's open mirroring policy](https://www.lacnic.net/5009/2/lacnic/update-on-lacnics-irr:-near-real-time-mirroring-now-available).
@@ -65,14 +67,15 @@ identify received bytes but do not prove publisher authenticity. The dashboard
 shows the provider/transport limitation and leaves unavailable provider timestamps
 unreported. Other downloads retain mandatory HTTPS certificate validation.
 
-Five tracked feeds still require external action. APNIC needs the owner's
-[signed bulk-access AUP](https://www.apnic.net/manage-ip/using-whois/bulk-access/).
-[IDNIC's own mirror policy](https://idnic.net/service/whois/irr) also references
-that AUP. [JPNIC's current mirror policy](https://www.nic.ad.jp/doc/jpnic-01297.html)
-requires eligibility/approval. NTT asks prospective mirrors to
-[contact its registry administrator](https://www.gin.ntt.net/support-center/policies-procedures/routing-registry/).
-Lumen/LEVEL3's published snapshot and alternate published-service addresses time
-out from this VM. No messages or agreements were sent/signed for the owner.
+APNIC routing-class exports are publicly published over HTTPS. JPIRR and NTTCOM
+have public secondary snapshot/NRTMv3 feeds at Merit. Direct-primary onboarding
+requirements are not prerequisites for these published public mirror feeds.
+The catalog records their actual providers. IDNIC's published FTP endpoint
+`irr-mirror.idnic.net:21` currently returns no route to host; its HTTPS endpoint
+fails TLS negotiation. LEVEL3's published `rrftp.level3.net` snapshot endpoint
+times out from this VM. These are connectivity/bootstrap issues, not requests
+for the project owner to join a programme. Published alternate mirrors remain
+eligible when their matching snapshot and serial can be verified.
 
 ## Isolation and limits
 

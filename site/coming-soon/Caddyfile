@@ -16,7 +16,7 @@ rirrd.co.uk {
 	}
 	header @dashboard Content-Security-Policy "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
 	header @page Content-Security-Policy "default-src 'none'; style-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'"
-	@queries path /graphql/ /v1/whois/ /v1/rpki/status /v1/rpki/validate /dashboard/meta.json /dashboard/live.json
+	@queries path /graphql/ /v1/whois/ /v1/rpki/status /v1/rpki/validate /v1/irr/objects /dashboard/meta.json /dashboard/live.json
 	reverse_proxy @queries 127.0.0.1:9281 {
 		header_up Host 127.0.0.1
 		header_up X-RIRRd-Client {remote_host}

@@ -9,7 +9,7 @@ with tempfile.TemporaryDirectory(prefix='rirrd-node-browser-') as profile:
  try:
   b.call('Page.navigate',{'url':a.url},True);b.wait('document.getElementById("submit") && !document.getElementById("submit").disabled && document.getElementById("sources").textContent!=="—"')
   assert b.js('document.body.textContent.includes("HYEHOST LLC") && document.body.textContent.includes("United Kingdom")')
-  assert 'ARIN' not in b.js('[...document.getElementById("source").options].map(o=>o.value)')
+  assert 'ARIN' in b.js('[...document.getElementById("source").options].map(o=>o.value)')
   def query(value,kind='object',family='4'):
    b.js('document.getElementById("value").value='+json.dumps(value)+';document.getElementById("source").value="RIPE";document.getElementById("kind").value='+json.dumps(kind)+';document.getElementById("family").value='+json.dumps(family)+';document.getElementById("lookup").requestSubmit()')
    b.wait('!document.getElementById("submit").disabled')
@@ -20,6 +20,8 @@ with tempfile.TemporaryDirectory(prefix='rirrd-node-browser-') as profile:
   assert '193.0.0.0/21' in query('AS3333','origin')
   assert '2001:' in query('AS3333','origin','6')
   assert '193.0.0.0/21' in query('AS-RIPENCC','set')
+  assert 'AS3333' in query('AS-RIPENCC','recursive')
+  b.js('document.getElementById("browse-source").value="RIPE";document.getElementById("browse-form").requestSubmit()');b.wait('document.getElementById("browse-results").children.length>0')
   assert 'No matching' in query('RIRRD-ABSENT-OBJECT-TEST')
   for width in [320,390,1440]:
    b.call('Emulation.setDeviceMetricsOverride',{'width':width,'height':1100,'deviceScaleFactor':1,'mobile':width<650},True)
@@ -28,5 +30,5 @@ with tempfile.TemporaryDirectory(prefix='rirrd-node-browser-') as profile:
     import base64
     a.screenshots.mkdir(exist_ok=True,parents=True);b.js('scrollTo(0,0)');shot=b.call('Page.captureScreenshot',{'format':'png'},True);(a.screenshots/f'node-{width}.png').write_bytes(base64.b64decode(shot['data']))
   assert not [e for e in b.events if e.get('method')=='Runtime.exceptionThrown']
-  print('UK/HYEHOST node portal: object/IP/prefix/origin/set/empty queries, ARIN isolation, responsive 320/390/1440px')
+  print('UK/HYEHOST node portal: object/IP/prefix/origin/set/empty queries, ARIN raw WHOIS availability, responsive 320/390/1440px')
  finally:b.close()

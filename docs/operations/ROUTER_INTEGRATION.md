@@ -30,8 +30,8 @@ python3 tools/router-integration/generate_filters.py \
 These commands generate candidate text, not router changes. The example ASN is
 RIPE NCC's; substitute your actual peer/customer ASN or AS-set when building your
 own policy. Do not permit an example ASN on a real customer session. Source
-permissions are independent of the project's MIT license. ARIN is available only
-through TCP WHOIS in this deployment; it is excluded from web/GraphQL queries.
+permissions are independent of the project's MIT license. ARIN is available through raw TCP and HTTP WHOIS in this deployment; structured
+GraphQL queries exclude it.
 The following synthetic workflow also works entirely on your own private instance.
 
 ## 1. Start a private evaluation instance

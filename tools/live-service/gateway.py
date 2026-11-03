@@ -54,6 +54,14 @@ class State:
     def collect(self):
         try:
             report = json.loads((self.generation / 'sources.json').read_text())
+            catalog_path = Path(__file__).with_name('sources.json')
+            if catalog_path.exists():
+                catalog = {row['source']: row for row in json.loads(catalog_path.read_text())['sources']}
+                report['sources'] = [row if row['state'] == 'loaded' else {**row, 'reason':
+                    ('Public feed available; a verified database generation is being prepared.'
+                     if catalog.get(row['source'], {}).get('state') == 'enabled'
+                     else catalog.get(row['source'], {}).get('reason', row.get('reason')))}
+                    for row in report['sources']]
             health = http.client.HTTPConnection('127.0.0.1', self.backend_port, timeout=2)
             try:
                 health.request('POST', '/graphql/', body=b'{"query":"{ databaseStatus { source } }"}',
@@ -71,7 +79,7 @@ class State:
             try:
                 monitor.request('GET', '/ui/mirrors.json', headers={'Host': '127.0.0.1'})
                 response = monitor.getresponse()
-                data = response.read(MAX_BODY)
+                data = response.read(128 * 1024)
                 if response.status == 200:
                     mirror_data = json.loads(data)
                 elif response.status != 404:  # Allow a rolling upgrade from the older daemon.
@@ -100,8 +108,8 @@ class State:
                         'total_objects': mirror_data.get('total_objects', report['total_objects']),
                         'snapshot_total_objects': report.get('snapshot_total_objects', report['total_objects']),
                         'snapshot_verified_at': report['verified_at'], 'refresh_mode': report['refresh_mode'],
-                        'classes': report['classes'],
-                        'sources': [{**row, 'mirror': mirror_data.get('sources', {}).get(row['source'])}
+                        'classes': report['classes'], 'class_counts': mirror_data.get('class_counts'),
+                        'sources': [{**row, 'http_whois_access': row['state'] == 'loaded', 'graphql_access': row.get('http_access', True), 'mirror': mirror_data.get('sources', {}).get(row['source'])}
                                     for row in report['sources']]}
             connections = 0
             for table in ('tcp', 'tcp6'):
@@ -211,8 +219,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 'version': '0.1.0', 'node': {**NODE, 'sponsor': NODE['provider']},
                 'sources': loaded, 'whois_listen': 'rirrd.co.uk:43',
                 'http_sources': [s['source'] for s in stats.get('sources', []) if s['state'] == 'loaded' and s.get('http_access', True)],
+                'http_whois_sources': [s['source'] for s in stats.get('sources', []) if s['state'] == 'loaded'],
                 'max_connections': 128, 'database_cache_mib': 64}).encode())
-        permitted = (self.command == 'GET' and path.path in ('/v1/whois/', '/v1/rpki/status', '/v1/rpki/validate')) or (
+        permitted = (self.command == 'GET' and path.path in ('/v1/whois/', '/v1/rpki/status', '/v1/rpki/validate', '/v1/irr/objects')) or (
             self.command == 'POST' and path.path == '/graphql/' and not path.query)
         if not permitted:
             return self.respond(404)

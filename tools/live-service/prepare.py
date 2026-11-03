@@ -245,6 +245,7 @@ worker_threads = 2
 max_blocking_threads = 4
 sources = ''' + json.dumps([s['source'] for s in enabled]) + '''
 http_sources = ''' + json.dumps([s['source'] for s in enabled if s.get('http_access', True)]) + '''
+http_whois_sources = ''' + json.dumps([s['source'] for s in enabled]) + '''
 listen = "[::]:43"
 http_listen = "127.0.0.1:9280"
 max_connections = 128
@@ -256,6 +257,9 @@ name = "RIRRd UK 01"
 location = "United Kingdom"
 sponsor = "HYEHOST LLC"
 '''
+    if catalog.get('rpki'):
+        config_text += '\n[rpki]\n' + ''.join(key + ' = ' + json.dumps(value) + '\n'
+                                                   for key, value in catalog['rpki'].items())
     if args.resume:
         if config.read_text() not in (config_text, config_text + mirror_schedule(completed.values(), catalog['classes'])):
             raise ValueError('Candidate configuration changed; refusing to resume')

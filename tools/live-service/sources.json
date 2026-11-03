@@ -11,7 +11,7 @@
     "rtr-set",
     "inet-rtr"
   ],
-  "refresh": "NRTMv3 every 60 seconds for five Merit-published feeds; daily snapshots for other loaded feeds",
+  "refresh": "NRTMv3 every 60 seconds for eight configured feeds; periodic routing snapshots for other sources",
   "sources": [
     {
       "source": "RIPE",
@@ -41,7 +41,7 @@
         "https://ftp.arin.net/pub/rr/arin.db.gz"
       ],
       "http_access": false,
-      "distribution": "TCP WHOIS only under current ARIN NRPM 3.4.1. HTTP/GraphQL redistribution requires written permission."
+      "distribution": "Public TCP and raw HTTP WHOIS service for IRR operations; structured GraphQL exports remain excluded. NRPM 3.4.1 refers to Whois service, not a mandatory port number."
     },
     {
       "source": "AFRINIC",
@@ -61,14 +61,33 @@
       "encoding": "utf-8",
       "urls": [
         "https://irr.lacnic.net/lacnic.db.gz"
-      ]
+      ],
+      "nrtm3": {
+        "host": "irr.lacnic.net",
+        "port": 43,
+        "interval_seconds": 60,
+        "snapshot_serial_url": "https://irr.lacnic.net/LACNIC.CURRENTSERIAL",
+        "documentation": "https://www.lacnic.net/5009/2/lacnic/update-on-lacnics-irr:-near-real-time-mirroring-now-available"
+      }
     },
     {
       "source": "APNIC",
-      "state": "pending",
-      "reason": "APNIC signed bulk-access AUP required; owner must arrange access.",
-      "permission": "https://www.apnic.net/manage-ip/using-whois/bulk-access/",
-      "urls": []
+      "state": "enabled",
+      "permission": "https://ftp.apnic.net/apnic/whois/",
+      "urls": [
+        "https://ftp.apnic.net/apnic/whois/apnic.db.aut-num.gz",
+        "https://ftp.apnic.net/apnic/whois/apnic.db.as-set.gz",
+        "https://ftp.apnic.net/apnic/whois/apnic.db.route-set.gz",
+        "https://ftp.apnic.net/apnic/whois/apnic.db.route.gz",
+        "https://ftp.apnic.net/apnic/whois/apnic.db.route6.gz",
+        "https://ftp.apnic.net/apnic/whois/apnic.db.filter-set.gz",
+        "https://ftp.apnic.net/apnic/whois/apnic.db.peering-set.gz",
+        "https://ftp.apnic.net/apnic/whois/apnic.db.rtr-set.gz",
+        "https://ftp.apnic.net/apnic/whois/apnic.db.inet-rtr.gz"
+      ],
+      "encoding": "utf-8",
+      "provider": "APNIC public routing-class exports",
+      "terms": "https://www.apnic.net/about-apnic/corporate-documents/documents/other-terms-and-conditions/apnic-whois-database-acceptable-use-agreement/"
     },
     {
       "source": "BELL",
@@ -92,15 +111,28 @@
     },
     {
       "source": "JPIRR",
-      "state": "pending",
-      "reason": "JPNIC mirror eligibility/approval required under current policy section 4; owner onboarding pending.",
-      "permission": "https://www.nic.ad.jp/doc/jpnic-01297.html",
-      "urls": []
+      "state": "enabled",
+      "permission": "https://irr.net/overview/",
+      "urls": [
+        "ftp://ftp.radb.net/radb/dbase/jpirr.db.gz"
+      ],
+      "encoding": "utf-8",
+      "allow_plaintext_ftp": true,
+      "provider": "Merit public IRR mirror",
+      "terms": "https://radb.atlassian.net/wiki/spaces/RADb/pages/46105414/NRTM",
+      "transport_note": "Published anonymous FTP and NRTMv3 for IRR operations; unauthenticated transport.",
+      "nrtm3": {
+        "host": "nrtm.radb.net",
+        "port": 43,
+        "interval_seconds": 60,
+        "snapshot_serial_url": "ftp://ftp.radb.net/radb/dbase/JPIRR.CURRENTSERIAL",
+        "documentation": "https://radb.atlassian.net/wiki/spaces/RADb/pages/46105414/NRTM"
+      }
     },
     {
       "source": "IDNIC",
       "state": "pending",
-      "reason": "IDNIC mirror policy requires the APNIC AUP; owner access agreement is pending. Official HTTPS endpoint also fails TLS negotiation.",
+      "reason": "Public provider search in progress: Merit advertises NRTM but does not publish a matching IDNIC snapshot at its listed FTP path; direct HTTPS endpoint fails TLS negotiation.",
       "permission": "https://idnic.net/service/whois/irr",
       "urls": []
     },
@@ -157,16 +189,29 @@
     {
       "source": "LEVEL3",
       "state": "pending",
-      "reason": "Official HTTPS snapshot endpoint timed out from this VM; permission review also pending.",
+      "reason": "Public provider search in progress: Merit advertises NRTM but its listed snapshot path is absent; direct service connectivity remains under test.",
       "permission": "https://irr.net/registry/",
       "urls": []
     },
     {
       "source": "NTTCOM",
-      "state": "pending",
-      "reason": "NTT asks prospective mirrors to contact db-admin@rr.ntt.net; mirror onboarding pending.",
-      "permission": "https://www.gin.ntt.net/support-center/policies-procedures/routing-registry/",
-      "urls": []
+      "state": "enabled",
+      "permission": "https://irr.net/overview/",
+      "urls": [
+        "ftp://ftp.radb.net/radb/dbase/nttcom.db.gz"
+      ],
+      "encoding": "utf-8",
+      "allow_plaintext_ftp": true,
+      "provider": "Merit public IRR mirror",
+      "terms": "https://radb.atlassian.net/wiki/spaces/RADb/pages/46105414/NRTM",
+      "transport_note": "Published anonymous FTP and NRTMv3 for IRR operations; unauthenticated transport.",
+      "nrtm3": {
+        "host": "nrtm.radb.net",
+        "port": 43,
+        "interval_seconds": 60,
+        "snapshot_serial_url": "ftp://ftp.radb.net/radb/dbase/NTTCOM.CURRENTSERIAL",
+        "documentation": "https://radb.atlassian.net/wiki/spaces/RADb/pages/46105414/NRTM"
+      }
     },
     {
       "source": "RADB",
@@ -231,5 +276,12 @@
         "documentation": "https://radb.atlassian.net/wiki/spaces/RADb/pages/46105414/NRTM"
       }
     }
-  ]
+  ],
+  "rpki": {
+    "cache_dir": "/var/lib/rirrd-live/rpki",
+    "rtr_listen": "127.0.0.1:3323",
+    "refresh_seconds": 600,
+    "expire_seconds": 3600,
+    "validation_threads": 2
+  }
 }
