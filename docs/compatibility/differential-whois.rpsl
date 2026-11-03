@@ -41,3 +41,41 @@ e-mail:         hostmaster@example.invalid
 admin-c:        DIFF1-TEST
 mnt-by:         DIFFERENTIAL-MNT
 source:         DIFFERENTIAL
+
+filter-set:     AS64496:FLTR-DEMO
+filter:         AS64496
+mp-filter:      afi ipv6 ANY
+descr:          Synthetic filter policy
+admin-c:        DIFF1-TEST
+mnt-by:         DIFFERENTIAL-MNT
+source:         DIFFERENTIAL
+
+peering-set:    AS64496:PRNG-DEMO
+peering:        AS64496
+peering:        AS64497
+mp-peering:     AS64496
+descr:          Synthetic peering policy
+tech-c:         DIFF1-TEST
+mnt-by:         DIFFERENTIAL-MNT
+source:         DIFFERENTIAL
+
+rtr-set:        AS64496:RTRS-DEMO
+members:        r1.example
+mp-members:     AS64496:RTRS-CHILD
+mbrs-by-ref:    ANY
+mnt-by:         DIFFERENTIAL-MNT
+source:         DIFFERENTIAL
+
+inet-rtr:       r1.example
+local-as:       as064496
+alias:          alias.example
+ifaddr:         192.0.2.1 masklen 24
+interface:      2001:db8::1 masklen 64
+peer:           AS64496
+mp-peer:        AS64497
+member-of:      AS64496:RTRS-DEMO
+rs-in:          ANY
+rs-out:         ANY
+admin-c:        DIFF1-TEST
+mnt-by:         DIFFERENTIAL-MNT
+source:         DIFFERENTIAL

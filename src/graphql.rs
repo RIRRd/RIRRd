@@ -1,9 +1,10 @@
 //! Bounded read-only GraphQL queries over the shared store.
 
 use std::{
+    borrow::Cow,
     collections::{HashMap, HashSet},
     future::Future,
-    sync::Arc,
+    sync::{Arc, OnceLock},
     time::Duration,
 };
 
@@ -24,6 +25,7 @@ use axum::{
     routing::post,
 };
 use tokio::{net::TcpListener, sync::Semaphore, task::spawn_blocking};
+use zeroize::Zeroize;
 
 use crate::{
     rpsl::Object,
@@ -77,6 +79,7 @@ enum Output {
     RoutePrefix,
     RouteOrigin,
     First(&'static str),
+    AsnText(&'static str),
     Repeated(&'static str),
     CommaList(&'static str),
 }
@@ -100,10 +103,46 @@ fn class_fields(class: &str) -> &'static [(&'static str, Output)] {
             ("descr", Output::Repeated("descr")),
             ("memberOf", Output::CommaList("member-of")),
         ],
-        "as-set" | "route-set" | "rtr-set" => &[
+        "as-set" | "route-set" => &[
             ("members", Output::CommaList("members")),
             ("mbrsByRef", Output::CommaList("mbrs-by-ref")),
             ("descr", Output::Repeated("descr")),
+        ],
+        "filter-set" => &[
+            ("filter", Output::First("filter")),
+            ("mpFilter", Output::First("mp-filter")),
+            ("descr", Output::Repeated("descr")),
+            ("adminC", Output::CommaList("admin-c")),
+            ("techC", Output::CommaList("tech-c")),
+        ],
+        "peering-set" => &[
+            ("peering", Output::Repeated("peering")),
+            ("mpPeering", Output::Repeated("mp-peering")),
+            ("descr", Output::Repeated("descr")),
+            ("adminC", Output::CommaList("admin-c")),
+            ("techC", Output::CommaList("tech-c")),
+        ],
+        "rtr-set" => &[
+            ("members", Output::CommaList("members")),
+            ("mpMembers", Output::CommaList("mp-members")),
+            ("mbrsByRef", Output::CommaList("mbrs-by-ref")),
+            ("descr", Output::Repeated("descr")),
+            ("adminC", Output::CommaList("admin-c")),
+            ("techC", Output::CommaList("tech-c")),
+        ],
+        "inet-rtr" => &[
+            ("localAs", Output::AsnText("local-as")),
+            ("alias", Output::CommaList("alias")),
+            ("ifaddr", Output::Repeated("ifaddr")),
+            ("interface", Output::Repeated("interface")),
+            ("peer", Output::Repeated("peer")),
+            ("mpPeer", Output::Repeated("mp-peer")),
+            ("memberOf", Output::CommaList("member-of")),
+            ("rsIn", Output::First("rs-in")),
+            ("rsOut", Output::First("rs-out")),
+            ("descr", Output::Repeated("descr")),
+            ("adminC", Output::CommaList("admin-c")),
+            ("techC", Output::CommaList("tech-c")),
         ],
         "route" | "route6" => &[
             ("origin", Output::RouteOrigin),
@@ -177,49 +216,64 @@ struct HttpLimits {
 struct VisibleObject {
     object: Object,
     text: String,
-    attributes: HashMap<String, Vec<String>>,
+    attributes: OnceLock<HashMap<String, Vec<String>>>,
 }
 
 impl VisibleObject {
-    fn new(object: Object) -> Self {
-        let text = object.public_text().into_owned();
-        let mut attributes = HashMap::<String, Vec<String>>::new();
-        let mut current: Option<(String, String)> = None;
-        for line in text.lines() {
-            if line.starts_with([' ', '\t', '+']) {
-                if let Some((_, value)) = &mut current {
-                    value.push(' ');
-                    value.push_str(line[1..].split('#').next().unwrap_or_default().trim());
-                }
-                continue;
+    fn new(mut object: Object) -> Self {
+        let text = match object.public_text() {
+            Cow::Borrowed(_) => std::mem::take(&mut object.text),
+            Cow::Owned(public) => {
+                // Keep only public text in the resolver parent. The unused raw
+                // buffer can contain maintainer credentials.
+                let mut raw = std::mem::take(&mut object.text);
+                raw.zeroize();
+                public
             }
-            if let Some((name, value)) = current.take() {
-                attributes.entry(name).or_default().push(value);
-            }
-            current = line.split_once(':').map(|(name, value)| {
-                (
-                    name.to_ascii_lowercase(),
-                    value
-                        .split('#')
-                        .next()
-                        .unwrap_or_default()
-                        .trim()
-                        .to_owned(),
-                )
-            });
-        }
-        if let Some((name, value)) = current {
-            attributes.entry(name).or_default().push(value);
-        }
+        };
         Self {
             object,
             text,
-            attributes,
+            attributes: OnceLock::new(),
         }
     }
 
+    fn attributes(&self) -> &HashMap<String, Vec<String>> {
+        self.attributes.get_or_init(|| {
+            let mut attributes = HashMap::<String, Vec<String>>::new();
+            let mut current: Option<(String, String)> = None;
+            for line in self.text.lines() {
+                if line.starts_with([' ', '\t', '+']) {
+                    if let Some((_, value)) = &mut current {
+                        value.push(' ');
+                        value.push_str(line[1..].split('#').next().unwrap_or_default().trim());
+                    }
+                    continue;
+                }
+                if let Some((name, value)) = current.take() {
+                    attributes.entry(name).or_default().push(value);
+                }
+                current = line.split_once(':').map(|(name, value)| {
+                    (
+                        name.to_ascii_lowercase(),
+                        value
+                            .split('#')
+                            .next()
+                            .unwrap_or_default()
+                            .trim()
+                            .to_owned(),
+                    )
+                });
+            }
+            if let Some((name, value)) = current {
+                attributes.entry(name).or_default().push(value);
+            }
+            attributes
+        })
+    }
+
     fn values(&self, attribute: &str) -> impl Iterator<Item = &str> {
-        self.attributes
+        self.attributes()
             .get(attribute)
             .into_iter()
             .flatten()
@@ -252,12 +306,20 @@ impl Output {
                 .rsplit_once("AS")
                 .map(|(_, asn)| FieldValue::value(format!("AS{asn}"))),
             Self::First(attribute) => parent.values(attribute).next().map(FieldValue::value),
-            Self::Repeated(attribute) => parent.attributes.get(attribute).map(|values| {
+            Self::AsnText(attribute) => parent.values(attribute).next().and_then(|value| {
+                let prefix = value.get(..2)?;
+                if !prefix.eq_ignore_ascii_case("AS") {
+                    return None;
+                }
+                let number = value.get(2..)?.parse::<u32>().ok()?;
+                Some(FieldValue::value(format!("AS{number}")))
+            }),
+            Self::Repeated(attribute) => parent.attributes().get(attribute).map(|values| {
                 FieldValue::value(Value::List(
                     values.iter().cloned().map(Value::String).collect(),
                 ))
             }),
-            Self::CommaList(attribute) => parent.attributes.get(attribute).map(|values| {
+            Self::CommaList(attribute) => parent.attributes().get(attribute).map(|values| {
                 FieldValue::value(Value::List(
                     values
                         .iter()
@@ -900,6 +962,7 @@ fn make_schema(
         if class != "aut-num" {
             let output = match class {
                 "route" | "route6" => Output::RoutePrefix,
+                "inet-rtr" => Output::Key,
                 _ => Output::First(class),
             };
             object = object.field(output.field(camel_case(class)));
@@ -995,6 +1058,10 @@ mod tests {
                 record("as-set: AS-NESTED\nmembers: AS4200000000\nsource: TEST"),
                 record("as-set: AS-DUPLICATE\nmembers: AS64496,AS-CROSS\nsource: TEST"),
                 record("as-set: AS-CROSS\nmembers: AS64500\nsource: TEST"),
+                record("filter-set: AS64496:FLTR-DEMO\nfilter: AS64496\nmp-filter: afi ipv6 ANY\nsource: TEST"),
+                record("peering-set: AS64496:PRNG-DEMO\npeering: AS64496\npeering: AS64497\nsource: TEST"),
+                record("rtr-set: AS64496:RTRS-DEMO\nmembers: r1.example\nmp-members: AS64496:RTRS-CHILD\nmbrs-by-ref: ANY\nsource: TEST"),
+                record("inet-rtr: r1.example\nlocal-as: as064496\nalias: alias.example\nmember-of: AS64496:RTRS-DEMO\nsource: TEST"),
             ],
         )?;
         store.replace_source(
@@ -1199,6 +1266,28 @@ mod tests {
         ] {
             assert!(!schema.execute(query).await.errors.is_empty(), "{query}");
         }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn exposes_policy_and_router_fields_with_canonical_router_identity() -> Result<()> {
+        let (_directory, schema) = test_schema()?;
+        let response = schema.execute(r#"{
+            filter: rpslObjects(rpslPk:["AS64496:FLTR-DEMO"],sources:["TEST"]) { ... on RPSLFilterSet { filter mpFilter } }
+            peering: rpslObjects(rpslPk:["AS64496:PRNG-DEMO"],sources:["TEST"]) { ... on RPSLPeeringSet { peering mpPeering } }
+            routers: rpslObjects(rpslPk:["AS64496:RTRS-DEMO"],sources:["TEST"]) { ... on RPSLRtrSet { members mpMembers mbrsByRef } }
+            router: rpslObjects(rpslPk:["r1.example"],sources:["TEST"]) { ... on RPSLInetRtr { inetRtr localAs alias memberOf } }
+        }"#).await;
+        assert!(response.errors.is_empty(), "{:?}", response.errors);
+        assert_eq!(
+            response.data.into_json()?,
+            json!({
+                "filter":[{"filter":"AS64496","mpFilter":"afi ipv6 ANY"}],
+                "peering":[{"peering":["AS64496","AS64497"],"mpPeering":null}],
+                "routers":[{"members":["R1.EXAMPLE"],"mpMembers":["AS64496:RTRS-CHILD"],"mbrsByRef":["ANY"]}],
+                "router":[{"inetRtr":"R1.EXAMPLE","localAs":"AS64496","alias":["ALIAS.EXAMPLE"],"memberOf":["AS64496:RTRS-DEMO"]}]
+            })
+        );
         Ok(())
     }
 
