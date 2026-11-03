@@ -113,6 +113,9 @@ prevents concurrent writers; daemon restarts revalidate persistent cached data.
   out during TLS; the two later independent IPv6 checks succeeded. No DNS or
   host routing change was needed. The Let's Encrypt certificate expires
   1 February 2027; Caddy automatic renewal remains active.
+- Existing parser fuzz binaries (parser sources unchanged by this continuation)
+  completed **417,469 RPSL** and **203,956 NRTMv3** executions in separate 16-second
+  smoke runs, with no crash. Corpora ran in temporary memory storage outside Git.
 - Publication filename/blob checks and Gitleaks 8.30.1 tree/history scans passed.
   Runtime datasets, captured responses, cache, private keys and credentials are
   outside Git. The repository remains private, and main is unchanged. Deploy-key
