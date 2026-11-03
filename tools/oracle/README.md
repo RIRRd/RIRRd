@@ -1,8 +1,8 @@
 # IRRd 4.5.4 WHOIS test oracle
 
 This Docker Compose stack starts the pinned upstream daemon with PostgreSQL,
-Redis and the repository's synthetic RPSL fixture. WHOIS listens on host
-loopback only. The HTTP listener stays inside the reference container. The
+Redis and the repository's synthetic RPSL fixture. Both WHOIS transports
+listen on host loopback only. The
 database credentials are local test values. Each project gets its own
 PostgreSQL volume and Compose network.
 
@@ -35,6 +35,7 @@ Create a TOML configuration in a temporary directory for the Rust daemon.
 database = "oracle-candidate.redb"
 sources = ["DIFFERENTIAL"]
 listen = "127.0.0.1:9043"
+http_listen = "127.0.0.1:9080"
 max_connections = 4
 io_timeout_seconds = 5
 max_snapshot_bytes = 65536
@@ -51,7 +52,8 @@ cargo run --locked -- --config "TEMP_DIR/irrd.toml" server
 In another terminal, run the [differential check](../../docs/benchmarks/METHODOLOGY.md#running-exact-key-whois-differential-checks).
 
 ```sh
-python tools/differential_whois.py --reference 127.0.0.1:8043 --candidate 127.0.0.1:9043 --allow-filtered-auth-omission
+python tools/differential_whois.py --reference 127.0.0.1:8043 --candidate 127.0.0.1:9043 --allow-filtered-auth-omission --normalize-attribute-padding
+python tools/differential_whois.py --http --reference 127.0.0.1:8000 --candidate 127.0.0.1:9080 --allow-filtered-auth-omission --normalize-attribute-padding
 ```
 
 The default corpus includes exact object keys (`!m`), exact IPv4 and IPv6

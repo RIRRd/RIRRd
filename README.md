@@ -40,7 +40,7 @@ Bare, route and inverse lookups return at most 16 objects. A single-AS origin lo
 | `database` | redb file. A relative path is resolved against the TOML file's parent. |
 | `sources` | Ordered allowlist for imports and WHOIS queries, with 1–256 distinct uppercase names. |
 | `listen` | TCP socket address. The example binds IPv4 loopback on port 4343. |
-| `http_listen` | Optional loopback HTTP address for read-only GraphQL. |
+| `http_listen` | Optional loopback HTTP address for GraphQL and HTTP WHOIS. |
 | `max_connections` | Concurrent client limit, 1–4096. |
 | `max_connections_per_ip` | Optional concurrent WHOIS limit per client IP, at most the global limit. |
 | `connection_limit_exempt_ips` | Optional list of up to 256 exact IPv4 or IPv6 addresses exempt from the per-IP limit. The global limit still applies. |
@@ -70,6 +70,10 @@ rust-irrd --config private/recovery.toml database verify
 ```
 
 Set the recovery configuration's `database` to the new file path. Preserve the configuration and external policy files separately, and use a release compatible with the stored schema.
+
+## HTTP WHOIS
+
+With `http_listen` enabled, send a URL-encoded WHOIS command in the `q` parameter to `GET /v1/whois/`. The endpoint returns plain text for matches and HTTP 204 for no result. NRTMv3 journal downloads require TCP and the configured peer ACL.
 
 ## GraphQL
 

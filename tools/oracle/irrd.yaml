@@ -12,7 +12,7 @@ irrd:
     roa_source: null
   server:
     http:
-      interface: 127.0.0.1
+      interface: 0.0.0.0
       port: 8000
       url: http://127.0.0.1:8000/
       workers: 1

@@ -922,7 +922,7 @@ pub async fn serve(
     timeout: Duration,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> Result<()> {
-    let schema = make_schema(store.clone(), sources, authoritative_sources)?;
+    let schema = make_schema(store.clone(), sources.clone(), authoritative_sources)?;
     let mut app = Router::new()
         .route("/graphql", post(execute))
         .route("/graphql/", post(execute))
@@ -935,7 +935,8 @@ pub async fn serve(
             bound_http,
         ))
         .with_state(schema)
-        .layer(Extension(store.clone()));
+        .layer(Extension(store.clone()))
+        .merge(crate::whois::http_router(store.clone(), sources, timeout));
     if let Some(update_sources) = update_sources {
         app = app.merge(crate::submission_http::router(
             store,

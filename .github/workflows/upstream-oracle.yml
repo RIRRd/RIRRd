@@ -35,6 +35,7 @@ jobs:
           database = "irrd-oracle-candidate.redb"
           sources = ["DIFFERENTIAL"]
           listen = "127.0.0.1:9043"
+          http_listen = "127.0.0.1:9080"
           max_connections = 8
           io_timeout_seconds = 5
           max_snapshot_bytes = 65536
@@ -45,13 +46,15 @@ jobs:
           candidate_pid=$!
           trap 'kill "$candidate_pid" 2>/dev/null || true; wait "$candidate_pid" 2>/dev/null || true' EXIT
           for attempt in {1..50}; do
-            if grep -q 'WHOIS listening' "$RUNNER_TEMP/irrd-candidate.log"; then
+            if grep -q 'WHOIS listening' "$RUNNER_TEMP/irrd-candidate.log" && grep -q 'GraphQL listening' "$RUNNER_TEMP/irrd-candidate.log"; then
               break
             fi
             kill -0 "$candidate_pid"
             sleep 0.1
           done
           python3 tools/differential_whois.py --reference 127.0.0.1:8043 --candidate 127.0.0.1:9043 --allow-filtered-auth-omission --normalize-attribute-padding
+          curl --silent --show-error --fail --retry 10 --retry-all-errors --retry-delay 1 'http://127.0.0.1:8000/v1/whois/?q=%21gAS64496' >/dev/null
+          python3 tools/differential_whois.py --http --reference 127.0.0.1:8000 --candidate 127.0.0.1:9080 --allow-filtered-auth-omission --normalize-attribute-padding
       - name: Print oracle logs on failure
         if: failure()
         run: docker compose -p irrd-454-oracle -f tools/oracle/compose.yaml logs --no-color

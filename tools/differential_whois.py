@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
-"""Compare IRRd-style WHOIS responses from two explicit TCP endpoints."""
+"""Compare IRRd-style WHOIS responses from two TCP or HTTP endpoints."""
 
 import argparse
+from http.client import HTTPConnection, HTTPException
 import math
 from pathlib import Path
 import re
 import socket
 import sys
 from time import monotonic
+from urllib.parse import urlencode
 
 
 DEFAULT_CASES = (
@@ -124,6 +126,24 @@ def frame(raw):
     return "A", utf8_payload(body)
 
 
+def exchange_http(address, query, timeout):
+    conn = HTTPConnection(*address, timeout=timeout)
+    try:
+        params = urlencode({"q": query})
+        conn.request("GET", f"/v1/whois/?{params}")
+        response = conn.getresponse()
+        body = response.read(MAX_RESPONSE_BYTES + 1)
+        if len(body) > MAX_RESPONSE_BYTES:
+            raise ValueError("response exceeded byte limit")
+        if response.status == 204 and not body:
+            return "D", b""
+        if response.status == 200 and body and response.headers.get_content_type() == "text/plain":
+            return "A", utf8_payload(body)
+        raise ValueError(f"unexpected HTTP {response.status} response")
+    finally:
+        conn.close()
+
+
 def utf8_payload(body):
     try:
         body.decode("utf-8")
@@ -152,6 +172,7 @@ def main():
     parser.add_argument("--reference", type=endpoint, required=True, help="pinned upstream HOST:PORT")
     parser.add_argument("--candidate", type=endpoint, required=True, help="Rust daemon HOST:PORT")
     parser.add_argument("--corpus", type=Path, help="ASCII STATUS<TAB>!m/!r/!g/!6 query file")
+    parser.add_argument("--http", action="store_true", help="compare HTTP WHOIS status and body")
     parser.add_argument("--timeout", type=timeout_seconds, default=5.0, help="seconds per endpoint and case")
     parser.add_argument(
         "--normalize-attribute-padding",
@@ -168,14 +189,19 @@ def main():
         cases = read_cases(args.corpus) if args.corpus else DEFAULT_CASES
     except (OSError, ValueError) as error:
         parser.error(str(error))
+    if args.http and any(expected not in {"A", "D"} for expected, _ in cases):
+        parser.error("HTTP comparison requires success or no-result cases")
 
     mismatches = 0
     for expected, query in cases:
         results = []
         for role, address in (("reference", args.reference), ("candidate", args.candidate)):
             try:
-                status, body = frame(exchange(address, query, args.timeout))
-            except (OSError, ValueError) as error:
+                if args.http:
+                    status, body = exchange_http(address, query, args.timeout)
+                else:
+                    status, body = frame(exchange(address, query, args.timeout))
+            except (OSError, HTTPException, ValueError) as error:
                 print(f"{query!r}: {role} failed: {error}", file=sys.stderr)
                 continue
             if status != expected:
@@ -195,7 +221,8 @@ def main():
                 file=sys.stderr,
             )
 
-    print(f"{len(cases) - mismatches}/{len(cases)} WHOIS cases matched")
+    transport = "HTTP" if args.http else "TCP"
+    print(f"{len(cases) - mismatches}/{len(cases)} {transport} WHOIS cases matched")
     return 1 if mismatches else 0
 
 

@@ -7,7 +7,7 @@ publish = false
 [dependencies]
 anyhow = "1"
 async-graphql = { version = "=7.2.1", default-features = false, features = ["dynamic-schema"] }
-axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio"] }
 base64 = "0.22"
 bcrypt = { version = "=0.19.3", default-features = false, features = ["std", "zeroize"] }
 clap = { version = "4", features = ["derive"] }

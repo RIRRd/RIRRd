@@ -1,12 +1,20 @@
 use std::{
     collections::{HashMap, HashSet},
     fmt::Write as _,
-    net::IpAddr,
+    net::{IpAddr, Ipv4Addr},
     sync::{Arc, Weak},
     time::Duration,
 };
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
+use axum::{
+    Router,
+    extract::{Query as HttpQuery, Request, State},
+    http::StatusCode,
+    response::{IntoResponse, Response},
+    routing::get,
+};
+use serde::Deserialize;
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     net::{TcpListener, TcpStream},
@@ -21,6 +29,8 @@ use crate::{
 };
 
 const MAX_QUERY_BYTES: u64 = 512;
+const MAX_ENCODED_HTTP_QUERY_BYTES: usize = MAX_QUERY_BYTES as usize * 3 + 32;
+const MAX_HTTP_LOOKUPS: usize = 8;
 const MAX_RESULTS: usize = 16;
 const MAX_SESSION_QUERIES: usize = 1024;
 const MAX_NRTM_OPERATIONS: usize = 1024;
@@ -116,6 +126,210 @@ enum Query {
     },
     Nrtm3Sources,
     Version,
+}
+
+impl Query {
+    fn uses_irrd_framing(&self) -> bool {
+        match self {
+            Self::Exact(_) | Self::Nrtm3 { .. } | Self::Nrtm3Sources => false,
+            Self::Route { irrd, .. } | Self::Inverse { irrd, .. } => *irrd,
+            _ => true,
+        }
+    }
+}
+
+#[derive(Clone)]
+struct HttpWhois {
+    client: Client,
+    store: Arc<Store>,
+    slots: Arc<Semaphore>,
+    deadline: Duration,
+}
+
+#[derive(Deserialize)]
+struct HttpParameters {
+    q: Option<String>,
+}
+
+/// Serve unframed WHOIS results on the optional HTTP listener. NRTM transfer
+/// privileges belong only to the separate TCP listener and its peer ACL.
+pub fn http_router(store: Arc<Store>, sources: Vec<String>, deadline: Duration) -> Router {
+    let state = HttpWhois {
+        client: Client {
+            access: Arc::new(Access {
+                sources: sources.into(),
+                nrtm3: HashMap::new(),
+            }),
+            peer: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+        },
+        store,
+        slots: Arc::new(Semaphore::new(MAX_HTTP_LOOKUPS)),
+        deadline,
+    };
+    Router::new()
+        .route("/v1/whois/", get(http_query))
+        .with_state(state)
+}
+
+async fn http_query(State(state): State<HttpWhois>, request: Request) -> Response {
+    let invalid_query = (StatusCode::BAD_REQUEST, "Invalid or unsupported query");
+    if request
+        .uri()
+        .query()
+        .is_some_and(|query| query.len() > MAX_ENCODED_HTTP_QUERY_BYTES)
+    {
+        return invalid_query.into_response();
+    }
+    let Ok(HttpQuery(params)) = HttpQuery::<HttpParameters>::try_from_uri(request.uri()) else {
+        return invalid_query.into_response();
+    };
+    let Some(query) = params.q else {
+        return (
+            StatusCode::BAD_REQUEST,
+            "Missing required query parameter \"q\"",
+        )
+            .into_response();
+    };
+    if query.contains('\0') {
+        return (
+            StatusCode::BAD_REQUEST,
+            "Queries may not contain null bytes",
+        )
+            .into_response();
+    }
+    if query.len() > MAX_QUERY_BYTES as usize || query.chars().any(char::is_control) {
+        return invalid_query.into_response();
+    }
+    let Ok(permit) = state.slots.try_acquire_owned() else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    let worker = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        let _view = state.store.query_gate().blocking_read();
+        execute_http(query.trim(), &state.store, &state.client)
+    });
+    match timeout(state.deadline, worker).await {
+        Ok(Ok(Ok((StatusCode::NO_CONTENT, _)))) => StatusCode::NO_CONTENT.into_response(),
+        Ok(Ok(Ok((status, body)))) => (status, body).into_response(),
+        Ok(Ok(Err(error))) => {
+            tracing::error!(%error, "HTTP WHOIS lookup failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "An internal error occurred while processing this query.",
+            )
+                .into_response()
+        }
+        Ok(Err(_)) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        Err(_) => StatusCode::GATEWAY_TIMEOUT.into_response(),
+    }
+}
+
+fn execute_http(query: &str, store: &Store, client: &Client) -> Result<(StatusCode, String)> {
+    let configured = &client.access.sources;
+    let mut sources = configured.clone();
+    let mut persistent = false;
+    let invalid = || {
+        (
+            StatusCode::BAD_REQUEST,
+            "Invalid or unsupported query".into(),
+        )
+    };
+    let no_content = || (StatusCode::NO_CONTENT, String::new());
+    let Some(prepared) = ripe_modifiers(query, configured, &mut sources, &mut persistent) else {
+        return Ok(invalid());
+    };
+    if let Some(command) = session_command(prepared) {
+        return Ok(match command {
+            SessionCommand::ListSources => (StatusCode::OK, sources.join(",")),
+            SessionCommand::Persistent
+            | SessionCommand::ListExclusions
+            | SessionCommand::Identify
+            | SessionCommand::Noop => no_content(),
+            SessionCommand::SelectSources(names) if select_sources(names, configured).is_some() => {
+                no_content()
+            }
+            SessionCommand::Exclude(names) if parse_exclusions(names).is_some() => no_content(),
+            _ => invalid(),
+        });
+    }
+    if let Some(value) = prepared.strip_prefix("!t") {
+        return Ok(
+            if value
+                .trim()
+                .parse::<u16>()
+                .is_ok_and(|value| (1..=1000).contains(&value))
+            {
+                no_content()
+            } else {
+                invalid()
+            },
+        );
+    }
+    if prepared.is_empty() && query.starts_with('-') {
+        return Ok(no_content());
+    }
+    let Some(query) = parse_query_text(prepared) else {
+        return Ok(invalid());
+    };
+    if matches!(&query, Query::Nrtm3 { .. }) {
+        return Ok((StatusCode::BAD_REQUEST, "Access denied".into()));
+    }
+    let irrd = query.uses_irrd_framing();
+    let response = execute(query, store, &sources, &[], client)?;
+    unframe_http(response, irrd)
+}
+
+fn unframe_http(response: String, irrd: bool) -> Result<(StatusCode, String)> {
+    // The shared resolver generates these exact transport envelopes. Retain
+    // its payload while applying the HTTP endpoint's status and body rules.
+    if irrd {
+        if let Some(error) = response.strip_prefix("F ") {
+            return Ok((
+                StatusCode::BAD_REQUEST,
+                error.trim_end_matches('\n').to_owned(),
+            ));
+        }
+        return match response.as_str() {
+            "C\n" | "D\n" => Ok((StatusCode::NO_CONTENT, String::new())),
+            response => {
+                let (length, framed_body) = response
+                    .strip_prefix('A')
+                    .and_then(|response| response.split_once('\n'))
+                    .context("invalid internal WHOIS success header")?;
+                let body = framed_body
+                    .strip_suffix("\nC\n")
+                    .context("invalid internal WHOIS success trailer")?;
+                ensure!(
+                    length.parse::<usize>()? == body.len() + 1,
+                    "invalid internal WHOIS byte count"
+                );
+                Ok((StatusCode::OK, body.to_owned()))
+            }
+        };
+    }
+    if let Some(error) = response.strip_prefix("%% ERROR: ") {
+        return Ok((
+            StatusCode::BAD_REQUEST,
+            error.trim_end_matches('\n').to_owned(),
+        ));
+    }
+    match response.as_str() {
+        "% No entries found\r\n" | "%  No entries found for the selected source(s).\n\n\n" => {
+            Ok((StatusCode::NO_CONTENT, String::new()))
+        }
+        "% Too many results\r\n" => Ok((StatusCode::BAD_REQUEST, "Too many results".into())),
+        response => {
+            let body = if let Some(body) = response.strip_suffix("\n\n\n") {
+                body.to_owned()
+            } else {
+                response
+                    .strip_suffix("\r\n\r\n")
+                    .context("invalid internal WHOIS response terminator")?
+                    .replace("\r\n", "\n")
+            };
+            Ok((StatusCode::OK, body))
+        }
+    }
 }
 
 pub async fn serve(
@@ -385,11 +599,7 @@ async fn lookup(
 ) -> Option<(String, ConnectionPermit)> {
     let nrtm = matches!(&query, Query::Nrtm3 { .. });
     let discovery = matches!(&query, Query::Nrtm3Sources);
-    let irrd = match &query {
-        Query::Exact(_) | Query::Nrtm3 { .. } | Query::Nrtm3Sources => false,
-        Query::Route { irrd, .. } | Query::Inverse { irrd, .. } => *irrd,
-        _ => true,
-    };
+    let irrd = query.uses_irrd_framing();
     let lookup = tokio::task::spawn_blocking(move || {
         let _view = store.query_gate().blocking_read();
         let result = execute(query, &store, &sources, &excluded, &client);
@@ -917,6 +1127,108 @@ TEST = ["127.0.0.1"]
             assert_eq!(response, expected);
         }
         let _ = stop.send(true);
+        timeout(Duration::from_secs(3), server).await???;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn http_whois_returns_unframed_results_without_mirror_privileges() -> Result<()> {
+        use crate::nrtm3::{Kind, Operation};
+
+        let directory = tempfile::tempdir()?;
+        let store = Arc::new(Store::open(&directory.path().join("http-whois.redb"))?);
+        let writer = Arc::clone(&store);
+        tokio::task::spawn_blocking(move || -> Result<()> {
+            let record = |text| crate::rpsl::parse(text).map_err(anyhow::Error::msg);
+            writer.replace_source(
+                "TEST",
+                [
+                    record("aut-num: AS64496\r\nsource: TEST\r\n"),
+                    record("mntner: TEST-MNT\nauth: BCRYPT-PW hidden-value\n+ hidden-fold\nsource: TEST"),
+                ],
+            )?;
+            writer.apply_nrtm3(
+                "TEST",
+                (11, 11),
+                Some(10),
+                [Ok(Operation {
+                    kind: Kind::Add,
+                    serial: 11,
+                    object: record("aut-num: AS64497\nsource: TEST")?,
+                })],
+            )?;
+            writer.replace_source(
+                "OTHER",
+                [record("route: 192.0.2.0/24\norigin: AS64496\nsource: OTHER")],
+            )?;
+            Ok(())
+        })
+        .await??;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let (stop, stopped) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                http_router(
+                    store,
+                    vec!["TEST".into(), "OTHER".into()],
+                    Duration::from_secs(2),
+                ),
+            )
+            .with_graceful_shutdown(async {
+                let _ = stopped.await;
+            })
+            .await
+        });
+
+        for (query, status, expected) in [
+            ("", 400, "Missing required query parameter \"q\""),
+            (
+                "?q=%21maut-num%2Cas64496",
+                200,
+                "aut-num: AS64496\nsource: TEST",
+            ),
+            ("?q=AS64496", 200, "aut-num: AS64496\nsource: TEST"),
+            (
+                "?q=%21mmntner%2CTEST-MNT",
+                200,
+                "mntner: TEST-MNT\nsource: TEST",
+            ),
+            (
+                "?q=-s+OTHER+-x+192.0.2.0%2F24",
+                200,
+                "route: 192.0.2.0/24\norigin: AS64496\nsource: OTHER",
+            ),
+            ("?q=%21maut-num%2CAS64500", 204, ""),
+            ("?q=AS64500", 204, ""),
+            ("?q=%21t10", 204, ""),
+            ("?q=%21t1001", 400, "Invalid or unsupported query"),
+            ("?q=%21%21", 204, ""),
+            ("?q=%21s-lc", 200, "TEST,OTHER"),
+            ("?q=%21v%00", 400, "Queries may not contain null bytes"),
+            ("?q=%21v%0A%21v", 400, "Invalid or unsupported query"),
+            ("?q=-g+TEST%3A3%3A11-LAST", 400, "Access denied"),
+            ("?q=-q+sources", 200, "TEST:3:N:11-11\nOTHER:3:N:Unknown"),
+        ] {
+            let mut socket = TcpStream::connect(address).await?;
+            let request = format!(
+                "GET /v1/whois/{query} HTTP/1.1\r\nHost: localhost\r\nX-Forwarded-For: 127.0.0.1\r\nConnection: close\r\n\r\n"
+            );
+            socket.write_all(request.as_bytes()).await?;
+            let mut response = String::new();
+            timeout(Duration::from_secs(3), socket.read_to_string(&mut response)).await??;
+            let (headers, body) = response
+                .split_once("\r\n\r\n")
+                .context("malformed HTTP response")?;
+            assert!(
+                headers.starts_with(&format!("HTTP/1.1 {status} ")),
+                "{headers}"
+            );
+            assert_eq!(body, expected, "{query}");
+        }
+        let _ = stop.send(());
         timeout(Duration::from_secs(3), server).await???;
         Ok(())
     }
