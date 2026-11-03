@@ -1,0 +1,26 @@
+{
+  "build": "debug",
+  "binary_sha256": "64adbdf556944668399f2db5de35cda8fafe49dc90c1b6f02d24550d430aabd9",
+  "dataset_sha256": "5779dd3f41de49b1b5dd1055683baf7d85d275ecd5288c1743ebe9514fdffbe2",
+  "source": "BENCH",
+  "objects": 10000,
+  "initial": {
+    "wall_seconds": 2.1857440000021597,
+    "daemon_seconds": 1.2177361,
+    "database_file_bytes": 4747264
+  },
+  "replacement": {
+    "wall_seconds": 3.2932088000088697,
+    "daemon_seconds": 2.9968475999999997,
+    "database_file_bytes": 135278592
+  },
+  "compaction": {
+    "compacted": true,
+    "file_bytes_after": 11837440,
+    "file_bytes_before": 135278592
+  },
+  "compaction_wall_seconds": 0.9994649000000209,
+  "verified": {
+    "objects": 10000
+  }
+}

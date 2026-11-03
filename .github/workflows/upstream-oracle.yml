@@ -1,0 +1,50 @@
+name: IRRd upstream oracle
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '45 5 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  whois:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - run: cargo +stable build --locked --release
+      - name: Start pinned upstream
+        run: docker compose -p irrd-454-oracle -f tools/oracle/compose.yaml up --build -d --wait --wait-timeout 120
+      - name: Compare exact WHOIS transcripts
+        shell: bash
+        run: |
+          config="$RUNNER_TEMP/irrd-oracle-candidate.toml"
+          cat > "$config" <<'TOML'
+          database = "irrd-oracle-candidate.redb"
+          sources = ["DIFFERENTIAL"]
+          listen = "127.0.0.1:9043"
+          max_connections = 8
+          io_timeout_seconds = 5
+          max_snapshot_bytes = 65536
+          TOML
+          bin=target/release/rust-irrd
+          "$bin" --config "$config" import snapshot --source DIFFERENTIAL --file docs/compatibility/differential-whois.rpsl
+          "$bin" --config "$config" server 2>"$RUNNER_TEMP/irrd-candidate.log" &
+          candidate_pid=$!
+          trap 'kill "$candidate_pid" 2>/dev/null || true; wait "$candidate_pid" 2>/dev/null || true' EXIT
+          for attempt in {1..50}; do
+            if grep -q 'WHOIS listening' "$RUNNER_TEMP/irrd-candidate.log"; then
+              break
+            fi
+            kill -0 "$candidate_pid"
+            sleep 0.1
+          done
+          python3 tools/differential_whois.py --reference 127.0.0.1:8043 --candidate 127.0.0.1:9043 --allow-filtered-auth-omission --normalize-attribute-padding
+      - name: Print oracle logs on failure
+        if: failure()
+        run: docker compose -p irrd-454-oracle -f tools/oracle/compose.yaml logs --no-color
+      - name: Remove isolated oracle
+        if: always()
+        run: docker compose -p irrd-454-oracle -f tools/oracle/compose.yaml down --volumes

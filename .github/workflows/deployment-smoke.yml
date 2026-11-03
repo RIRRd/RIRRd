@@ -1,0 +1,53 @@
+name: Deployment smoke test
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/deployment-smoke.yml'
+      - '.dockerignore'
+      - 'Dockerfile'
+      - 'deploy/**'
+      - 'Cargo.*'
+      - 'src/**'
+      - 'examples/example.rpsl'
+
+permissions:
+  contents: read
+
+jobs:
+  compose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Build and import a snapshot
+        run: |
+          docker compose -p rust-irrd-smoke -f deploy/compose.yaml config --quiet
+          docker compose -p rust-irrd-smoke -f deploy/compose.yaml build
+          docker compose -p rust-irrd-smoke -f deploy/compose.yaml run --rm --no-deps \
+            --volume "$PWD/examples/example.rpsl:/snapshot.rpsl:ro" \
+            irrd import snapshot --source EXAMPLE --file /snapshot.rpsl
+      - name: Test a live query and verify after shutdown
+        run: |
+          docker compose -p rust-irrd-smoke -f deploy/compose.yaml up -d --wait --wait-timeout 90
+          python3 - <<'PY'
+          from socket import create_connection
+
+          with create_connection(("127.0.0.1", 4343), timeout=5) as socket:
+              socket.sendall(b"!mroute,192.0.2.0/24AS64496\n")
+              with socket.makefile("rb") as reply:
+                  header = reply.readline(32)
+                  assert header.startswith(b"A"), header
+                  body = reply.read(int(header[1:]))
+                  assert b"192.0.2.0/24" in body
+                  assert reply.read(3) == b"C\n"
+          PY
+          docker compose -p rust-irrd-smoke -f deploy/compose.yaml stop
+          docker compose -p rust-irrd-smoke -f deploy/compose.yaml run --rm --no-deps irrd database verify
+      - name: Print daemon logs on failure
+        if: failure()
+        run: docker compose -p rust-irrd-smoke -f deploy/compose.yaml logs --no-color
+      - name: Remove isolated test data
+        if: always()
+        run: docker compose -p rust-irrd-smoke -f deploy/compose.yaml down --volumes
