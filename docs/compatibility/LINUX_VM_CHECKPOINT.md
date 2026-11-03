@@ -1,3 +1,7 @@
+Latest continuation: [continuous mirroring and expanded console](CONTINUOUS_MIRROR_CHECKPOINT.md)
+activated five incremental feeds on 3 November 2026. The measurements below are
+the earlier Linux checkpoint and are retained as historical evidence.
+
 # Linux VM checkpoint — 3 November 2026
 
 Later work: [upgraded VM checkpoint](UPGRADED_VM_CHECKPOINT.md) and [100k-object comparison / GraphQL checkpoint](../benchmarks/LINUX_SYNTHETIC_100K.md). The measurements below remain the original smaller-host historical sample.

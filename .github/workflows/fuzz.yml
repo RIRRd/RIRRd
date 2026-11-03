@@ -1,4 +1,4 @@
-name: RPSL fuzzing
+name: RPSL and NRTMv3 fuzzing
 on:
   workflow_dispatch:
   schedule:

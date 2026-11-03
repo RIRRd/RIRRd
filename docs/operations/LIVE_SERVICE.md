@@ -177,8 +177,8 @@ shown in the private refresh status/journal:
 python3 /usr/local/lib/rirrd-live/refresh.py --resume GENERATION_NAME
 ```
 
-Resume verifies the candidate database, exact catalog and executable inputs, and
-completed snapshot hashes; it retries only unfinished feeds. It never modifies the
+Resume checks the exact catalog and recorded build fingerprint, probes the candidate
+count and verifies completed snapshot hashes; it retries only unfinished feeds. It never modifies the
 serving generation and refuses changed catalog/binary inputs. The final complete
 integrity/count check and activation health checks still run. Runtime files and
 checkpoint payloads remain outside Git. Unit/integration checks simulate failure
@@ -207,3 +207,15 @@ Private staging may use a larger memory budget to keep verification's file cache
 resident. This is separate from the public daemon's 2-GiB ceiling. RSS, charged
 cgroup memory and whole-host RAM are different scopes; source import can populate
 filesystem cache that is not charged to the query service.
+
+
+For an explicitly reviewed compatible runtime change during private resume, pass
+`--previous-binary /private/original-build` to `prepare.py --resume`. The original
+hash must match the saved build inputs; the source catalog and normalized inputs
+must still match. The original import fingerprint is preserved separately from
+the new final-verification runtime. The complete post-catch-up verification is
+mandatory; `database count` explicitly does not establish integrity. A prepared
+activation can reuse that verification only if both the runtime fingerprint and
+complete database fingerprint still match. If the runtime differs, it must run
+a full integrity/count verification before switching. Daily bootstrap downloads
+use a 60-second network-only CLI deadline; local indexing starts after staging.
