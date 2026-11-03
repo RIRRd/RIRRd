@@ -9,6 +9,8 @@ parser.add_argument('--reference', default='http://127.0.0.1:8000')
 parser.add_argument('--candidate', default='http://127.0.0.1:9080')
 args = parser.parse_args()
 owner, parent = 'oracle owner proof', 'oracle parent proof'
+# Deterministic synthetic bcrypt vector, not a service credential.
+SYNTHETIC_HASH = '$2b$04$abcdefghijklmnopqrstuubqfXErTEG3oR7IEslzxdJFrAj1MAcjK'
 checks = 0
 
 def check(method, text, passwords, expected):
@@ -23,7 +25,7 @@ def check(method, text, passwords, expected):
         with urlopen(req, timeout=15) as response:
             body = response.read(262145)
         assert len(body) <= 262144
-        assert all(secret.encode() not in body for secret in [owner, parent, 'wrong proof'])
+        assert all(secret.encode() not in body for secret in [owner, parent, 'wrong proof', SYNTHETIC_HASH])
         report = json.loads(body)
         assert report['summary'][expected] == 1, f'{label}: case {checks+1} expected {expected}'
     checks += 1
@@ -54,4 +56,12 @@ check('POST',router,[parent],'failed')
 check('POST',router+'alias: alias.example\n',[owner],'successful_modify')
 check('DELETE',router,[parent],'failed')
 check('DELETE',router,[owner],'successful_delete')
+dummy = 'mntner: OWNER-MNT\nadmin-c: CT1-AUTH\nupd-to: oracle@example.invalid\nauth: BCRYPT-PW DummyValue\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\n'
+check('POST',dummy,['wrong proof'],'failed')
+check('POST',dummy,[owner,parent],'failed')
+check('POST',dummy,[owner,owner],'successful_modify')
+check('POST',dummy+f'auth: BCRYPT-PW {SYNTHETIC_HASH}\n',[owner],'failed')
+check('POST',dummy.replace('OWNER-MNT','NEW-MNT'),[owner],'failed')
+check('POST',dummy,[owner],'successful_modify')
+check('POST',dummy+'auth: BCRYPT-PW DummyValue\n',[owner],'successful_modify')
 print(f'{checks} authoritative HTTP authorization cases match pinned IRRd (both implementations checked)')

@@ -1779,3 +1779,155 @@ fn authoritative_policy_sets_and_routers_preserve_authorization_and_atomicity() 
     successful(submit(contact, "owner proof\n", true));
     successful(cli(&config).args(["database", "verify"]).output().unwrap());
 }
+
+#[test]
+fn maintainer_dummy_updates_rotate_hashes_only_after_authentication() {
+    let workspace = tempfile::tempdir().unwrap();
+    let config = workspace.path().join("irrd.toml");
+    fs::write(&config,"database = \"test.redb\"\nsources = [\"TEST\"]\nauthoritative_sources = [\"TEST\"]\nlisten = \"127.0.0.1:0\"\nhttp_listen = \"127.0.0.1:0\"\nhttp_authoritative_updates = true\nmax_connections = 4\nio_timeout_seconds = 2\nmax_snapshot_bytes = 65536\n[nrtm3_serve]\nTEST = [\"127.0.0.1\"]\n").unwrap();
+    let hash = bcrypt::hash_with_salt("dummy test proof", 4, [15; 16]).unwrap();
+    let maintainer = |auth: &str| {
+        format!(
+            "mntner: TEST-MNT\nadmin-c: TC1-TEST\nupd-to: test@example.net\nauth: BCRYPT-PW {auth}\nmnt-by: TEST-MNT\nsource: TEST\n"
+        )
+    };
+    let snapshot = workspace.path().join("snapshot.rpsl");
+    fs::write(
+        &snapshot,
+        format!(
+            "{}\nperson: Test Contact\nnic-hdl: TC1-TEST\nmnt-by: TEST-MNT\nsource: TEST\n",
+            maintainer(&hash.to_string())
+        ),
+    )
+    .unwrap();
+    successful(
+        cli(&config)
+            .args([
+                "import",
+                "snapshot",
+                "--source",
+                "TEST",
+                "--authoritative-restore",
+                "--file",
+            ])
+            .arg(&snapshot)
+            .output()
+            .unwrap(),
+    );
+    let submission = workspace.path().join("submission.rpsl");
+    let submit = |body: &str, passwords: &str| {
+        fs::write(&submission, body).unwrap();
+        let mut child = cli(&config)
+            .args(["update", "--source", "TEST", "--file"])
+            .arg(&submission)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(passwords.as_bytes())
+            .unwrap();
+        child.wait_with_output().unwrap()
+    };
+    let dummy = maintainer("DummyValue");
+    for (body, proof) in [
+        (dummy.clone(), "wrong proof\n"),
+        (dummy.clone(), "dummy test proof\nsecond proof\n"),
+        (
+            format!("{dummy}auth: BCRYPT-PW {hash}\n"),
+            "dummy test proof\n",
+        ),
+        (dummy.replace("TEST-MNT", "NEW-MNT"), "dummy test proof\n"),
+        (
+            format!(
+                "{dummy}\nperson: Bad Contact\naddress: Road\nphone: +1 202 555 0100\ne-mail: noc@example.net\nnic-hdl: BAD-TEST\nmnt-by: MISSING-MNT\nsource: TEST\n"
+            ),
+            "dummy test proof\n",
+        ),
+    ] {
+        let denied = submit(&body, proof);
+        assert!(!denied.status.success());
+        assert!(!String::from_utf8_lossy(&denied.stderr).contains("dummy test proof"));
+    }
+    let history = successful(
+        cli(&config)
+            .args(["source", "history", "--source", "TEST"])
+            .output()
+            .unwrap(),
+    );
+    assert_eq!(
+        serde_json::from_slice::<Value>(&history).unwrap(),
+        serde_json::json!([])
+    );
+    successful(submit(&dummy, "dummy test proof\n"));
+    successful(submit(&dummy, "dummy test proof\ndummy test proof\n"));
+    let exported = workspace.path().join("private-export.rpsl");
+    successful(
+        cli(&config)
+            .args([
+                "export",
+                "snapshot",
+                "--source",
+                "TEST",
+                "--include-sensitive",
+                "--file",
+            ])
+            .arg(&exported)
+            .output()
+            .unwrap(),
+    );
+    let raw = fs::read_to_string(&exported).unwrap();
+    assert!(!raw.contains("DummyValue") && !raw.contains("dummy test proof"));
+    let new_hash = raw
+        .lines()
+        .find_map(|line| line.strip_prefix("auth: BCRYPT-PW "))
+        .unwrap();
+    assert!(bcrypt::verify("dummy test proof", new_hash).unwrap());
+    assert_ne!(new_hash, hash.to_string());
+    let (server, http) = Server::start_listener(&config, "GraphQL listening");
+    let request = |proofs: &[&str]| {
+        let body =
+            serde_json::json!({"objects":[{"object_text":dummy}],"passwords":proofs}).to_string();
+        let raw = whois(http,format!("POST /v1/submit/ HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",body.len()).as_bytes());
+        assert!(raw.starts_with("HTTP/1.1 200 "), "{raw}");
+        assert!(
+            !raw.contains("dummy test proof")
+                && !raw.contains("wrong proof")
+                && !raw.contains("$2b$")
+        );
+        serde_json::from_str::<Value>(raw.split_once("\r\n\r\n").unwrap().1).unwrap()
+    };
+    assert_eq!(request(&["wrong proof"])["summary"]["failed"], 1);
+    assert_eq!(
+        request(&["dummy test proof", "second proof"])["summary"]["failed"],
+        1
+    );
+    assert_eq!(
+        request(&["dummy test proof", "dummy test proof"])["summary"]["successful_modify"],
+        1
+    );
+    assert_eq!(
+        request(&["dummy test proof"])["summary"]["successful_modify"],
+        1
+    );
+    drop(server);
+    let (server, tcp) = Server::start(&config);
+    for query in [
+        b"!mmntner,TEST-MNT\n".as_slice(),
+        b"-g TEST:3:1-LAST\n".as_slice(),
+    ] {
+        let public = whois(tcp, query);
+        assert!(
+            !public.contains("auth:")
+                && !public.contains("DummyValue")
+                && !public.contains("dummy test proof")
+                && !public.contains("$2b$")
+        );
+    }
+    drop(server);
+    successful(cli(&config).args(["database", "verify"]).output().unwrap());
+}

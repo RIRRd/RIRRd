@@ -1,6 +1,6 @@
 //! Bounded BCRYPT-PW authentication for authoritative maintainer objects.
 
-use anyhow::{Result, bail, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use bcrypt::HashParts;
 
 use crate::rpsl::{MAX_OBJECT_BYTES, Object};
@@ -57,6 +57,87 @@ pub fn validate_new(object: &Object) -> Result<()> {
         bcrypt_hash(value)?;
     }
     Ok(())
+}
+
+/// Recognise the pinned upstream dummy-hash replacement profile. Every auth
+/// field must be a dummy bcrypt field; mixed real/dummy credentials fail closed.
+pub fn dummy_update(object: &Object) -> Result<bool> {
+    if object.class != "mntner" {
+        return Ok(false);
+    }
+    let values = auth_values(object)?;
+    let is_dummy = |value: Option<&str>| {
+        let mut fields = value.unwrap_or_default().split_ascii_whitespace();
+        fields
+            .next()
+            .is_some_and(|scheme| scheme.eq_ignore_ascii_case("BCRYPT-PW"))
+            && fields.next() == Some("DummyValue")
+            && fields.next().is_none()
+    };
+    let any = values.iter().any(|value| is_dummy(*value));
+    ensure!(
+        !any || values.iter().all(|value| is_dummy(*value)),
+        "mixed dummy and real maintainer credentials"
+    );
+    Ok(any)
+}
+
+/// Charge replacement hashing to the same work budget as password verification.
+/// This is called only after the stored object's maintainers have authenticated.
+pub fn authorize_dummy_update(passwords: &[String], budget: &mut AuthBudget) -> Result<()> {
+    let password = passwords
+        .first()
+        .context("dummy maintainer credentials require a password")?;
+    ensure!(
+        passwords.iter().all(|candidate| candidate == password),
+        "dummy maintainer credentials require exactly one distinct password"
+    );
+    valid_replacement_password(password)?;
+    budget.charge(bcrypt::DEFAULT_COST)
+}
+
+fn valid_replacement_password(password: &str) -> Result<()> {
+    ensure!(
+        !password.is_empty()
+            && password.len() <= MAX_PASSWORD_BYTES
+            && !password.as_bytes().contains(&0),
+        "invalid replacement password"
+    );
+    Ok(())
+}
+
+/// Materialise an already authorised dummy update before any object is stored.
+/// Failed hashing or parsing aborts the enclosing registry transaction.
+pub fn materialize_dummy_update(object: &Object, password: &str) -> Result<Object> {
+    ensure!(
+        dummy_update(object)?,
+        "maintainer does not contain dummy credentials"
+    );
+    valid_replacement_password(password)?;
+    let hash = bcrypt::hash(password, bcrypt::DEFAULT_COST)
+        .map_err(|_| anyhow::anyhow!("maintainer replacement hashing failed"))?;
+    let mut text = String::with_capacity(object.text.len() + hash.len());
+    let mut inserted = false;
+    for line in object.text.split_inclusive('\n') {
+        if line
+            .split_once(':')
+            .is_some_and(|(name, _)| name.eq_ignore_ascii_case("auth"))
+        {
+            if !inserted {
+                text.push_str(&format!("auth: BCRYPT-PW {hash}\n"));
+                inserted = true;
+            }
+        } else {
+            text.push_str(line);
+        }
+    }
+    let result =
+        crate::rpsl::parse(&text).map_err(|_| anyhow::anyhow!("invalid replacement maintainer"))?;
+    ensure!(
+        result.class == object.class && result.source == object.source && result.key == object.key,
+        "replacement maintainer identity changed"
+    );
+    Ok(result)
 }
 
 /// Verify supplied candidates against the supported hashes of one stored
@@ -312,6 +393,48 @@ mod tests {
         budget.charge(MAX_COST)?;
         assert!(budget.charge(4).is_err());
         assert_eq!(budget.attempts_left, MAX_ATTEMPTS - 2);
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod dummy_tests {
+    use super::*;
+
+    #[test]
+    fn dummy_replacements_are_bounded_complete_and_materialised() -> Result<()> {
+        let object = crate::rpsl::parse("mntner: TEST-MNT\nauth: BCRYPT-PW DummyValue\nAUTH: bcrypt-pw DummyValue # filtered\nmnt-by: TEST-MNT\nsource: TEST\n").map_err(anyhow::Error::msg)?;
+        assert!(dummy_update(&object)?);
+        assert!(authorize_dummy_update(&[], &mut AuthBudget::default()).is_err());
+        assert!(
+            authorize_dummy_update(&["one".into(), "two".into()], &mut AuthBudget::default())
+                .is_err()
+        );
+        authorize_dummy_update(&["correct secret".into()], &mut AuthBudget::default())?;
+        let result = materialize_dummy_update(&object, "correct secret")?;
+        validate_new(&result)?;
+        assert_eq!(result.text.matches("auth:").count(), 1);
+        assert!(!result.text.contains("DummyValue") && !result.text.contains("correct secret"));
+        assert!(authenticates(
+            &result,
+            &["correct secret".into()],
+            &mut AuthBudget::default()
+        )?);
+        assert!(!authenticates(
+            &result,
+            &["wrong secret".into()],
+            &mut AuthBudget::default()
+        )?);
+        let real = bcrypt::hash_with_salt("secret", 4, [14; 16])?;
+        let mixed = crate::rpsl::parse(&format!("{}auth: BCRYPT-PW {real}\n", object.text))
+            .map_err(anyhow::Error::msg)?;
+        assert!(dummy_update(&mixed).is_err());
+        assert!(materialize_dummy_update(&object, &"x".repeat(73)).is_err());
+        let mut exhausted = AuthBudget {
+            attempts_left: 1,
+            work_left: 1,
+        };
+        assert!(authorize_dummy_update(&["secret".into()], &mut exhausted).is_err());
         Ok(())
     }
 }

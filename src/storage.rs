@@ -606,7 +606,7 @@ impl Store {
     pub fn apply_authoritative_report(
         &self,
         source: &str,
-        changes: Vec<Change>,
+        mut changes: Vec<Change>,
         passwords: &[String],
     ) -> Result<Vec<&'static str>> {
         let source = canonical_source(source)?;
@@ -641,6 +641,17 @@ impl Store {
                         .context("invalid route origin")?
                         .parse()?;
                     self.route_policy.validate(&source, prefix, origin)?;
+                }
+            }
+
+            // Authentication and all admission checks precede expensive replacement
+            // hashing. No placeholder credential can enter storage or a journal.
+            for change in &mut changes {
+                if let Change::Upsert(object) = change
+                    && crate::maintainer_auth::dummy_update(object)?
+                {
+                    let password = passwords.first().context("missing replacement password")?;
+                    *object = crate::maintainer_auth::materialize_dummy_update(object, password)?;
                 }
             }
 

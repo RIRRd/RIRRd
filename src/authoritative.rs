@@ -6,7 +6,10 @@ use anyhow::{Context, Result, ensure};
 
 use crate::{
     authoritative_validation::{contacts, maintainers, set_creation_asn, validate},
-    maintainer_auth::{AuthBudget, authenticates, authenticates_existing, validate_new},
+    maintainer_auth::{
+        AuthBudget, authenticates, authenticates_existing, authorize_dummy_update, dummy_update,
+        validate_new,
+    },
     rpsl::Object,
 };
 
@@ -72,7 +75,7 @@ pub fn authorize(
         );
         if matches!(change, Change::Upsert(_)) {
             validate(object)?;
-            if object.class == "mntner" {
+            if object.class == "mntner" && !dummy_update(object)? {
                 validate_new(object)?;
             }
         }
@@ -116,10 +119,14 @@ pub fn authorize(
                 previous.is_some(),
                 "new maintainers require operator provisioning"
             );
-            ensure!(
-                authenticates(object, passwords, &mut budget)?,
-                "proposed maintainer authentication failed"
-            );
+            if dummy_update(object)? {
+                authorize_dummy_update(passwords, &mut budget)?;
+            } else {
+                ensure!(
+                    authenticates(object, passwords, &mut budget)?,
+                    "proposed maintainer authentication failed"
+                );
+            }
         }
         ensure!(
             any_maintainer(

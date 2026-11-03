@@ -135,3 +135,11 @@ Rust validator tests, including the reference's empty comma-token handling.
 The reference runtime starts `smtp_sink.py` on container loopback port 1025.
 It discards synthetic notifications and never relays or logs message content.
 No SMTP port is published. Generated credentials/fixtures stay outside Git.
+
+The authoritative comparison now includes `inet-rtr` and existing-maintainer
+`BCRYPT-PW DummyValue` replacement: 47 HTTP decision cases in total. The schema
+check covers 25 policy-set/router cases. Dummy replacement requires one distinct
+password after authentication against stored maintainers. Duplicate identical
+passwords are normalised; distinct multiple passwords and mixed dummy/real
+hashes are rejected. No dummy hash is stored, and replacement hashing is charged
+to the submission work budget. Maintainer creation still requires provisioning.
