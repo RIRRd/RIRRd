@@ -210,36 +210,9 @@ def normalize(paths, target, source, classes, encoding, rejection_counts=None):
     return dict(counts), dict(excluded), duplicates
 
 
-def run(args):
-    catalog = json.loads(args.catalog.read_text())
-    names = [row['source'] for row in catalog['sources']]
-    if len(names) != len(set(names)) or not all(re.fullmatch('[A-Z][A-Z0-9_-]{0,31}', name) for name in names):
-        raise ValueError('Catalog source names must be safe, unique canonical identifiers')
+def configuration(catalog, database):
     enabled = [row for row in catalog['sources'] if row['state'] == 'enabled']
-    if shutil.disk_usage(args.output.parent).free < 12 * 1024**3:
-        raise ValueError('At least 12 GiB free staging space is required')
-    runtime_digest = sha256(args.binary)
-    previous_binary = getattr(args, 'previous_binary', None)
-    if previous_binary and not args.resume:
-        raise ValueError('A compatible previous build requires an explicit private resume')
-    inputs = {'schema_version': 2, 'catalog_sha256': sha256(args.catalog),
-              'binary_sha256': sha256(previous_binary) if previous_binary else runtime_digest}
-    completed = {}
-    if args.resume:
-        if args.output.is_symlink() or json.loads((args.output / 'build-inputs.json').read_text()) != inputs:
-            raise ValueError('Resume requires the same private candidate, binary and source catalog')
-        completed = json.loads((args.output / 'progress.json').read_text())['completed']
-        subprocess.run([str(args.binary), '--config', str(args.output / 'irrd.toml'), 'database', 'count'],
-                       check=True, capture_output=True, text=True, timeout=1800)
-    else:
-        args.output.mkdir(mode=0o700)
-        write_json(args.output / 'build-inputs.json', inputs)
-        write_json(args.output / 'progress.json', {'completed': {}})
-    snapshot_dir = args.output / 'snapshots'
-    snapshot_dir.mkdir(mode=0o700, exist_ok=args.resume)
-    database = args.output / 'registry.redb'
-    config = args.output / 'irrd.toml'
-    config_text = 'database = ' + json.dumps(str(database.resolve())) + '''
+    text = 'database = ' + json.dumps(str(database.resolve())) + '''
 database_cache_mib = 64
 worker_threads = 2
 max_blocking_threads = 4
@@ -258,8 +231,85 @@ location = "United Kingdom"
 sponsor = "HYEHOST LLC"
 '''
     if catalog.get('rpki'):
-        config_text += '\n[rpki]\n' + ''.join(key + ' = ' + json.dumps(value) + '\n'
+        text += '\n[rpki]\n' + ''.join(key + ' = ' + json.dumps(value) + '\n'
                                                    for key, value in catalog['rpki'].items())
+    return text
+
+
+def run(args):
+    catalog = json.loads(args.catalog.read_text())
+    names = [row['source'] for row in catalog['sources']]
+    if len(names) != len(set(names)) or not all(re.fullmatch('[A-Z][A-Z0-9_-]{0,31}', name) for name in names):
+        raise ValueError('Catalog source names must be safe, unique canonical identifiers')
+    enabled = [row for row in catalog['sources'] if row['state'] == 'enabled']
+    if shutil.disk_usage(args.output.parent).free < 12 * 1024**3:
+        raise ValueError('At least 12 GiB free staging space is required')
+    runtime_digest = sha256(args.binary)
+    previous_binary = getattr(args, 'previous_binary', None)
+    if previous_binary and not args.resume:
+        raise ValueError('A compatible previous build requires an explicit private resume')
+    inputs = {'schema_version': 2, 'catalog_sha256': sha256(args.catalog),
+              'binary_sha256': sha256(previous_binary) if previous_binary else runtime_digest}
+    completed = {}
+    previous_catalog_path = getattr(args, 'previous_catalog', None)
+    previous_catalog = None
+    old_completed = None
+    if previous_catalog_path:
+        if not args.resume:
+            raise ValueError('A previous catalog requires an explicit private resume')
+        previous_catalog = json.loads(previous_catalog_path.read_text())
+        old_inputs = json.loads((args.output / 'build-inputs.json').read_text())
+        if old_inputs != {**inputs, 'catalog_sha256': sha256(previous_catalog_path)}:
+            raise ValueError('Original catalog or runtime fingerprint mismatch')
+        if previous_catalog['classes'] != catalog['classes'] or previous_catalog.get('rpki') != catalog.get('rpki'):
+            raise ValueError('Catalog extension cannot change retained classes or RPKI profile')
+        old_completed = json.loads((args.output / 'progress.json').read_text())['completed']
+        old_entries = {row['source']: row for row in previous_catalog['sources']}
+        new_entries = {row['source']: row for row in catalog['sources']}
+        for source in old_completed:
+            old, new = old_entries[source], new_entries.get(source, {})
+            if new.get('state') != 'enabled' or any(old.get(k) != new.get(k) for k in ['urls','encoding','format','allow_plaintext_ftp']):
+                raise ValueError('Catalog extension cannot change completed snapshot inputs')
+            if old.get('nrtm3') != new.get('nrtm3') and new.get('nrtm3') is not None:
+                raise ValueError('Changing an existing incremental feed requires a new bootstrap')
+        if args.output.is_symlink():
+            raise ValueError('A serving symlink cannot be extended')
+        subprocess.run([str(args.binary), '--config', str(args.output / 'irrd.toml'), 'database', 'count'],
+                       check=True, capture_output=True, text=True, timeout=1800)
+        old_text = configuration(previous_catalog, args.output / 'registry.redb')
+        if (args.output / 'irrd.toml').read_text() not in (old_text, old_text + mirror_schedule(old_completed.values(), catalog['classes'])):
+            raise ValueError('Original candidate configuration changed')
+        for source, row in old_completed.items():
+            new_entries_row = new_entries[source]
+            if row.get('mirror_bootstrap') and not new_entries_row.get('nrtm3'):
+                status = subprocess.run([str(args.binary),'--config',str(args.output / 'irrd.toml'),'source','status','--source',source],check=True,capture_output=True,text=True)
+                if json.loads(status.stdout)['serial'] is not None:
+                    raise ValueError('Cannot remove a committed incremental cursor during catalog extension')
+        write_json(args.output / ('catalog-before-' + old_inputs['catalog_sha256'] + '.json'), previous_catalog)
+        write_json(args.output / ('inputs-before-' + old_inputs['catalog_sha256'] + '.json'), old_inputs)
+        updated = {}
+        for source, row in old_completed.items():
+            updated[source] = {**row, **new_entries[source], 'state':'loaded'}
+            if not new_entries[source].get('nrtm3'):
+                updated[source].pop('mirror_bootstrap', None)
+        write_json(args.output / 'progress.json', {'completed':updated})
+        write_json(args.output / 'build-inputs.json', inputs)
+        (args.output / 'irrd.toml').write_text(configuration(catalog,args.output / 'registry.redb') + mirror_schedule(updated.values(),catalog['classes']))
+    if args.resume:
+        if args.output.is_symlink() or json.loads((args.output / 'build-inputs.json').read_text()) != inputs:
+            raise ValueError('Resume requires the same private candidate, binary and source catalog')
+        completed = json.loads((args.output / 'progress.json').read_text())['completed']
+        subprocess.run([str(args.binary), '--config', str(args.output / 'irrd.toml'), 'database', 'count'],
+                       check=True, capture_output=True, text=True, timeout=1800)
+    else:
+        args.output.mkdir(mode=0o700)
+        write_json(args.output / 'build-inputs.json', inputs)
+        write_json(args.output / 'progress.json', {'completed': {}})
+    snapshot_dir = args.output / 'snapshots'
+    snapshot_dir.mkdir(mode=0o700, exist_ok=args.resume)
+    database = args.output / 'registry.redb'
+    config = args.output / 'irrd.toml'
+    config_text = configuration(catalog, database)
     if args.resume:
         if config.read_text() not in (config_text, config_text + mirror_schedule(completed.values(), catalog['classes'])):
             raise ValueError('Candidate configuration changed; refusing to resume')
@@ -288,7 +338,11 @@ sponsor = "HYEHOST LLC"
             path = snapshot_dir / f'{source}-{i}.gz'
             if args.resume:
                 path.unlink(missing_ok=True)
-            downloads.append(download(url, path, entry.get('allow_plaintext_ftp', False)))
+            if entry.get('format') == 'graphql-snapshot':
+                from graphql_snapshot import fetch
+                downloads.append(fetch(url, source, catalog['classes'], path))
+            else:
+                downloads.append(download(url, path, entry.get('allow_plaintext_ftp', False)))
             files.append(path)
         if serial is not None and snapshot_serial(entry) != serial:
             raise ValueError('Snapshot publication serial changed during download; retry a new candidate')
@@ -389,4 +443,5 @@ if __name__ == '__main__':
     parser.add_argument('--resume', action='store_true', help='Resume a private candidate with identical catalog and binary inputs')
     parser.add_argument('--previous-binary', type=Path,
                         help='Explicit compatible upgrade: verify this original build fingerprint when resuming with a new runtime')
+    parser.add_argument('--previous-catalog', type=Path, help='Explicit additive catalog upgrade; verify and archive the original catalog and retain completed imports')
     run(parser.parse_args())

@@ -30,14 +30,18 @@
         "APNIC",
         "BELL",
         "JPIRR",
+        "IDNIC",
         "ALTDB",
         "TC",
         "REACH",
+        "LEVEL3",
         "NTTCOM",
         "RADB",
         "RIPE-NONAUTH",
         "CANARIE",
-        "BBOI"
+        "BBOI",
+        "PANIX",
+        "NESTEGG"
       ]
     }
   ]

@@ -15,67 +15,53 @@ The [router guide](ROUTER_INTEGRATION.md) shows public tests and private synthet
 evaluation, source selection, candidate validation and rollback. No configuration
 change to a router is performed automatically by this project.
 
-## Data scope and permissions
+## Source coverage and update modes
 
-The reviewed source catalog is [sources.json](../../tools/live-service/sources.json).
-The public status API shows only successfully imported sources as loaded, with
-per-class counts, source URLs/hashes, upstream Last-Modified and local import times.
-Pending feeds are visibly separate. No fallback forwards queries to another IRR;
-query results come from this RIRRd database.
+The public catalog is [sources.json](../../tools/live-service/sources.json).
+It enables nineteen sources: RIPE, RIPE-NONAUTH, ARIN, APNIC, AFRINIC, LACNIC,
+RADB, ALTDB, BELL, REACH, BBOI, TC, CANARIE, JPIRR, NTTCOM, IDNIC, LEVEL3,
+PANIX and NESTEGG. Only a verified generation is exposed as loaded. All loaded
+sources, including ARIN, are available through TCP WHOIS, HTTP WHOIS, GraphQL
+and bounded key browsing. Source data comes from published public endpoints;
+no owner enrollment is required by this deployment.
 
-The initial five-source checkpoint used RIPE, RIPE-NONAUTH, ARIN, AFRINIC and LACNIC.
-The expanded catalog also enables RADB, ALTDB, BELL, REACH, BBOI, TC and CANARIE;
-only a fully verified generation is exposed as loaded. Only routing
+Seven configured sources follow NRTMv3 every sixty seconds. Other sources use
+daily routing snapshots. IDNIC and LEVEL3 use the public WOBCOM IRRd GraphQL
+mirror: all RPKI, scope and route-preference states are requested explicitly,
+and the peer's serial and update marker must remain stable across collection.
+Their direct bootstrap endpoints failed from this VM, so the working public
+secondary mirror is used. The status page records that provider and its observed
+source serial. JPIRR uses Merit's public snapshot; that peer's NRTMv3 transfer
+returned a protocol access-denied response, so its working public snapshot is
+used without blocking the source. PANIX and NESTEGG use the published Merit files.
+
+The dashboard reports current source/class counts from a transactionally
+maintained index, separate from bootstrap receipts and timestamps. Only routing
 classes are retained: aut-num, as-set, route-set, route, route6, filter-set,
-peering-set, rtr-set and inet-rtr (where published). Person/role, maintainer,
-key-cert, address-allocation and organisation classes are not imported. Class
-exclusions are counted; source mismatch and credential-bearing records fail the entire candidate. Records
-with unsafe ASCII controls are withheld whole and counted, preserving valid policy
-names rather than deleting characters to invent replacements. Published duplicate canonical
-identities use the last record, matching the pinned upstream snapshot upsert policy;
-collapsed duplicates are counted. Normal CLI imports retain duplicate rejection.
-Malformed optional lookup values can remain in source text without indexing;
-the importer reports their count separately. UTF-8 RIPE exports and explicitly
-declared source encodings are used; no lossy decode is allowed.
+peering-set, rtr-set and inet-rtr, where published. Person/role, maintainer,
+key-cert, address-allocation and organisation classes are excluded from this
+routing mirror profile. Their absence is not an access-permission blocker.
 
-Source data is **not MIT-licensed by this project**. Its original terms continue
-to apply. This deployment is for Internet routing operations/testing, with no
-marketing use or downloadable database export. Permission references:
+Source mismatch and credential-bearing routing records fail the candidate.
+Unsafe control-character records are withheld whole and counted. Duplicate
+canonical identities use the last record, matching the pinned upstream snapshot
+upsert policy; collapsed duplicates are counted. Normal CLI imports retain
+duplicate rejection. Malformed optional lookup values may remain in source text
+without being indexed and are counted separately. No lossy text decoding is used.
 
-- [RIPE public daily snapshots](https://docs.db.ripe.net/FAQ) and
-  [database terms](https://docs.db.ripe.net/HTML-Terms-And-Conditions).
-- [ARIN IRR downloads](https://www.arin.net/resources/manage/irr/) and
-  [NRPM 3.4.1](https://www.arin.net/participate/policy/nrpm/#3-4-routing-registry).
-  ARIN routing objects are included in TCP WHOIS, raw HTTP WHOIS, GraphQL and
-  bounded key browsing. The operator explicitly requested the operational IRR
-  service to use the published sources across its query interfaces. The generic
-  `http_sources` and `http_whois_sources` settings remain available to operators
-  who want narrower local query scopes; this deployment serves every loaded source.
+Download receipts retain provider URLs, hashes, timestamps and transport notes.
+Anonymous FTP transport is unauthenticated. GraphQL receipts distinguish the
+received JSON hash from deterministic gzip serialization. Imported source data
+retains its own provenance; the project's MIT license covers project code.
 
-- [AFRINIC's mirroring instructions](https://afrinic.net/ast/pdf/afrinic-irr-guide-20180927.pdf).
-  Continuous NRTM needs IP whitelisting, which is not assumed from snapshot access.
-- [LACNIC's open mirroring policy](https://www.lacnic.net/5009/2/lacnic/update-on-lacnics-irr:-near-real-time-mirroring-now-available).
-
-Additional publication references are [Merit's operational-use and FTP information](https://irr.net/overview/),
-[its public mirroring documentation](https://radb.atlassian.net/wiki/spaces/RADb/pages/46105414/NRTM),
-[TC terms](https://bgp.net.br/terms.html) and
-[CANARIE's published snapshot](https://whois.canarie.ca/routeregistry/documentation.html).
-RADB, ALTDB, BELL, REACH and BBOI use Merit's explicitly published anonymous FTP
-files. This is a configured transport choice, not a TLS-validation bypass or
-silent downgrade. The transport is unauthenticated; recorded SHA-256 hashes
-identify received bytes but do not prove publisher authenticity. The dashboard
-shows the provider/transport limitation and leaves unavailable provider timestamps
-unreported. Other downloads retain mandatory HTTPS certificate validation.
-
-APNIC routing-class exports are publicly published over HTTPS. JPIRR and NTTCOM
-have public secondary snapshot/NRTMv3 feeds at Merit. Direct-primary onboarding
-requirements are not prerequisites for these published public mirror feeds.
-The catalog records their actual providers. IDNIC's published FTP endpoint
-`irr-mirror.idnic.net:21` currently returns no route to host; its HTTPS endpoint
-fails TLS negotiation. LEVEL3's published `rrftp.level3.net` snapshot endpoint
-times out from this VM. These are connectivity/bootstrap issues, not requests
-for the project owner to join a programme. Published alternate mirrors remain
-eligible when their matching snapshot and serial can be verified.
+An explicit `--previous-catalog` preparation resume can add feeds and change
+query exposure without reimporting completed sources. It verifies and archives
+the original inputs, rejects changed completed snapshot URLs/encodings/classes,
+and performs complete final database verification. A committed incremental
+cursor cannot be discarded by this operation. Runtime upgrades can switch a
+verified database generation and executable together using refresh `--activate
+GENERATION --runtime BINARY`; rollback restores the prior pointers and executable
+without copying a multi-gigabyte serving database during downtime.
 
 ## Isolation and limits
 

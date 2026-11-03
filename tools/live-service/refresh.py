@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import time
+import tempfile
 import urllib.request
 
 ROOT = Path('/var/lib/rirrd-live')
@@ -54,7 +55,11 @@ def main():
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument('--resume', help='Private failed generation name, never the serving generation')
     mode.add_argument('--activate', help='Activate a completely prepared generation after verifying it with the installed runtime')
+    parser.add_argument('--runtime', type=Path, help='Verified replacement runtime for an atomic binary and generation switch; requires --activate')
     args = parser.parse_args()
+    if args.runtime and not args.activate:
+        parser.error('--runtime requires --activate')
+    verifier = str(args.runtime.resolve(strict=True)) if args.runtime else BINARY
     with (ROOT / 'refresh.lock').open('w') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         destination = ROOT / 'generations' / datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%SZ')
@@ -85,15 +90,15 @@ def main():
                     raise ValueError('Prepared candidate has inconsistent or changed inputs')
                 if report.get('configuration_sha256') and hashlib.sha256((destination / 'irrd.toml').read_bytes()).hexdigest() != report['configuration_sha256']:
                     raise ValueError('Prepared generation configuration changed after verification')
-                subprocess.run([BINARY, '--config', str(destination / 'irrd.toml'), 'config', 'check'], check=True, capture_output=True)
-                with open(BINARY, 'rb') as binary:
+                subprocess.run([verifier, '--config', str(destination / 'irrd.toml'), 'config', 'check'], check=True, capture_output=True)
+                with open(verifier, 'rb') as binary:
                     same_runtime = hashlib.file_digest(binary, 'sha256').hexdigest() == report.get('runtime_binary_sha256')
                 if same_runtime and report.get('database_sha256'):
                     with (destination / 'registry.redb').open('rb') as database:
                         if hashlib.file_digest(database, 'sha256').hexdigest() != report['database_sha256']:
                             raise ValueError('Prepared generation bytes changed after full verification')
                 else:
-                    verification = subprocess.run([BINARY, '--config', str(destination / 'irrd.toml'), 'database', 'verify'],
+                    verification = subprocess.run([verifier, '--config', str(destination / 'irrd.toml'), 'database', 'verify'],
                                                   check=True, capture_output=True, text=True, timeout=1800)
                     if json.loads(verification.stdout)['objects'] != report['total_objects']:
                         raise ValueError('Prepared generation count changed before activation')
@@ -110,15 +115,37 @@ def main():
             (destination / 'sources.json').chmod(0o644)
             os.chown(destination / 'registry.redb', user.pw_uid, user.pw_gid)
             (destination / 'registry.redb').chmod(0o600)
-            switch(destination)
+            rollback_runtime = None
+            next_runtime = None
+            if args.runtime:
+                # Only the small executable is copied. Both verified database
+                # generations remain untouched; rollback is an atomic rename.
+                with tempfile.NamedTemporaryFile(prefix='.rirrd-rollback-',dir=Path(BINARY).parent,delete=False) as handle:
+                    rollback_runtime = Path(handle.name)
+                shutil.copy2(BINARY,rollback_runtime)
+                with tempfile.NamedTemporaryFile(prefix='.rirrd-next-',dir=Path(BINARY).parent,delete=False) as handle:
+                    next_runtime = Path(handle.name)
+                shutil.copy2(verifier,next_runtime)
             try:
-                subprocess.run(['systemctl', 'restart', 'rirrd-live.service'], check=True)
+                if args.runtime:
+                    subprocess.run(['systemctl','stop','rirrd-live.service'],check=True)
+                    os.replace(next_runtime,BINARY)
+                switch(destination)
+                subprocess.run(['systemctl', 'start' if args.runtime else 'restart', 'rirrd-live.service'], check=True)
                 healthy({row['source'] for row in report['sources']
                          if row['state'] == 'loaded' and row.get('http_access', True)})
             except Exception:
+                subprocess.run(['systemctl','stop','rirrd-live.service'],check=True)
                 switch(previous)
-                subprocess.run(['systemctl', 'restart', 'rirrd-live.service'], check=True)
+                if rollback_runtime:
+                    os.replace(rollback_runtime,BINARY)
+                subprocess.run(['systemctl', 'start', 'rirrd-live.service'], check=True)
                 raise
+            finally:
+                if next_runtime:
+                    next_runtime.unlink(missing_ok=True)
+            if rollback_runtime:
+                rollback_runtime.unlink(missing_ok=True)
             shutil.rmtree(destination / 'snapshots')
             # Retain the serving and immediately previous complete generations.
             for old in (ROOT / 'generations').iterdir():

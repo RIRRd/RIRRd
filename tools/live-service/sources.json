@@ -11,7 +11,7 @@
     "rtr-set",
     "inet-rtr"
   ],
-  "refresh": "NRTMv3 every 60 seconds for eight configured feeds; periodic routing snapshots for other sources",
+  "refresh": "NRTMv3 every 60 seconds for seven configured feeds; daily routing snapshots for other sources, including public HTTPS GraphQL snapshots for IDNIC and LEVEL3.",
   "sources": [
     {
       "source": "RIPE",
@@ -40,8 +40,8 @@
       "urls": [
         "https://ftp.arin.net/pub/rr/arin.db.gz"
       ],
-      "http_access": false,
-      "distribution": "Public TCP and raw HTTP WHOIS service for IRR operations; structured GraphQL exports remain excluded. NRPM 3.4.1 refers to Whois service, not a mandatory port number."
+      "http_access": true,
+      "distribution": "Public operational IRR queries over TCP WHOIS, HTTP WHOIS, GraphQL and bounded object-key browsing."
     },
     {
       "source": "AFRINIC",
@@ -120,21 +120,19 @@
       "allow_plaintext_ftp": true,
       "provider": "Merit public IRR mirror",
       "terms": "https://radb.atlassian.net/wiki/spaces/RADb/pages/46105414/NRTM",
-      "transport_note": "Published anonymous FTP and NRTMv3 for IRR operations; unauthenticated transport.",
-      "nrtm3": {
-        "host": "nrtm.radb.net",
-        "port": 43,
-        "interval_seconds": 60,
-        "snapshot_serial_url": "ftp://ftp.radb.net/radb/dbase/JPIRR.CURRENTSERIAL",
-        "documentation": "https://radb.atlassian.net/wiki/spaces/RADb/pages/46105414/NRTM"
-      }
+      "transport_note": "Published anonymous FTP and NRTMv3 for IRR operations; unauthenticated transport."
     },
     {
       "source": "IDNIC",
-      "state": "pending",
-      "reason": "Public provider search in progress: Merit advertises NRTM but does not publish a matching IDNIC snapshot at its listed FTP path; direct HTTPS endpoint fails TLS negotiation.",
-      "permission": "https://idnic.net/service/whois/irr",
-      "urls": []
+      "state": "enabled",
+      "format": "graphql-snapshot",
+      "encoding": "utf-8",
+      "urls": [
+        "https://irrd.service.wobcom.de/graphql/"
+      ],
+      "provider": "WOBCOM public IRR mirror",
+      "permission": "https://irrd.service.wobcom.de/ui/",
+      "transport_note": "HTTPS secondary mirror snapshot. All RPKI, scope and preference states explicitly requested; peer serial checked before and after fetching. Primary bootstrap connectivity fails from this node; refresh uses this public peer."
     },
     {
       "source": "ALTDB",
@@ -188,10 +186,15 @@
     },
     {
       "source": "LEVEL3",
-      "state": "pending",
-      "reason": "Public provider search in progress: Merit advertises NRTM but its listed snapshot path is absent; direct service connectivity remains under test.",
-      "permission": "https://irr.net/registry/",
-      "urls": []
+      "state": "enabled",
+      "format": "graphql-snapshot",
+      "encoding": "utf-8",
+      "urls": [
+        "https://irrd.service.wobcom.de/graphql/"
+      ],
+      "provider": "WOBCOM public IRR mirror",
+      "permission": "https://irrd.service.wobcom.de/ui/",
+      "transport_note": "HTTPS secondary mirror snapshot. All RPKI, scope and preference states explicitly requested; peer serial checked before and after fetching. Primary bootstrap connectivity fails from this node; refresh uses this public peer."
     },
     {
       "source": "NTTCOM",
@@ -275,6 +278,30 @@
         "snapshot_serial_url": "ftp://ftp.radb.net/radb/dbase/BBOI.CURRENTSERIAL",
         "documentation": "https://radb.atlassian.net/wiki/spaces/RADb/pages/46105414/NRTM"
       }
+    },
+    {
+      "source": "PANIX",
+      "state": "enabled",
+      "encoding": "utf-8",
+      "urls": [
+        "ftp://ftp.radb.net/radb/dbase/panix.db.gz"
+      ],
+      "allow_plaintext_ftp": true,
+      "provider": "Merit public IRR mirror",
+      "permission": "https://irr.net/registry/",
+      "transport_note": "Published anonymous FTP snapshot; transport is unauthenticated."
+    },
+    {
+      "source": "NESTEGG",
+      "state": "enabled",
+      "encoding": "utf-8",
+      "urls": [
+        "ftp://ftp.radb.net/radb/dbase/nestegg.db.gz"
+      ],
+      "allow_plaintext_ftp": true,
+      "provider": "Merit public IRR mirror",
+      "permission": "https://irr.net/registry/",
+      "transport_note": "Published anonymous FTP snapshot; transport is unauthenticated."
     }
   ],
   "rpki": {

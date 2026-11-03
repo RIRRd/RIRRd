@@ -224,6 +224,78 @@ class GatewayChecks(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     prepare.run(args)
 
+    def test_catalog_extension_reuses_imports_and_rejects_changed_snapshot_inputs(self):
+        import gzip
+        import shutil
+        binary = Path(__file__).resolve().parents[2] / 'target/release/rust-irrd'
+        if not binary.exists(): self.skipTest('Build the release binary first')
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);catalog=root/'catalog.json';previous=root/'previous.json';output=root/'candidate'
+            source=lambda name:{'source':name,'state':'enabled','encoding':'utf-8','urls':['https://example.net/'+name]}
+            data={'classes':['aut-num'],'refresh':'test','sources':[source('TEST')]}
+            catalog.write_text(json.dumps(data));calls=[]
+            def download(url,target,_allow=False):
+                name=url.rsplit('/',1)[1];calls.append(name);target.write_bytes(gzip.compress(f'aut-num: AS64496\nsource: {name}\n'.encode()))
+                return {'url':url,'sha256':prepare.sha256(target),'bytes':target.stat().st_size}
+            args=SimpleNamespace(catalog=catalog,binary=binary,output=output,resume=False)
+            with mock.patch.object(prepare,'download',download),mock.patch.object(prepare.shutil,'disk_usage',return_value=shutil._ntuple_diskusage(100*1024**3,0,100*1024**3)):
+                prepare.run(args);shutil.copy2(catalog,previous);args.resume=True;args.previous_catalog=previous
+                data['sources'][0]['urls']=['https://example.net/CHANGED'];catalog.write_text(json.dumps(data))
+                with self.assertRaisesRegex(ValueError,'completed snapshot inputs'):prepare.run(args)
+                data['sources']=[source('TEST'),source('OTHER')];data['sources'][0]['http_access']=True;catalog.write_text(json.dumps(data))
+                prepare.run(args)
+                self.assertEqual(calls,['TEST','OTHER'])
+                report=json.loads((output/'sources.json').read_text());self.assertEqual(report['total_objects'],2)
+                self.assertEqual({r['source'] for r in report['sources']},{'TEST','OTHER'})
+                self.assertTrue(list(output.glob('catalog-before-*.json')))
+                self.assertEqual(json.loads((output/'build-inputs.json').read_text())['catalog_sha256'],prepare.sha256(catalog))
+
+    def test_graphql_snapshot_includes_all_policy_states_and_rejects_serial_races(self):
+        import gzip
+        import graphql_snapshot
+        before={'databaseStatus':[{'source':'TEST','serialNewestMirror':10,'lastUpdate':'test'}]}
+        records={'rpslObjects':[{'objectText':'aut-num: AS64496\nsource: TEST\n'}]}
+        with tempfile.TemporaryDirectory() as directory:
+            target=Path(directory)/'source.gz'
+            with mock.patch.object(graphql_snapshot,'query',side_effect=[(before,'s',1),(records,'payload',42),(before,'s',1)]) as query:
+                receipt=graphql_snapshot.fetch('https://example.net/graphql/','TEST',['aut-num'],target)
+                self.assertEqual(receipt['mirror_serial'],10)
+                self.assertIn(b'source: TEST',gzip.decompress(target.read_bytes()))
+                document=query.call_args_list[1].args[1]
+                for expected in ['rpkiStatus:[valid,invalid,not_found]','scopeFilterStatus:[in_scope,out_scope_as,out_scope_prefix]','routePreferenceStatus:[visible,suppressed]']:
+                    self.assertIn(expected,document)
+            target.unlink();changed={'databaseStatus':[{'source':'TEST','serialNewestMirror':11,'lastUpdate':'test'}]}
+            with mock.patch.object(graphql_snapshot,'query',side_effect=[(before,'s',1),(records,'payload',42),(changed,'s',1)]):
+                with self.assertRaisesRegex(ValueError,'changed during snapshot'):graphql_snapshot.fetch('https://example.net/graphql/','TEST',['aut-num'],target)
+            self.assertFalse(target.exists())
+            with self.assertRaises(ValueError):graphql_snapshot.query('http://example.net/','{}',{})
+
+    def test_atomic_runtime_upgrade_rolls_back_without_copying_the_database(self):
+        import os
+        import hashlib
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);tools=root/'tools';tools.mkdir();generations=root/'generations';generations.mkdir()
+            previous=generations/'old';previous.mkdir();candidate=generations/'new';candidate.mkdir();(root/'current').symlink_to(previous)
+            old_runtime=root/'installed';old_runtime.write_bytes(b'old runtime');old_runtime.chmod(0o755)
+            replacement=root/'replacement';replacement.write_bytes(b'new runtime');replacement.chmod(0o755)
+            old_data=previous/'registry.redb';old_data.write_bytes(b'old database')
+            database=candidate/'registry.redb';database.write_bytes(b'new database')
+            config=candidate/'irrd.toml';config.write_text('test configuration')
+            catalog={'sources':[{'source':'TEST','state':'enabled'}]};(tools/'sources.json').write_text(json.dumps(catalog))
+            digest=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
+            report={'sources':[{'source':'TEST','state':'loaded','objects':1}], 'total_objects':1,'binary_sha256':'build',
+                    'runtime_binary_sha256':digest(replacement),'database_sha256':digest(database),'configuration_sha256':digest(config),'verified_at':'test'}
+            (candidate/'sources.json').write_text(json.dumps(report));(previous/'sources.json').write_text(json.dumps(report))
+            (candidate/'build-inputs.json').write_text(json.dumps({'catalog_sha256':digest(tools/'sources.json'),'binary_sha256':'build'}))
+            with mock.patch.object(refresh,'ROOT',root),mock.patch.object(refresh,'TOOLS',tools),mock.patch.object(refresh,'BINARY',str(old_runtime)),mock.patch('sys.argv',['refresh','--activate','new','--runtime',str(replacement)]),mock.patch('pwd.getpwnam',return_value=SimpleNamespace(pw_uid=os.getuid(),pw_gid=os.getgid())),mock.patch.object(refresh.subprocess,'run') as run,mock.patch.object(refresh,'healthy',side_effect=RuntimeError('simulated failed health')):
+                with self.assertRaisesRegex(RuntimeError,'failed health'):refresh.main()
+                service_calls=[call.args[0] for call in run.call_args_list if call.args[0][0]=='systemctl']
+                self.assertEqual([c[1] for c in service_calls],['stop','start','stop','start'])
+            self.assertEqual((root/'current').resolve(),previous)
+            self.assertEqual(old_runtime.read_bytes(),b'old runtime')
+            self.assertEqual(old_data.read_bytes(),b'old database')
+            self.assertEqual(database.read_bytes(),b'new database')
+
 
 if __name__ == '__main__':
     unittest.main()
