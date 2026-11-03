@@ -23,11 +23,15 @@ per-class counts, source URLs/hashes, upstream Last-Modified and local import ti
 Pending feeds are visibly separate. No fallback forwards queries to another IRR;
 query results come from this RIRRd database.
 
-Initial enabled feeds are RIPE, RIPE-NONAUTH, ARIN, AFRINIC and LACNIC. Only routing
+The initial five-source checkpoint used RIPE, RIPE-NONAUTH, ARIN, AFRINIC and LACNIC.
+The expanded catalog also enables RADB, ALTDB, BELL, REACH, BBOI, TC and CANARIE;
+only a fully verified generation is exposed as loaded. Only routing
 classes are retained: aut-num, as-set, route-set, route, route6, filter-set,
 peering-set, rtr-set and inet-rtr (where published). Person/role, maintainer,
 key-cert, address-allocation and organisation classes are not imported. Class
-exclusions are counted; selected malformed records fail the entire candidate. Published duplicate canonical
+exclusions are counted; source mismatch and credential-bearing records fail the entire candidate. Records
+with unsafe ASCII controls are withheld whole and counted, preserving valid policy
+names rather than deleting characters to invent replacements. Published duplicate canonical
 identities use the last record, matching the pinned upstream snapshot upsert policy;
 collapsed duplicates are counted. Normal CLI imports retain duplicate rejection.
 Malformed optional lookup values can remain in source text without indexing;
@@ -50,15 +54,25 @@ marketing use or downloadable database export. Permission references:
   Continuous NRTM needs IP whitelisting, which is not assumed from snapshot access.
 - [LACNIC's open mirroring policy](https://www.lacnic.net/5009/2/lacnic/update-on-lacnics-irr:-near-real-time-mirroring-now-available).
 
-The remaining irr.fyi-listed feeds are inventoried without pretending they are
-loaded. APNIC requires its [signed bulk-access AUP](https://www.apnic.net/manage-ip/using-whois/bulk-access/).
-NTT asks mirrors to [contact its registry administrator](https://www.gin.ntt.net/support-center/policies-procedures/routing-registry/).
-JPIRR has a separate mirror policy/onboarding process. RADB's FTP listing is
-reachable, but an approved transport/redistribution configuration is still pending.
-ALTDB's HTTPS hostname fails certificate validation, LEVEL3 times out and IDNIC
-fails TLS negotiation from this VM. BELL, REACH, TC, CANARIE and BBOI remain in
-permission/transport review. Do not disable certificate checks or assume a mirror
-has granted downstream redistribution of every third-party dataset.
+Additional publication references are [Merit's operational-use and FTP information](https://irr.net/overview/),
+[its public mirroring documentation](https://radb.atlassian.net/wiki/spaces/RADb/pages/46105414/NRTM),
+[TC terms](https://bgp.net.br/terms.html) and
+[CANARIE's published snapshot](https://whois.canarie.ca/routeregistry/documentation.html).
+RADB, ALTDB, BELL, REACH and BBOI use Merit's explicitly published anonymous FTP
+files. This is a configured transport choice, not a TLS-validation bypass or
+silent downgrade. The transport is unauthenticated; recorded SHA-256 hashes
+identify received bytes but do not prove publisher authenticity. The dashboard
+shows the provider/transport limitation and leaves unavailable provider timestamps
+unreported. Other downloads retain mandatory HTTPS certificate validation.
+
+Five tracked feeds still require external action. APNIC needs the owner's
+[signed bulk-access AUP](https://www.apnic.net/manage-ip/using-whois/bulk-access/).
+[IDNIC's own mirror policy](https://idnic.net/service/whois/irr) also references
+that AUP. [JPNIC's current mirror policy](https://www.nic.ad.jp/doc/jpnic-01297.html)
+requires eligibility/approval. NTT asks prospective mirrors to
+[contact its registry administrator](https://www.gin.ntt.net/support-center/policies-procedures/routing-registry/).
+Lumen/LEVEL3's published snapshot and alternate published-service addresses time
+out from this VM. No messages or agreements were sent/signed for the owner.
 
 ## Isolation and limits
 
@@ -102,7 +116,7 @@ Use the existing unprivileged `rust-irrd` account. Keep `/var/lib/rirrd-live`
 root-owned; only each generation's database file is writable by the daemon.
 
 `prepare.py --binary <immutable-binary> --output <new-generation>` checks disk
-headroom, bounded HTTPS downloads, decompression/record budgets, source identity,
+headroom, bounded downloads with explicit transport policy, decompression/record budgets, source identity,
 credential-field exclusion, strict imports and complete database integrity. A
 generation is not publishable unless every enabled source succeeds. Snapshot
 objects have a 4 MiB limit; authoritative submission admission remains 64 KiB.
@@ -126,3 +140,22 @@ verified generation, start it, then check both TCP WHOIS and HTTP source status.
 Preserve an offline backup before migrations. Site/config backups are separate
 under `/var/backups/rirrd-site/`. Keep all snapshots, databases, host runtime and
 credential material outside Git.
+
+## Resume a failed private generation
+
+Each successful source import writes an atomic checkpoint containing its normalized
+snapshot hash, count, publication metadata and preparation-program hash. A failed
+source leaves the live generation untouched. To resume, use the generation name
+shown in the private refresh status/journal:
+
+```sh
+python3 /usr/local/lib/rirrd-live/refresh.py --resume GENERATION_NAME
+```
+
+Resume verifies the candidate database, exact catalog and executable inputs, and
+completed snapshot hashes; it retries only unfinished feeds. It never modifies the
+serving generation and refuses changed catalog/binary inputs. The final complete
+integrity/count check and activation health checks still run. Runtime files and
+checkpoint payloads remain outside Git. Unit/integration checks simulate failure
+and resume using the normal Rust importer; the expanded live build also exercised
+this path after TC's unsafe member records were detected.
