@@ -15,6 +15,7 @@
     });
     text('breadcrumb',pages[selected]);
     document.title = `RIRRd · ${pages[selected]}`;
+    el("main").scrollIntoView({block:"start"});
   }
   async function json(url, options = {}) {
     const response = await fetch(url, {cache:'no-store',...options});
