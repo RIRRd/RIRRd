@@ -25,6 +25,18 @@ oracle results or protocol interop evidence as appropriate. Release
 extensions are tracked separately from upstream behaviour. Each row stays
 open until the stated behaviour and safety checks are demonstrated.
 
+## Dashboard and small-host checkpoint
+
+The bundled read-only console uses the same loopback query API, with explicit
+synthetic-preview mode for static demos. The [small-host checkpoint](../benchmarks/SMALL_HOST_CHECKPOINT.md)
+records 64/16 MiB cache budgets, one-worker profiles, bounded imports and a separate
+per-file cache-eviction test. Real bgpq4 1.12 results matched the pinned oracle on
+12 original synthetic profiles, with BIRD 2.17.5 and FRR 10.3 syntax checks.
+Native Linux and ARM64 QEMU release checks pass 137 unit/15 integration/two client
+tests. This establishes neither full schema/authentication/mirroring parity nor
+production qualification. Source publication now has MIT/AI contribution guidance
+and file/history secret-scan checks; those are separate from release readiness.
+
 ## GraphQL and 100k-object checkpoint
 
 The [synthetic scale checkpoint](../benchmarks/LINUX_SYNTHETIC_100K.md) records

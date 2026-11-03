@@ -1,3 +1,20 @@
+## Dashboard, small-host and publication continuation — 3 November 2026
+
+MIT licensing and explicit AI disclosure/contribution guidance are implemented. A bundled
+read-only console, configurable redb cache/runtime budgets, and real bgpq4 interoperability
+with BIRD/FRR syntax checks are implemented. See the [small-host checkpoint](docs/benchmarks/SMALL_HOST_CHECKPOINT.md)
+for nine bounded imports, 1,500,091 validated responses and a separate cache-eviction
+recheck. Import RSS improves at a measured import/query trade-off; this does not establish
+full parity or a minimum whole-VM requirement. Current Linux checks pass 137 unit,
+15 integration and two client tests, with the same release tests under ARM64 QEMU.
+The 39 TCP / 39 HTTP WHOIS and 47 authoritative HTTP pinned-oracle cases still pass.
+New CI workflows are present; authenticated Actions results remain unavailable.
+
+The user subsequently authorized a live public **test** registry, dashboard and router
+queries. Work is extending the private/synthetic console to real read-only routing
+sources with documented permissions, measured status and isolated refresh jobs.
+Submissions/administration stay private. Full parity and release qualification remain open.
+
 # Autonomous development checkpoint
 
 ## GraphQL and scale comparison continuation

@@ -66,3 +66,14 @@ loopback API. It reports configured budgets and available replication metadata;
 it does not invent process-memory or source-freshness readings.
 
 See [router integration](ROUTER_INTEGRATION.md) for the private evaluation workflow.
+
+## Measured checkpoint
+
+The [one-CPU checkpoint](../benchmarks/SMALL_HOST_CHECKPOINT.md) completed nine
+100,000-object imports under a 256 MiB cgroup limit, then repeated validated
+queries under a 128 MiB service limit. The new default's median peak import CLI
+RSS was 18.07 MiB versus 110.58 MiB before, with a longer median import time.
+The 16 MiB profile used 13.18 MiB peak import CLI RSS. A separate per-file
+cache-eviction recheck recorded 22.16 MiB process PSS and 46.45 MiB cgroup peak,
+without OOM events. These bounds apply to the documented synthetic workload,
+not a minimum host requirement or a full-registry guarantee.

@@ -1,0 +1,67 @@
+{
+  "scope": "one-CPU 16 MiB-cache common-query check after verified per-file page-cache eviction; not a whole-VM minimum",
+  "candidate_commit": "b3d8ad352205e938baffd2fdb078c112da012dd7",
+  "binary_sha256": "2a3d962ddf462f7438e630c142641d99cfe54f05f9efc43862782a521de553a7",
+  "fixture_sha256": "9fe1bf623acb0499df78537f4d097582c0fd1bba0fa4c99ae4b21a38dee3a0f2",
+  "page_residency_before": {
+    "pages": 33027,
+    "resident": 24913
+  },
+  "page_residency_after_eviction": {
+    "pages": 33027,
+    "resident": 0
+  },
+  "cpu_quota": "100%",
+  "server_cpus": "0",
+  "server_memory_max_bytes": 134217728,
+  "profiles": [
+    {
+      "attempted": 123215,
+      "clients": 4,
+      "connections": "Reused",
+      "errors": {},
+      "keys": 50000,
+      "max_ms": 10.350027,
+      "mode": "Whois",
+      "p50_ms": 0.287232,
+      "p95_ms": 0.617628,
+      "p99_ms": 0.834386,
+      "queries_per_second": 12318.535170027864,
+      "requested_seconds": 10,
+      "response_body_bytes": 19413224,
+      "successful": 123215,
+      "wall_seconds": 10.002406804,
+      "warmup_seconds": 3
+    },
+    {
+      "attempted": 38595,
+      "clients": 4,
+      "connections": "Reused",
+      "errors": {},
+      "keys": 50000,
+      "max_ms": 8.499509,
+      "mode": "Graphql",
+      "p50_ms": 0.942807,
+      "p95_ms": 2.078608,
+      "p99_ms": 2.893492,
+      "queries_per_second": 3858.7196256625525,
+      "requested_seconds": 10,
+      "response_body_bytes": 3550740,
+      "successful": 38595,
+      "wall_seconds": 10.002022366,
+      "warmup_seconds": 3
+    }
+  ],
+  "cgroup_current_bytes": 48168960,
+  "cgroup_peak_bytes": 48709632,
+  "memory_events": {
+    "low": 0,
+    "high": 0,
+    "max": 0,
+    "oom": 0,
+    "oom_kill": 0,
+    "oom_group_kill": 0
+  },
+  "process_pss_bytes": 23236608,
+  "completed_at": "2026-11-03T13:46:01Z"
+}
