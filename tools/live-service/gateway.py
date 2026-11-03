@@ -93,6 +93,9 @@ class State:
                     if fields[1].split(':')[1] == '002B' and fields[3] == '01':
                         connections += 1
             snapshot['whois_connections'] = connections
+            release_file = Path('/usr/local/lib/rirrd-live/release.json')
+            if release_file.is_file():
+                snapshot['release'] = json.loads(release_file.read_text())
             refresh_state = self.generation.parent / 'last-refresh.json'
             # generation is the root-owned 'current' symlink, not its resolved target.
             if refresh_state.is_file():
@@ -187,6 +190,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             stats = state.stats()
             loaded = [s['source'] for s in stats.get('sources', []) if s['state'] == 'loaded']
             return self.respond(200, json.dumps({'mode': 'live', 'public_service': True,
+                'source_revision': stats.get('release', {}).get('source_commit'),
                 'version': '0.1.0', 'node': {'name': 'RIRRd public test registry', 'location': None, 'sponsor': None},
                 'sources': loaded, 'whois_listen': 'rirrd.co.uk:43',
                 'http_sources': [s['source'] for s in stats.get('sources', []) if s['state'] == 'loaded' and s.get('http_access', True)],
