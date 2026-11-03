@@ -4,7 +4,7 @@ use crate::{config::RpkiConfig, rpki::RoaTable};
 use anyhow::{Result, ensure};
 use axum::{
     Json, Router,
-    extract::{Query, State},
+    extract::{DefaultBodyLimit, Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::get,
@@ -41,6 +41,8 @@ struct Dataset {
     serial: u32,
     rejected: u32,
     trust_anchors: usize,
+    validation_seconds: f64,
+    anchors: Vec<Value>,
 }
 struct Inner {
     dataset: Option<Arc<Dataset>>,
@@ -86,7 +88,8 @@ impl Shared {
             });
         json!({"enabled":enabled,"usable":usable,"state":if !enabled{"disabled"}else if dataset.is_some_and(|d|self.config.as_ref().is_some_and(|c|d.completed.elapsed() >= Duration::from_secs(c.expire_seconds))){"expired"}else{inner.state},
             "engine":"Routinator 0.15.3 / rpki-rs (embedded Rust library)","independent_validation":true,"transport":"RRDP; rsync disabled",
-            "vrps":dataset.map(|d|d.table.len()),"serial":dataset.map(|d|d.serial),"last_success":dataset.map(|d|d.timestamp),
+            "vrps":dataset.map(|d|d.table.len()),"vrps_ipv4":dataset.map(|d|d.table.family_counts().0),"vrps_ipv6":dataset.map(|d|d.table.family_counts().1),"serial":dataset.map(|d|d.serial),"last_success":dataset.map(|d|d.timestamp),
+            "validation_seconds":dataset.map(|d|d.validation_seconds),"dataset_age_seconds":dataset.map(|d|d.completed.elapsed().as_secs()),"refresh_seconds":self.config.as_ref().map(|c|c.refresh_seconds),"expire_seconds":self.config.as_ref().map(|c|c.expire_seconds),"trust_anchors":dataset.map(|d|&d.anchors),
             "trust_anchors_with_valid_publication_points":dataset.map(|d|d.trust_anchors),"rejected_publication_points":dataset.map(|d|d.rejected),
             "rtr_listen":self.config.as_ref().and_then(|c|c.rtr_listen).map(|a|a.to_string()),"rtr_exposure":"loopback only",
             "irr_query_filtering":false,"message":if !enabled{"Integrated validator is compiled in but not enabled for this instance."}else if !usable{"No fresh, complete validation run is available. Origin checks return unavailable; this is not a NOT_FOUND verdict."}else{"Locally validated RPKI payloads from all five bundled trust anchors. Rejected repositories and RRDP-only transport can reduce coverage. RTR is private; IRR query suppression remains in development."}})
@@ -96,8 +99,9 @@ impl Shared {
             .snapshot()
             .ok_or_else(|| anyhow::anyhow!("validated dataset unavailable or expired"))?;
         let result = dataset.table.validate(prefix, origin)?;
+        let (covering_roas, truncated) = dataset.table.covering_payloads(prefix)?;
         Ok(
-            json!({"prefix":prefix,"origin":origin,"state":result,"validated_vrps":dataset.table.len(),"dataset_serial":dataset.serial,"validated_at_unix_seconds":dataset.timestamp,"engine":"embedded Routinator 0.15.3","rejected_publication_points":dataset.rejected,"coverage":"RRDP validated subset; IRR data is separate"}),
+            json!({"prefix":prefix,"origin":origin,"state":result,"covering_roas":covering_roas,"covering_roas_truncated":truncated,"validated_vrps":dataset.table.len(),"dataset_serial":dataset.serial,"validated_at_unix_seconds":dataset.timestamp,"engine":"embedded Routinator 0.15.3","rejected_publication_points":dataset.rejected,"coverage":"RRDP validated subset; IRR data is separate"}),
         )
     }
 }
@@ -142,8 +146,57 @@ pub fn router(shared: Arc<Shared>) -> Router {
             "/v1/rpki/status",
             get(|State(s): State<Arc<Shared>>| async move { Json(s.status()) }),
         )
-        .route("/v1/rpki/validate", get(validate))
+        .route("/v1/rpki/validate", get(validate).post(validate_batch))
+        .layer(DefaultBodyLimit::max(16 * 1024))
         .with_state(shared)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Batch {
+    routes: Vec<Check>,
+}
+
+async fn validate_batch(State(shared): State<Arc<Shared>>, Json(batch): Json<Batch>) -> Response {
+    if batch.routes.is_empty() || batch.routes.len() > 100 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":"Provide between 1 and 100 routes"})),
+        )
+            .into_response();
+    }
+    // Pin one immutable dataset for the whole request, including its expiry
+    // check. A concurrent refresh must not mix serials within the batch.
+    let Some(dataset) = shared.snapshot() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error":"RPKI validation dataset unavailable or expired"})),
+        )
+            .into_response();
+    };
+    let mut results = Vec::with_capacity(batch.routes.len());
+    for query in batch.routes {
+        let origin = query.origin.to_ascii_uppercase();
+        let origin = origin.strip_prefix("AS").unwrap_or(&origin);
+        let parsed = origin.parse::<u32>();
+        if query.prefix.len() > 64 || query.origin.len() > 12 || parsed.is_err() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error":"Invalid prefix or origin; no batch results returned"})),
+            )
+                .into_response();
+        }
+        let origin = parsed.unwrap();
+        let Ok(state) = dataset.table.validate(&query.prefix, origin) else {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error":"Invalid prefix or origin; no batch results returned"})),
+            )
+                .into_response();
+        };
+        results.push(json!({"prefix":query.prefix,"origin":origin,"state":state}));
+    }
+    Json(json!({"results":results,"dataset_serial":dataset.serial,"validated_at_unix_seconds":dataset.timestamp})).into_response()
 }
 
 #[derive(Clone)]
@@ -260,21 +313,23 @@ fn validator(
     let mut initial = true;
     while !*shutdown.borrow() && shutdown.has_changed().is_ok() {
         shared.state("validating");
+        let started = Instant::now();
         history.mark_update_start();
         let run = (|| -> Result<()> {
             let (report, metrics) =
                 routinator::payload::ValidationReport::process(&engine, &settings, initial)
                     .map_err(|_| anyhow::anyhow!("RPKI validation run failed"))?;
-            let anchors = metrics
+            let anchor_count = metrics
                 .tals
                 .iter()
                 .filter(|t| t.publication.valid_points > 0)
                 .count();
             ensure!(
-                anchors >= 5,
+                anchor_count >= 5,
                 "not all five trust anchors produced valid publication points"
             );
             let rejected = metrics.publication.rejected_points;
+            let anchors = metrics.tals.iter().map(|t| json!({"name":t.name(),"valid_publication_points":t.publication.valid_points,"rejected_publication_points":t.publication.rejected_points,"vrps_ipv4":t.payload.v4_origins.contributed,"vrps_ipv6":t.payload.v6_origins.contributed})).collect();
             shared.state("publishing");
             let changed = history.update(report, &LocalExceptions::empty(), metrics);
             history.mark_update_done();
@@ -282,9 +337,10 @@ fn validator(
                 .read()
                 .current()
                 .ok_or_else(|| anyhow::anyhow!("missing RPKI payload snapshot"))?;
-            let table = RoaTable::from_payloads(snapshot.origins().map(|(o, _)| {
+            let table = RoaTable::from_verified_prefixes(snapshot.origins().map(|(o, _)| {
                 (
-                    o.prefix.prefix().to_string(),
+                    o.prefix.prefix().addr(),
+                    o.prefix.prefix().len(),
                     o.asn.into_u32(),
                     o.prefix.resolved_max_len(),
                 )
@@ -297,7 +353,9 @@ fn validator(
                 timestamp: SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs(),
                 serial,
                 rejected,
-                trust_anchors: anchors,
+                trust_anchors: anchor_count,
+                validation_seconds: started.elapsed().as_secs_f64(),
+                anchors,
             });
             shared
                 .inner
@@ -425,9 +483,56 @@ mod tests {
                 serial: 1,
                 rejected: 0,
                 trust_anchors: 5,
+                validation_seconds: 0.1,
+                anchors: Vec::new(),
             }));
         }
         shared
+    }
+
+    #[tokio::test]
+    async fn http_batch_has_one_serial_and_rejects_invalid_or_oversized_requests() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let shared = ready();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let app = router(shared.clone());
+        let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        async fn request(address: std::net::SocketAddr, body: String) -> String {
+            let mut socket = TcpStream::connect(address).await.unwrap();
+            socket.write_all(format!("POST /v1/rpki/validate HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",body.len(),body).as_bytes()).await.unwrap();
+            let mut response = Vec::new();
+            tokio::time::timeout(Duration::from_secs(3), socket.read_to_end(&mut response))
+                .await
+                .unwrap()
+                .unwrap();
+            String::from_utf8(response).unwrap()
+        }
+        let body=json!({"routes":[{"prefix":"192.0.2.0/24","origin":"AS64496"},{"prefix":"192.0.2.0/24","origin":"AS64497"},{"prefix":"198.51.100.0/24","origin":"64496"}]}).to_string();
+        let response = request(address, body.clone()).await;
+        assert!(response.starts_with("HTTP/1.1 200"));
+        let result: Value =
+            serde_json::from_str(response.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        assert_eq!(result["dataset_serial"], 1);
+        assert_eq!(result["results"][0]["state"], "VALID");
+        assert_eq!(result["results"][1]["state"], "INVALID");
+        assert_eq!(result["results"][2]["state"], "NOT_FOUND");
+        for body in [
+            json!({"routes":[]}).to_string(),
+            json!({"routes":[{"prefix":"bad","origin":"64496"}]}).to_string(),
+            json!({"routes":vec![json!({"prefix":"192.0.2.0/24","origin":"64496"});101]})
+                .to_string(),
+        ] {
+            assert!(request(address, body).await.starts_with("HTTP/1.1 400"));
+        }
+        assert!(
+            request(address, " ".repeat(16385))
+                .await
+                .starts_with("HTTP/1.1 413")
+        );
+        shared.state("failed");
+        assert!(request(address, body).await.starts_with("HTTP/1.1 503"));
+        task.abort();
     }
     #[tokio::test]
     async fn origin_api_never_turns_unavailable_or_expired_data_into_not_found() {
@@ -487,6 +592,8 @@ mod tests {
                 serial: 2,
                 rejected: 0,
                 trust_anchors: 5,
+                validation_seconds: 0.1,
+                anchors: Vec::new(),
             }));
         }
         assert_eq!(shared.status()["state"], "expired");

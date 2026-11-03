@@ -40,6 +40,7 @@ impl RoaTable {
     }
 
     /// Construct the ROV index directly from the embedded validator's verified payloads.
+    #[cfg(test)]
     pub fn from_payloads(payloads: impl IntoIterator<Item = (String, u32, u8)>) -> Result<Self> {
         let mut vrps = Vec::new();
         for (prefix, origin, max_length) in payloads {
@@ -64,6 +65,63 @@ impl RoaTable {
         vrps.sort_unstable();
         vrps.dedup();
         Ok(Self { vrps })
+    }
+
+    /// Build directly from verified binary prefixes without allocating and
+    /// reparsing a CIDR string for every payload on every refresh.
+    pub fn from_verified_prefixes(
+        payloads: impl IntoIterator<Item = (IpAddr, u8, u32, u8)>,
+    ) -> Result<Self> {
+        let input = payloads.into_iter();
+        let mut vrps = Vec::with_capacity(input.size_hint().0.min(MAX_VRPS));
+        for (address, length, origin, max_length) in input {
+            ensure!(vrps.len() < MAX_VRPS, "ROA payload limit exceeded");
+            let prefix = Prefix::from_parts(address, length)?;
+            ensure!(
+                (length..=prefix.width()).contains(&max_length),
+                "invalid payload maximum length"
+            );
+            vrps.push(Vrp {
+                prefix,
+                origin,
+                max_length,
+            });
+        }
+        vrps.sort_unstable();
+        vrps.dedup();
+        Ok(Self { vrps })
+    }
+
+    pub fn family_counts(&self) -> (usize, usize) {
+        let ipv4 = self
+            .vrps
+            .partition_point(|v| matches!(v.prefix, Prefix::V4(..)));
+        (ipv4, self.vrps.len() - ipv4)
+    }
+
+    /// A bounded explanation, ordered most-specific first. The validation
+    /// decision still considers every covering VRP, even when this is truncated.
+    pub fn covering_payloads(&self, prefix: &str) -> Result<(Vec<serde_json::Value>, bool)> {
+        let route = Prefix::parse(prefix)?;
+        let mut result = Vec::new();
+        for length in (0..=route.length()).rev() {
+            let candidate = route.ancestor(length);
+            let lower = self.vrps.partition_point(|v| v.prefix < candidate);
+            for vrp in self.vrps[lower..]
+                .iter()
+                .take_while(|v| v.prefix == candidate)
+            {
+                if result.len() == 32 {
+                    return Ok((result, true));
+                }
+                let address = match candidate {
+                    Prefix::V4(a, _) => IpAddr::V4(a.into()),
+                    Prefix::V6(a, _) => IpAddr::V6(a.into()),
+                };
+                result.push(serde_json::json!({"prefix":format!("{address}/{length}"),"asn":vrp.origin,"max_length":vrp.max_length}));
+            }
+        }
+        Ok((result, false))
     }
 
     /// Number of distinct validated prefix, origin and max-length tuples.
@@ -254,6 +312,10 @@ impl Prefix {
         );
         let length = length.parse::<u8>()?;
         let address: IpAddr = address.parse()?;
+        Self::from_parts(address, length)
+    }
+
+    fn from_parts(address: IpAddr, length: u8) -> Result<Self> {
         let prefix = match address {
             IpAddr::V4(address) => Self::V4(address.into(), length),
             IpAddr::V6(address) => Self::V6(address.into(), length),
@@ -303,6 +365,56 @@ mod tests {
 
     fn table(input: &str) -> Result<RoaTable> {
         RoaTable::read(input.as_bytes(), input.len() as u64)
+    }
+
+    #[test]
+    fn binary_index_matches_text_and_bounds_covering_explanations() -> Result<()> {
+        let binary = RoaTable::from_verified_prefixes([
+            ("192.0.2.0".parse()?, 24, 64496, 25),
+            ("192.0.2.0".parse()?, 24, 64496, 25),
+            ("2001:db8::".parse()?, 32, 64497, 48),
+        ])?;
+        let text = RoaTable::from_payloads([
+            ("192.0.2.0/24".into(), 64496, 25),
+            ("2001:db8::/32".into(), 64497, 48),
+        ])?;
+        assert_eq!(binary.len(), 2);
+        assert_eq!(binary.family_counts(), (1, 1));
+        for (prefix, origin) in [
+            ("192.0.2.0/25", 64496),
+            ("192.0.2.0/26", 64496),
+            ("192.0.2.0/24", 0),
+            ("2001:db8:1::/48", 64497),
+            ("2001:db8::/32", 64496),
+            ("198.51.100.0/24", 64496),
+        ] {
+            assert_eq!(
+                binary.validate(prefix, origin)?,
+                text.validate(prefix, origin)?
+            );
+            assert_eq!(
+                binary.covering_payloads(prefix)?,
+                text.covering_payloads(prefix)?
+            );
+        }
+        for (address, length, maximum) in [
+            ("192.0.2.1", 24, 24),
+            ("192.0.2.0", 33, 33),
+            ("2001:db8::", 32, 31),
+        ] {
+            assert!(
+                RoaTable::from_verified_prefixes([(address.parse()?, length, 64496, maximum)])
+                    .is_err()
+            );
+        }
+        let many = RoaTable::from_verified_prefixes(
+            (1..=100).map(|asn| ("192.0.2.0".parse().unwrap(), 24, asn, 24)),
+        )?;
+        let (covering, truncated) = many.covering_payloads("192.0.2.0/24")?;
+        assert_eq!(covering.len(), 32);
+        assert!(truncated);
+        assert_eq!(many.validate("192.0.2.0/24", 100)?, Validation::Valid);
+        Ok(())
     }
 
     #[test]

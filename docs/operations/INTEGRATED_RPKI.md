@@ -51,7 +51,7 @@ from a router's management host can reach it:
 
 ```sh
 # Substitute an actual authorized SSH account on the node; no account is implied.
-ssh -N -L 3323:127.0.0.1:3323 USER@rirrd.co.uk
+ssh -N -L 3323:127.0.0.1:3323 USER@irrd.tools
 ```
 
 Configure the lab RTR client on that management host to use localhost:3323.
@@ -71,3 +71,29 @@ per-repository observability, live IRR ROV suppression and journal transitions,
 ASPA/BGPsec delivery policy, multi-router interoperability, long outage and
 rollover qualification, and sustained resource measurements. The integration
 is experimental and is not full Routinator or IRRd production parity.
+
+## Beta API additions
+
+The single-route `GET /v1/rpki/validate` response includes up to 32 covering ROAs,
+ordered most-specific first, and an explicit truncation flag. The VALID/INVALID/
+NOT_FOUND decision still checks every covering payload, including entries omitted
+from the explanation. A covering ROA does not by itself authorise the route: ASN
+and maximum prefix length must both match. ASN zero cannot authorise an origin.
+
+Batch requests use the same endpoint with POST. A request pins one immutable
+validation dataset and returns one serial/timestamp for all results. Empty batches,
+more than 100 routes, malformed prefixes or origins fail the entire request.
+Bodies are bounded to 16 KiB; unavailable/expired data returns 503.
+
+```sh
+curl --fail https://irrd.tools/v1/rpki/validate \
+  -H 'Content-Type: application/json' \
+  --data '{"routes":[{"prefix":"193.0.0.0/21","origin":"AS3333"},{"prefix":"2001:67c:2e8::/48","origin":"AS3333"}]}'
+```
+
+Status includes IPv4/IPv6 payload totals, dataset age, refresh/expiry intervals,
+last validation duration and trust-anchor contribution/rejection counts. These
+are observations, not a claim that rejected or rsync-only repositories were
+included. The console plots contributed payloads per trust anchor. The ROV index
+is constructed from typed verified prefixes, avoiding per-payload CIDR formatting
+and reparsing on every refresh.
