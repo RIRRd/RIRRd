@@ -24,7 +24,7 @@ This development branch contains a transactional embedded registry, local snapsh
 
 RIRRd aims to provide the features of a self-hosted IRRd service on smaller Linux
 hosts, with a bundled dashboard, straightforward BIRD/FRR filter-generation
-workflows and a planned community directory of sponsored registry nodes.
+workflows and a reviewed community directory with hosting and sponsor credits.
 See [the project direction](docs/PROJECT_DIRECTION.md).
 
 ## Dashboard and router integration
@@ -262,11 +262,12 @@ The [100,000-object Linux synthetic comparison](docs/benchmarks/LINUX_SYNTHETIC_
 
 The live dashboard is https://rirrd.co.uk/dashboard/ and read-only TCP WHOIS/bgpq4
 uses `rirrd.co.uk:43`. Inspect the dashboard's loaded sources, missing feeds and
-snapshot times before testing. Daily snapshots are not near-real-time replication.
+snapshot times before testing. Seven sources follow NRTMv3 every sixty seconds; the remaining sources use daily snapshots.
 Submissions and administration are not public; full parity and production
 qualification remain incomplete. See the [router guide](docs/operations/ROUTER_INTEGRATION.md)
-and [live deployment guide](docs/operations/LIVE_SERVICE.md).
+and [live deployment guide](docs/operations/LIVE_SERVICE.md). Public IPv4/IPv6 and AS-set commands are in the [public query guide](docs/operations/PUBLIC_ROUTER_QUERIES.md).
 
 `http_sources` optionally restricts HTTP WHOIS/GraphQL to a nonempty subset of
 `sources`. TCP uses the full source list. This supports per-source distribution
-requirements; the public deployment keeps ARIN's objects on TCP WHOIS only.
+requirements. The current public deployment exposes all nineteen loaded routing
+sources, including ARIN, through TCP WHOIS, HTTP WHOIS and GraphQL.

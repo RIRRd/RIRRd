@@ -1,3 +1,8 @@
+Current website and console continuation: see the
+[community UX checkpoint](COMMUNITY_UX_CHECKPOINT.md). This file retains the
+original Linux checkpoint measurements rather than presenting them as current
+live-node capacity or full-parity evidence.
+
 > Current continuation: [UK node, nineteen public sources and embedded RPKI](UK_NODE_PUBLIC_SOURCES_RPKI.md).
 > This original Linux checkpoint is retained as historical evidence.
 

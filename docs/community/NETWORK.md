@@ -8,8 +8,8 @@ and shows where reviewed nodes operate.
 The first project node is **RIRRd UK 01**, hosted in the **United Kingdom** by
 **HYEHOST LLC**, as supplied by the project owner. Its public WHOIS and HTTPS
 service are checked separately. No city, financial sponsorship, service level
-or community enrollment availability is inferred. Additional community nodes
-and governance remain planned.
+is inferred. The public website accepts private, reviewed node submissions;
+additional verified nodes and broader governance remain to be established.
 The code repository remains private until its public release is authorized.
 
 ## What a listing should tell a network operator
@@ -36,19 +36,18 @@ should publish minimum operating requirements and an unlisting/incident process
 before accepting nodes. No payment integration or contractual sponsorship terms
 are implemented at this checkpoint.
 
-The dashboard consumes a small versioned `network.json` snapshot. Only confirmed
-`status: verified` entries are rendered as listings; there are no sample sponsors
-or fabricated nodes in the shipped directory. A future verifier must not blindly
-fetch arbitrary submitted URLs: endpoint ownership, address policy, TLS and
-bounded checks need review before automated enrollment.
+The community website consumes the reviewed `site/community/nodes.json` directory.
+Its node-submission service stores operator contacts privately and returns a pending
+receipt. It never fetches submitted endpoints or publishes an unreviewed listing.
+The private review CLI exports only public node fields; changes are then reviewed
+in Git and deployed as static assets. See the [service and review workflow](../../site/community/README.md).
 
-Canonical node metadata is in `tools/live-service/node.json`; the dashboard
-uses `web/dashboard/network.json`. Example empty directory shape for a new fork:
+The self-hosted console does not fetch the community directory, ship its listings,
+or require a community account. `web/dashboard/network.json` is an empty compatibility
+response for independent instances. Live public-node metadata comes separately from
+`tools/live-service/node.json`; a hosting provider is not inferred to be a financial
+sponsor.
 
-```json
-{"schema_version": 1, "status": "planned", "nodes": []}
-```
-
-Future verified entries can carry `id`, `name`, `region`, `city`, `country`,
-`operator`, `sponsor`, `whois`, `sources`, `verified_at` and `status`. Endpoint
-availability and data freshness need timestamps, not permanent green badges.
+Directory entries carry identity, location, hosting credits, query endpoints and
+verification provenance. Endpoint availability and source freshness are live node
+measurements, rather than permanent green directory badges.

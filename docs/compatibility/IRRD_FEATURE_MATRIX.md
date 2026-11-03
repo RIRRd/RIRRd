@@ -25,6 +25,14 @@ oracle results or protocol interop evidence as appropriate. Release
 extensions are tracked separately from upstream behaviour. Each row stays
 open until the stated behaviour and safety checks are demonstrated.
 
+## Community website and independent console
+
+The [community UX checkpoint](COMMUNITY_UX_CHECKPOINT.md) records separate
+community and self-hosted interfaces, private reviewed node submissions and
+browser-tested live prefix/set/ASN queries, source counts/browsing, API commands,
+router examples and RPKI state. These are usability and operational checks;
+they do not add upstream protocol parity or establish release readiness.
+
 ## Continuous mirror and console checkpoint
 
 The [continuous-mirroring checkpoint](CONTINUOUS_MIRROR_CHECKPOINT.md) records

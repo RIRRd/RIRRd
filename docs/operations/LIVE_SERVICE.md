@@ -66,12 +66,17 @@ without copying a multi-gigabyte serving database during downtime.
 ## Isolation and limits
 
 Distribution Caddy terminates TLS, retains automatic renewal and serves project
-pages from `/var/www/rirrd-coming-soon`. Its narrow query allowlist proxies to a
+the separate community site from `/var/www/rirrd-community` (an atomic static
+release symlink). Its source, reviewed node directory and private submission service
+are in [`site/community/`](../../site/community/README.md). The reusable
+self-hosted console is independently bundled from `web/dashboard/`. Its narrow query allowlist proxies to a
 loopback-only Python gateway on port 9281; all other registry routes remain 404.
 The Rust HTTP service stays on loopback port 9280 and validates Host. The gateway
 uses a literal loopback backend, never an arbitrary user-supplied URL.
 
-The gateway permits only WHOIS GET and GraphQL POST. It limits request bodies to
+The gateway permits read-only WHOIS, RPKI status/validation and bounded object
+browsing GET requests, plus GraphQL POST. Community node submissions go to a
+separate loopback service on port 9282; they cannot submit registry updates. It limits request bodies to
 16 KiB, responses to 2 MiB, concurrent worker threads to 16 and query rate to two
 per second with a 20-request burst per IP (IPv6 /64). Caddy overwrites the client
 address header from its direct connection. No visitor IP/query logs or third-party
@@ -80,7 +85,7 @@ analytics are enabled. Rate state is bounded to 4,096 in-memory client keys.
 Rust WHOIS has 128 global connections, eight per IP and a ten-second I/O deadline.
 Its NRTM ACL is empty and authoritative sources/HTTP updates are disabled. The
 unprivileged daemon has only CAP_NET_BIND_SERVICE, a 64 MiB database cache, two
-runtime workers, a 2 GiB cgroup ceiling and a three-CPU quota. These are operational
+runtime workers, a 3 GiB cgroup ceiling and a three-CPU quota. These are operational
 ceilings for the larger real dataset, not measured minimum-host requirements.
 The gateway has a separate 128 MiB ceiling. Firewall input permits TCP 22/43/80/443,
 loopback, established traffic and ICMP; development ports remain private.

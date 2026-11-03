@@ -1,3 +1,12 @@
+## Community website and independent console — 3 November 2026
+
+The [UI and operations checkpoint](docs/compatibility/COMMUNITY_UX_CHECKPOINT.md)
+records the deployed community website, separate independent console, private
+reviewed node submissions, visible IPv4/IPv6/AS-set/ASN and BIRD/FRR examples,
+responsive browser checks and reduced telemetry polling. Nineteen live sources
+remain available. Full parity remains incomplete; this UI checkpoint does not
+close authentication, mirroring, policy or release qualification gaps.
+
 ## UK node, nineteen public sources and embedded RPKI — 3 November 2026
 
 The [current checkpoint](docs/compatibility/UK_NODE_PUBLIC_SOURCES_RPKI.md) records

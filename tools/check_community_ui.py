@@ -68,5 +68,5 @@ with tempfile.TemporaryDirectory(prefix='rirrd-community-browser-') as profile:
                 browser.js('location.hash="overview"');browser.wait('!document.getElementById("page-overview").hidden')
                 shot=browser.call('Page.captureScreenshot',{'format':'png'},True);(args.screenshots/f'console-{width}.png').write_bytes(base64.b64decode(shot['data']))
         assert not [event for event in browser.events if event.get('method')=='Runtime.exceptionThrown']
-        print('Community directory, private submission preview, seven console views, IPv4/IPv6/set/ASN queries, source filtering/browsing, commands and RPKI passed at 320/390/1440px')
+        print('Community directory, ' + ('private submission preview, ' if args.submit_preview else '') + 'seven console views, IPv4/IPv6/set/ASN queries, source filtering/browsing, commands and RPKI passed at 320/390/1440px')
     finally:browser.close()
