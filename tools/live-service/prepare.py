@@ -8,6 +8,7 @@ import hashlib
 import json
 import ipaddress
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -27,15 +28,41 @@ def now():
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
 
 
-def download(url, target):
-    if urllib.parse.urlsplit(url).scheme != 'https':
-        raise ValueError('Only explicit HTTPS snapshot endpoints are enabled')
+def sha256(path):
+    with path.open('rb') as stream:
+        return hashlib.file_digest(stream, 'sha256').hexdigest()
+
+
+def write_json(path, value):
+    temporary = path.with_suffix('.tmp')
+    temporary.write_text(json.dumps(value, indent=2) + '\n')
+    temporary.replace(path)
+
+
+def check_transport(url, allow_ftp=False):
+    endpoint = urllib.parse.urlsplit(url)
+    if endpoint.username is not None or endpoint.password is not None:
+        raise ValueError('Credentials do not belong in public snapshot URLs')
+    if endpoint.scheme == 'https' and endpoint.hostname:
+        return 'https'
+    # Some official IRR publications support anonymous FTP only. This is an
+    # explicit catalog choice, never a fallback from a failed TLS check.
+    if (allow_ftp and endpoint.scheme == 'ftp'
+            and endpoint.hostname == 'ftp.radb.net' and endpoint.port in (None, 21)
+            and endpoint.path.startswith('/radb/dbase/') and not endpoint.query):
+        return 'ftp'
+    raise ValueError('Snapshot endpoint requires HTTPS or explicitly allowed official anonymous FTP')
+
+
+def download(url, target, allow_ftp=False):
+    transport = check_transport(url, allow_ftp)
     started = time.monotonic()
     request = urllib.request.Request(url, headers={'User-Agent': 'RIRRd-experimental-mirror/0.1'})
     total = 0
     digest = hashlib.sha256()
     with urllib.request.urlopen(request, timeout=30) as response, target.open('xb') as out:
-        if urllib.parse.urlsplit(response.url).scheme != 'https':
+        final = urllib.parse.urlsplit(response.url)
+        if (transport == 'https' and final.scheme != 'https') or (transport == 'ftp' and response.url != url):
             raise ValueError('Insecure download redirect')
         while block := response.read(65536):
             total += len(block)
@@ -44,7 +71,8 @@ def download(url, target):
             out.write(block)
             digest.update(block)
         modified = response.headers.get('Last-Modified')
-    return {'url': url, 'bytes': total, 'sha256': digest.hexdigest(),
+    return {'url': url, 'bytes': total, 'sha256': digest.hexdigest(), 'transport': transport,
+            'transport_authenticated': transport == 'https',
             'last_modified': modified, 'fetched_at': now()}
 
 
@@ -148,15 +176,29 @@ def normalize(paths, target, source, classes, encoding):
 
 def run(args):
     catalog = json.loads(args.catalog.read_text())
+    names = [row['source'] for row in catalog['sources']]
+    if len(names) != len(set(names)) or not all(re.fullmatch('[A-Z][A-Z0-9_-]{0,31}', name) for name in names):
+        raise ValueError('Catalog source names must be safe, unique canonical identifiers')
     enabled = [row for row in catalog['sources'] if row['state'] == 'enabled']
     if shutil.disk_usage(args.output.parent).free < 12 * 1024**3:
         raise ValueError('At least 12 GiB free staging space is required')
-    args.output.mkdir(mode=0o700)
+    inputs = {'schema_version': 2, 'catalog_sha256': sha256(args.catalog), 'binary_sha256': sha256(args.binary)}
+    completed = {}
+    if args.resume:
+        if args.output.is_symlink() or json.loads((args.output / 'build-inputs.json').read_text()) != inputs:
+            raise ValueError('Resume requires the same private candidate, binary and source catalog')
+        completed = json.loads((args.output / 'progress.json').read_text())['completed']
+        subprocess.run([str(args.binary), '--config', str(args.output / 'irrd.toml'), 'database', 'verify'],
+                       check=True, capture_output=True, text=True, timeout=1800)
+    else:
+        args.output.mkdir(mode=0o700)
+        write_json(args.output / 'build-inputs.json', inputs)
+        write_json(args.output / 'progress.json', {'completed': {}})
     snapshot_dir = args.output / 'snapshots'
-    snapshot_dir.mkdir(mode=0o700)
+    snapshot_dir.mkdir(mode=0o700, exist_ok=args.resume)
     database = args.output / 'registry.redb'
     config = args.output / 'irrd.toml'
-    config.write_text('database = ' + json.dumps(str(database.resolve())) + '''
+    config_text = 'database = ' + json.dumps(str(database.resolve())) + '''
 database_cache_mib = 64
 worker_threads = 2
 max_blocking_threads = 4
@@ -170,21 +212,38 @@ io_timeout_seconds = 10
 max_snapshot_bytes = 1610612736
 [node]
 name = "RIRRd public test registry"
-''')
+'''
+    if args.resume:
+        if config.read_text() != config_text:
+            raise ValueError('Candidate configuration changed; refusing to resume')
+    else:
+        config.write_text(config_text)
     report = {'schema_version': 1, 'built_at': now(), 'refresh_mode': catalog['refresh'],
-              'binary_sha256': hashlib.file_digest(args.binary.open('rb'), 'sha256').hexdigest(),
+              'binary_sha256': inputs['binary_sha256'],
               'classes': catalog['classes'], 'sources': [], 'total_objects': 0}
     for entry in catalog['sources']:
         if entry['state'] != 'enabled':
             report['sources'].append(entry)
             continue
         source = entry['source']
+        if source in completed:
+            row = completed[source]
+            if sha256(snapshot_dir / f'{source}.rpsl') != row['normalized_sha256']:
+                raise ValueError('Completed normalized snapshot changed; candidate not published')
+            report['sources'].append(row)
+            report['total_objects'] += row['objects']
+            print(json.dumps({'source': source, 'objects': row['objects'], 'resumed': True}), flush=True)
+            continue
         files, downloads = [], []
         for i, url in enumerate(entry['urls']):
             path = snapshot_dir / f'{source}-{i}.gz'
-            downloads.append(download(url, path))
+            if args.resume:
+                path.unlink(missing_ok=True)
+            downloads.append(download(url, path, entry.get('allow_plaintext_ftp', False)))
             files.append(path)
         path = snapshot_dir / f'{source}.rpsl'
+        if args.resume:
+            path.unlink(missing_ok=True)
         counts, excluded, duplicates = normalize(files, path, source, set(catalog['classes']), entry['encoding'])
         start = time.monotonic()
         result = subprocess.run([str(args.binary), '--config', str(config), 'import', 'snapshot',
@@ -211,6 +270,10 @@ name = "RIRRd public test registry"
                 continue
         row['skipped_lookup_values'] = sum(int(event.get('skipped_lookup_values', 0)) for event in warnings)
         row['lookup_note'] = 'Malformed optional lookup values remain in object text but are not indexed; this is not authoritative schema validation.'
+        row['normalized_sha256'] = sha256(path)
+        row['preparation_sha256'] = sha256(Path(__file__))
+        completed[source] = row
+        write_json(args.output / 'progress.json', {'completed': completed})
         report['sources'].append(row)
         report['total_objects'] += imported['objects']
         print(json.dumps({'source': source, 'objects': imported['objects'],
@@ -219,12 +282,11 @@ name = "RIRRd public test registry"
                               capture_output=True, text=True, check=True, timeout=1800)
     if json.loads(verified.stdout)['objects'] != report['total_objects']:
         raise ValueError('Complete candidate integrity/count check failed')
-    with args.binary.open('rb') as executable:
-        if hashlib.file_digest(executable, 'sha256').hexdigest() != report['binary_sha256']:
-            raise ValueError('Binary changed during snapshot build; candidate not published')
+    if sha256(args.binary) != report['binary_sha256']:
+        raise ValueError('Binary changed during snapshot build; candidate not published')
     report['verified_at'] = now()
     report['database_bytes'] = database.stat().st_size
-    (args.output / 'sources.json').write_text(json.dumps(report, indent=2) + '\n')
+    write_json(args.output / 'sources.json', report)
     print(json.dumps({'verified_objects': report['total_objects'], 'database_bytes': report['database_bytes']}))
 
 
@@ -233,4 +295,5 @@ if __name__ == '__main__':
     parser.add_argument('--catalog', type=Path, default=Path(__file__).with_name('sources.json'))
     parser.add_argument('--binary', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True, help='New private generation directory')
+    parser.add_argument('--resume', action='store_true', help='Resume a private candidate with identical catalog and binary inputs')
     run(parser.parse_args())

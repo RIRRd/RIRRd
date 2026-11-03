@@ -7,6 +7,8 @@ from pathlib import Path
 import tempfile
 import threading
 import unittest
+from unittest import mock
+from types import SimpleNamespace
 
 import gateway
 import prepare
@@ -103,6 +105,54 @@ class GatewayChecks(unittest.TestCase):
             self.assertIn('remarks: final', output.read_text())
             self.assertIn('\u2028paragraph', output.read_text())
             self.assertNotIn('remarks: first', output.read_text())
+
+    def test_plaintext_transport_requires_explicit_official_endpoint(self):
+        self.assertEqual(prepare.check_transport('https://example.net/data.gz'), 'https')
+        url = 'ftp://ftp.radb.net/radb/dbase/radb.db.gz'
+        with self.assertRaises(ValueError):
+            prepare.check_transport(url)
+        self.assertEqual(prepare.check_transport(url, True), 'ftp')
+        for bad in ['http://example.net/data.gz', 'ftp://example.net/data.gz',
+                    'ftp://ftp.radb.net:22/radb/dbase/data.gz',
+                    'ftp://ftp.radb.net/private/data.gz',
+                    'https://user:secret@example.net/data.gz']:
+            with self.assertRaises(ValueError):
+                prepare.check_transport(bad, True)
+
+    def test_failed_build_resumes_verified_sources_and_rejects_changed_inputs(self):
+        import gzip
+        import shutil
+        binary = Path(__file__).resolve().parents[2] / 'target/release/rust-irrd'
+        if not binary.is_file():
+            self.skipTest('Build the normal release binary first')
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            catalog = root / 'catalog.json'
+            catalog.write_text(json.dumps({'classes':['aut-num'], 'refresh':'test', 'sources':[
+                {'source':source,'state':'enabled','encoding':'utf-8','urls':['https://example.net/'+source]}
+                for source in ['TEST','OTHER']]}))
+            output = root / 'candidate'
+            args = SimpleNamespace(catalog=catalog, binary=binary, output=output, resume=False)
+            calls = []
+            def download(url, target, _allow_ftp=False):
+                source = url.rsplit('/',1)[1]
+                calls.append(source)
+                if source=='OTHER' and calls.count('OTHER')==1:
+                    raise OSError('simulated upstream failure')
+                target.write_bytes(gzip.compress(f'aut-num: AS64496\nsource: {source}\n'.encode()))
+                return {'url':url,'sha256':prepare.sha256(target),'bytes':target.stat().st_size}
+            with mock.patch.object(prepare, 'download', download), mock.patch.object(prepare.shutil, 'disk_usage', return_value=shutil._ntuple_diskusage(100*1024**3,0,100*1024**3)):
+                with self.assertRaises(OSError):
+                    prepare.run(args)
+                self.assertFalse((output/'sources.json').exists())
+                self.assertEqual(set(json.loads((output/'progress.json').read_text())['completed']), {'TEST'})
+                args.resume=True
+                prepare.run(args)
+                self.assertEqual(calls, ['TEST','OTHER','OTHER'])
+                self.assertEqual(json.loads((output/'sources.json').read_text())['total_objects'], 2)
+                catalog.write_text(catalog.read_text()+'\n')
+                with self.assertRaises(ValueError):
+                    prepare.run(args)
 
 
 if __name__ == '__main__':

@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Root-owned generation switch: validate while serving; rollback on failed start."""
 import datetime
+import argparse
 import fcntl
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -47,14 +49,23 @@ def healthy(sources):
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--resume', help='Private failed generation name, never the serving generation')
+    args = parser.parse_args()
     with (ROOT / 'refresh.lock').open('w') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         destination = ROOT / 'generations' / datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%SZ')
         previous = (ROOT / 'current').resolve(strict=True)
+        if args.resume:
+            if not re.fullmatch(r'[A-Za-z0-9_-]+', args.resume):
+                raise ValueError('Resume requires a generation basename')
+            destination = ROOT / 'generations' / args.resume
+            if destination.is_symlink() or destination.resolve() == previous:
+                raise ValueError('The serving generation cannot be resumed or modified')
         try:
-            save_state({'state': 'running', 'attempted_at': datetime.datetime.now(datetime.timezone.utc).isoformat()})
+            save_state({'state': 'running', 'generation': destination.name, 'attempted_at': datetime.datetime.now(datetime.timezone.utc).isoformat()})
             subprocess.run([sys.executable, str(TOOLS / 'prepare.py'), '--catalog', str(TOOLS / 'sources.json'),
-                            '--binary', BINARY, '--output', str(destination)], check=True)
+                            '--binary', BINARY, '--output', str(destination)] + (['--resume'] if args.resume else []), check=True)
             report = json.loads((destination / 'sources.json').read_text())
             before = json.loads((previous / 'sources.json').read_text())
             baseline = {row['source']: row['objects'] for row in before['sources'] if row['state'] == 'loaded'}
@@ -87,6 +98,7 @@ def main():
         except Exception:
             # Leave serving state unchanged; private journal has detailed diagnostics.
             save_state({'state': 'failed', 'attempted_at': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                'generation': destination.name,
                 'message': 'Refresh failed; last verified generation retained. Operator review required.'})
             raise
 

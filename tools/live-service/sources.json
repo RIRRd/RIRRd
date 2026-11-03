@@ -72,45 +72,66 @@
     },
     {
       "source": "BELL",
-      "state": "pending",
-      "reason": "Source permission and supported transport review pending; not loaded or queried.",
-      "permission": "https://irr.net/registry/",
-      "urls": []
+      "state": "enabled",
+      "permission": "https://irr.net/overview/",
+      "urls": [
+        "ftp://ftp.radb.net/radb/dbase/bell.db.gz"
+      ],
+      "encoding": "utf-8",
+      "terms": "https://radb.atlassian.net/wiki/spaces/RADb/pages/46105414/NRTM",
+      "allow_plaintext_ftp": true,
+      "provider": "Merit public IRR snapshot",
+      "transport_note": "Official anonymous FTP snapshot; transport is not authenticated. SHA-256 records received bytes, not publisher authenticity."
     },
     {
       "source": "JPIRR",
       "state": "pending",
-      "reason": "JPNIC mirror-policy/onboarding review required before enabling this feed.",
-      "permission": "https://www.nic.ad.jp/ja/ip/irr/",
+      "reason": "JPNIC mirror eligibility/approval required under current policy section 4; owner onboarding pending.",
+      "permission": "https://www.nic.ad.jp/doc/jpnic-01297.html",
       "urls": []
     },
     {
       "source": "IDNIC",
       "state": "pending",
-      "reason": "Official HTTPS mirror endpoint fails TLS negotiation; mirror access/permission pending.",
-      "permission": "https://irr.net/registry/",
+      "reason": "IDNIC mirror policy requires the APNIC AUP; owner access agreement is pending. Official HTTPS endpoint also fails TLS negotiation.",
+      "permission": "https://idnic.net/service/whois/irr",
       "urls": []
     },
     {
       "source": "ALTDB",
-      "state": "pending",
-      "reason": "Official HTTPS snapshot hostname has a certificate-name mismatch; approved transport and permission pending.",
-      "permission": "https://irr.net/registry/",
-      "urls": []
+      "state": "enabled",
+      "permission": "https://irr.net/overview/",
+      "urls": [
+        "ftp://ftp.radb.net/radb/dbase/altdb.db.gz"
+      ],
+      "encoding": "utf-8",
+      "terms": "https://radb.atlassian.net/wiki/spaces/RADb/pages/46105414/NRTM",
+      "allow_plaintext_ftp": true,
+      "provider": "Merit public IRR snapshot",
+      "transport_note": "Official anonymous FTP snapshot; transport is not authenticated. SHA-256 records received bytes, not publisher authenticity."
     },
     {
       "source": "TC",
-      "state": "pending",
-      "reason": "Source permission and supported transport review pending; not loaded or queried.",
-      "permission": "https://irr.net/registry/",
-      "urls": []
+      "state": "enabled",
+      "permission": "https://bgp.net.br/terms.html",
+      "urls": [
+        "https://ftp.bgp.net.br/tc.db.gz"
+      ],
+      "encoding": "utf-8",
+      "terms": "https://bgp.net.br/terms.html"
     },
     {
       "source": "REACH",
-      "state": "pending",
-      "reason": "Source permission and supported transport review pending; not loaded or queried.",
-      "permission": "https://irr.net/registry/",
-      "urls": []
+      "state": "enabled",
+      "permission": "https://irr.net/overview/",
+      "urls": [
+        "ftp://ftp.radb.net/radb/dbase/reach.db.gz"
+      ],
+      "encoding": "utf-8",
+      "terms": "https://radb.atlassian.net/wiki/spaces/RADb/pages/46105414/NRTM",
+      "allow_plaintext_ftp": true,
+      "provider": "Merit public IRR snapshot",
+      "transport_note": "Official anonymous FTP snapshot; transport is not authenticated. SHA-256 records received bytes, not publisher authenticity."
     },
     {
       "source": "LEVEL3",
@@ -128,10 +149,16 @@
     },
     {
       "source": "RADB",
-      "state": "pending",
-      "reason": "Official FTP snapshot is reachable; public redistribution terms and plaintext transport review pending.",
+      "state": "enabled",
       "permission": "https://irr.net/overview/",
-      "urls": []
+      "urls": [
+        "ftp://ftp.radb.net/radb/dbase/radb.db.gz"
+      ],
+      "encoding": "utf-8",
+      "terms": "https://radb.atlassian.net/wiki/spaces/RADb/pages/46105414/NRTM",
+      "allow_plaintext_ftp": true,
+      "provider": "Merit public IRR snapshot",
+      "transport_note": "Official anonymous FTP snapshot; transport is not authenticated. SHA-256 records received bytes, not publisher authenticity."
     },
     {
       "source": "RIPE-NONAUTH",
@@ -148,17 +175,26 @@
     },
     {
       "source": "CANARIE",
-      "state": "pending",
-      "reason": "Source permission and supported transport review pending; not loaded or queried.",
-      "permission": "https://irr.net/registry/",
-      "urls": []
+      "state": "enabled",
+      "permission": "https://whois.canarie.ca/routeregistry/documentation.html",
+      "urls": [
+        "https://whois.canarie.ca/dbase/canarie.db.gz"
+      ],
+      "encoding": "utf-8",
+      "terms": "https://www.canarie.ca/network/support/tools/"
     },
     {
       "source": "BBOI",
-      "state": "pending",
-      "reason": "Source permission and supported transport review pending; not loaded or queried.",
-      "permission": "https://irr.net/registry/",
-      "urls": []
+      "state": "enabled",
+      "permission": "https://irr.net/overview/",
+      "urls": [
+        "ftp://ftp.radb.net/radb/dbase/bboi.db.gz"
+      ],
+      "encoding": "utf-8",
+      "terms": "https://radb.atlassian.net/wiki/spaces/RADb/pages/46105414/NRTM",
+      "allow_plaintext_ftp": true,
+      "provider": "Merit public IRR snapshot",
+      "transport_note": "Official anonymous FTP snapshot; transport is not authenticated. SHA-256 records received bytes, not publisher authenticity."
     }
   ]
 }

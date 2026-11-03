@@ -118,7 +118,7 @@
         cell(row,source.objects==null?'—':Number(source.objects).toLocaleString());
         const modified=[...new Set((source.downloads || []).map(file=>file.last_modified).filter(Boolean))];
         cell(row,modified.join(' / ') || 'Not fetched');cell(row,source.imported_at || 'Not imported');
-        cell(row,source.state==='loaded'?Object.keys(source.classes || {}).join(', ')+(source.http_access===false?' · TCP WHOIS only; excluded from web queries.':'')+(source.skipped_lookup_values?' · '+source.skipped_lookup_values+' malformed lookup values not indexed.':'')+(source.duplicate_identities_last_wins?' · '+source.duplicate_identities_last_wins+' duplicate identities collapsed (last record).':''):source.reason || 'Not loaded');
+        cell(row,source.state==='loaded'?Object.keys(source.classes || {}).join(', ')+(source.http_access===false?' · TCP WHOIS only; excluded from web queries.':'')+(source.skipped_lookup_values?' · '+source.skipped_lookup_values+' malformed lookup values not indexed.':'')+(source.duplicate_identities_last_wins?' · '+source.duplicate_identities_last_wins+' duplicate identities collapsed (last record).':'')+(source.transport_note?' · '+source.transport_note:''):source.reason || 'Not loaded');
         if(source.permission?.startsWith('https://')){const policy=document.createElement('a');policy.href=source.permission;policy.textContent='Source policy / access';row.lastElementChild.append(document.createElement('br'),policy);}
         el('source-rows').append(row);
         const pill=document.createElement('div');pill.className='source-pill';const title=document.createElement('strong');title.textContent=source.source;
