@@ -46,9 +46,17 @@ with tempfile.TemporaryDirectory(prefix='rirrd-two-sites-browser-') as profile:
         assert browser.js('document.getElementById("query-kind").value')=='origin'
         assert browser.js('document.getElementById("query-family").value')=='6'
         assert browser.js('document.getElementById("query-value").value')=='AS3333'
-        browser.js('document.getElementById("query-source").value="RIPE";document.getElementById("query-form").requestSubmit()')
-        browser.wait('!document.getElementById("query-submit").disabled')
+        browser.wait('document.getElementById("query-status").textContent.includes("Ready to copy")')
+        assert 'run=1' not in browser.js('location.search')
+        requests=browser.js('performance.getEntriesByType("resource").map(r=>new URL(r.name).pathname)')
+        assert requests.count('/v1/whois/')==1,requests
+        assert not any(p in requests for p in ['/dashboard/live.json','/dashboard/history.json','/v1/rpki/status']),requests
         assert '2001:' in browser.js('document.getElementById("query-result").textContent')
+        preset=browser.js('location.href')
+        browser.call('Page.navigate',{'url':preset},True)
+        browser.wait('document.getElementById("query-submit") && !document.getElementById("query-submit").disabled')
+        assert browser.js('document.getElementById("query-result").textContent')=='No query submitted.'
+        assert not browser.js('performance.getEntriesByType("resource").some(r=>new URL(r.name).pathname==="/v1/whois/")')
         browser.js('location.hash="overview"')
         browser.wait('Number(document.getElementById("source-chart")?.dataset.points)===19')
         assert not [event for event in browser.events if event.get('method')=='Runtime.exceptionThrown']

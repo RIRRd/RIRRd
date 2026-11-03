@@ -22,7 +22,7 @@ with tempfile.TemporaryDirectory(prefix='rirrd-chart-check-') as profile:
         browser.call('Emulation.setDeviceMetricsOverride',{'width':1440,'height':1100,'deviceScaleFactor':1,'mobile':False},True)
         browser.call('Page.navigate',{'url':args.community.rstrip('/')+'/dashboard/'},True)
         browser.wait('document.getElementById("source-chart")?.dataset.points==="19"')
-        browser.wait('document.querySelector("#query-chart svg")!==null')
+        browser.wait('document.getElementById("history-note").textContent.includes("Collection began")')
         browser.js('''window.testHost=document.getElementById('query-chart');window.testPoints=[{timestamp:1000,value:1},{timestamp:1060,value:2},{timestamp:1120,value:null},{timestamp:1360,value:4}];RIRRdCharts.line(testHost,testPoints,'value','Chart interaction fixture');window.originalSvg=testHost.querySelector('svg');''')
         browser.js("RIRRdCharts.line(testHost,testPoints.map(p=>({...p})),'value','Chart interaction fixture')")
         assert browser.js("originalSvg===testHost.querySelector('svg')")

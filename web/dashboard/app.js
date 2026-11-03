@@ -165,7 +165,7 @@
       RIRRdCharts.bars(el('anchor-chart'), (rpkiData.trust_anchors || []).map(a=>({label:a.name,value:a.vrps_ipv4+a.vrps_ipv6})), 'Validated RPKI origin payloads by trust anchor');
       text('router-access', publicMode() ? 'This public node offers origin checks over HTTPS. Direct router RTR access is not public.' : rpkiData.rtr_listen ? 'Local RTR listener: ' + rpkiData.rtr_listen + '. Use a router on the same host or an authorised management connection.' : 'A local RTR listener is not configured.');
       el('rpki-metrics').replaceChildren();
-      for (const [label, value] of [['Validated payloads', count(rpkiData.vrps)], ['Rejected publication points', rpkiData.rejected_publication_points ?? '—'], ['Dataset serial', rpkiData.serial ?? '—'], ['Last validated', rpkiData.last_success ? new Date(rpkiData.last_success * 1000).toLocaleString() : 'Not yet']]) { const box = document.createElement('div'), name = document.createElement('span'), number = document.createElement('strong'); name.textContent = label; number.textContent = value; box.append(name, number); el('rpki-metrics').append(box); }
+      for (const [label, value] of [['Validated payloads', count(rpkiData.vrps)], ['Rejected publication points', rpkiData.rejected_publication_points ?? '—'], ['ROV index allocation', rpkiData.rov_index_bytes == null ? 'Not reported' : bytes(rpkiData.rov_index_bytes)], ['Dataset serial', rpkiData.serial ?? '—'], ['Last validated', rpkiData.last_success ? new Date(rpkiData.last_success * 1000).toLocaleString() : 'Not yet']]) { const box = document.createElement('div'), name = document.createElement('span'), number = document.createElement('strong'); name.textContent = label; number.textContent = value; box.append(name, number); el('rpki-metrics').append(box); }
     } catch (error) { text('rpki-summary', 'Status unavailable'); text('rpki-detail', error.message); el('rpki-submit').disabled = true; el('rpki-batch-submit').disabled = true; }
   }
   function queryText() {
@@ -181,6 +181,12 @@
   }
   function requestPath(q) { const p = new URLSearchParams({q}); if (el('query-source').value) p.set('sources', el('query-source').value); return '/v1/whois/?' + p; }
   function updateCommand() {
+    const kind=el('query-kind').value,family=el('query-family').value;
+    document.querySelectorAll('[data-task]').forEach(button=>{
+      const active=button.dataset.task===(kind==='origin'?'origin'+family:kind==='set'?'set'+family:kind);
+      button.setAttribute('aria-pressed',String(active));
+    });
+
     el('query-family').disabled = !['origin', 'set'].includes(el('query-kind').value);
     try { command = "curl --fail '" + location.origin + requestPath(queryText()) + "'"; } catch { command = 'Choose a query above.'; }
     text('query-command', command);
@@ -189,15 +195,16 @@
     event.preventDefault(); queryController?.abort(); const controller = new AbortController(); queryController = controller;
     const timeout = setTimeout(() => controller.abort(), 15000); el('query-submit').disabled = true; el('copy-result').disabled = true; text('query-status', 'Querying…'); text('result-count', '');
     try {
-      const q = queryText(); updateCommand(); const response = await fetch(requestPath(q), {cache: 'no-store', signal: controller.signal});
+      const q = queryText(), kind = el('query-kind').value, source = el('query-source').value; updateCommand(); const response = await fetch(requestPath(q), {cache: 'no-store', signal: controller.signal});
       if (!response.ok) throw new Error(response.status === 429 ? 'Rate limit reached. Wait a moment and retry.' : 'Query failed (HTTP ' + response.status + '). Narrow the request or check the query type.');
       const raw = response.status === 204 ? '' : await response.text(); if (raw.length > 2097152) throw new Error('Result exceeds the display limit. Narrow the source or set.');
-      const list = ['origin', 'set', 'members', 'recursive'].includes(el('query-kind').value);
+      if (queryController !== controller) return;
+      const list = ['origin', 'set', 'members', 'recursive'].includes(kind);
       currentResult = list ? [...new Set(raw.trim().split(/\s+/).filter(Boolean))].join('\n') : raw.trim();
       text('query-result', currentResult || 'No matching records.'); text('result-count', currentResult ? list ? currentResult.split('\n').length + ' items' : 'RPSL response' : '0 items');
-      text('query-status', currentResult ? 'Returned by ' + (el('query-source').value || 'configured source order') + '. Ready to copy.' : 'No matching records in this scope.'); el('copy-result').disabled = !currentResult;
-    } catch (error) { currentResult = ''; text('query-result', 'No usable response was returned.'); text('query-status', error.name === 'AbortError' ? 'The query timed out or was cancelled. Try a narrower query.' : error.message); }
-    finally { clearTimeout(timeout); el('query-submit').disabled = false; }
+      text('query-status', currentResult ? 'Returned by ' + (source || 'configured source order') + '. Ready to copy.' : 'No matching records in this scope.'); el('copy-result').disabled = !currentResult;
+    } catch (error) { if (queryController !== controller) return; currentResult = ''; text('query-result', 'No usable response was returned.'); text('query-status', error.name === 'AbortError' ? 'The query timed out or was cancelled. Try a narrower query.' : error.message); }
+    finally { clearTimeout(timeout); if (queryController === controller) el('query-submit').disabled = false; }
   }
   function task(name, run = false) {
     const origin = name.startsWith('origin'), set = name.startsWith('set');
@@ -265,7 +272,13 @@
       const taskName = new URLSearchParams(location.search).get('task');
       if (['origin4','origin6','recursive','set4','set6','object'].includes(taskName)) task(taskName);
       const presetValue = new URLSearchParams(location.search).get('value'); if (presetValue && presetValue.length <= 256) { el('query-value').value = presetValue; updateCommand(); }
-      await refresh(true);
+      const runSearch = new URLSearchParams(location.search).get('run') === '1' && ['origin4','origin6','recursive','set4','set6','object'].includes(taskName);
+      if (runSearch) {
+        // Consume the explicit user action once; reloading a copied URL is a preset.
+        const url = new URL(location.href); url.searchParams.delete('run'); history.replaceState(null, '', url);
+        el('query-form').requestSubmit();
+      }
+      await refresh();
     } catch (error) { text('mode-notice', 'Unable to connect: ' + error.message); el('mode-notice').className = 'notice error'; }
   }
   el('history-range').addEventListener('change', renderHistory);

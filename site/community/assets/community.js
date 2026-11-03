@@ -46,7 +46,7 @@
     } catch { el('network-observed').textContent = 'Live dataset counters are temporarily unavailable. Directory listings remain available.'; }
     finally { loading = false; }
   }
-  el('site-query-form').addEventListener('submit', event=>{event.preventDefault();const parameters=new URLSearchParams({task:el('site-query-kind').value,value:el('site-query-value').value.trim()});location.href='/dashboard/?'+parameters+'#query';});
+  el('site-query-form').addEventListener('submit', event=>{event.preventDefault();const parameters=new URLSearchParams({task:el('site-query-kind').value,value:el('site-query-value').value.trim(),run:'1'});location.href='/dashboard/?'+parameters+'#query';});
   el('region').addEventListener('change', render);
   document.querySelectorAll('[data-task]').forEach(link => { link.href = '/dashboard/?task=' + encodeURIComponent(link.dataset.task) + '#query'; });
   el('node-form').addEventListener('submit', async event => {
