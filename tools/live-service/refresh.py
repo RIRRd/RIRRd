@@ -72,7 +72,8 @@ def main():
             switch(destination)
             try:
                 subprocess.run(['systemctl', 'restart', 'rirrd-live.service'], check=True)
-                healthy(set(loaded))
+                healthy({row['source'] for row in report['sources']
+                         if row['state'] == 'loaded' and row.get('http_access', True)})
             except Exception:
                 switch(previous)
                 subprocess.run(['systemctl', 'restart', 'rirrd-live.service'], check=True)
