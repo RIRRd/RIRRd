@@ -1,7 +1,7 @@
 {
   "mode": "live",
   "version": "0.1.0",
-  "source_revision": "9f35c33560b8620afd7e4b8cf0ddbe73951a3241",
+  "source_revision": "aa47c8c6377da957cdd1cebce8313abb19a84c16",
   "node": {
     "name": "RIRRd public test registry",
     "location": null,
@@ -12,7 +12,14 @@
     "ARIN",
     "AFRINIC",
     "LACNIC",
-    "RIPE-NONAUTH"
+    "BELL",
+    "ALTDB",
+    "TC",
+    "REACH",
+    "RADB",
+    "RIPE-NONAUTH",
+    "CANARIE",
+    "BBOI"
   ],
   "whois_listen": "rirrd.co.uk:43",
   "max_connections": 128,
