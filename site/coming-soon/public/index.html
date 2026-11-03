@@ -3,15 +3,50 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="description" content="RIRRd is a Rust implementation of an Internet Routing Registry daemon, currently in development.">
-<title>RIRRd — Coming soon</title>
+<meta name="description" content="RIRRd: a Rust Internet Routing Registry daemon in development. Read the current IRRd compatibility comparison and early test results.">
+<title>RIRRd — Coming soon · Development comparison</title>
 <link rel="stylesheet" href="/style.css">
 </head>
-<body><main>
+<body>
+<a class="skip" href="#content">Skip to content</a>
+<header class="shell"><a class="brand" href="/">RIRRd<span class="dot" aria-hidden="true"></span></a><nav aria-label="Page sections"><a href="#comparison">Comparison</a><a href="#measurements">Measurements</a><a href="#roadmap">Work ahead</a></nav></header>
+<main id="content" class="shell">
+<section class="hero" aria-labelledby="title">
 <p class="eyebrow">INTERNET ROUTING REGISTRY · RUST</p>
-<h1>RIRRd <span>— Coming soon</span></h1>
+<h1 id="title">RIRRd <span>— Coming soon</span></h1>
 <p class="intro">A Rust implementation of an Internet Routing Registry daemon, currently in development.</p>
-<p>Compatibility testing against IRRd is part of the ongoing development work.</p>
-<a href="https://github.com/Peravix/Rirrd">Follow development on GitHub <span aria-hidden="true">↗</span></a>
-<footer>rirrd.co.uk</footer>
-</main></body></html>
+<p>We are testing compatibility against the official IRRd implementation. Full parity and production readiness remain incomplete.</p>
+<p class="notice">The repository is private while development continues. We plan to make RIRRd open source; a release date has not been announced.</p>
+<a class="button" href="#comparison">Explore the current comparison <span aria-hidden="true">↓</span></a>
+</section>
+<section id="comparison" aria-labelledby="comparison-title">
+<p class="eyebrow">COMPATIBILITY FIRST</p><h2 id="comparison-title">RIRRd and IRRd</h2>
+<p>This checkpoint compares RIRRd with <a href="https://github.com/irrdnet/irrd/releases/tag/v4.5.4">official IRRd v4.5.4</a>, our pinned compatibility baseline. A matching test establishes the behavior exercised by that test.</p>
+<div class="table-wrap" role="region" aria-label="Implementation comparison" tabindex="0"><table>
+<caption>Implementation and scope · verified checkpoint: 3 November 2026</caption>
+<thead><tr><th scope="col">Area</th><th scope="col">Official IRRd v4.5.4</th><th scope="col">RIRRd development checkpoint</th></tr></thead>
+<tbody>
+<tr><th scope="row">Implementation</th><td>Python, PostgreSQL and Redis</td><td>Rust with an embedded redb registry</td></tr>
+<tr><th scope="row">WHOIS and GraphQL</th><td>Query interfaces described in the <a href="https://irrd.readthedocs.io/en/stable/">upstream manual</a></td><td>Bounded TCP/HTTP WHOIS and GraphQL subsets. Broader command, filter and schema compatibility remains open.</td></tr>
+<tr><th scope="row">Authoritative updates</th><td>Authorised object updates and account workflows</td><td>Atomic CLI and opt-in HTTP updates for supported classes; bcrypt and source-scoped checks. OpenPGP, scoped API tokens and account workflows remain open.</td></tr>
+<tr><th scope="row">Mirroring</th><td>Full exports and NRTM mirroring</td><td>NRTMv3 journals/sync and signed one-shot NRTMv4 HTTPS sync. Publication, scheduling and bidirectional interoperability need further work.</td></tr>
+<tr><th scope="row">Policy and recovery</th><td>RPKI, scope/preference policy and operational workflows</td><td>Offline ROA validation, authoritative admission checks, backup/restore and local recovery tests. Live query suppression and release qualification remain open.</td></tr>
+</tbody></table></div>
+<div class="evidence"><h3>Evidence at this checkpoint</h3><ul><li>39 TCP and 39 HTTP WHOIS cases matched pinned IRRd.</li><li>10 organisation schema cases passed against the upstream parser.</li><li>Supported organisation GraphQL values and nine field types matched upstream.</li><li>131 unit tests and 11 integration tests passed locally on Linux.</li><li>A 61-second RPSL fuzz run completed 1,066,347 executions without a crash.</li></ul><p>These are local results. New private-repository CI results have not been independently verified from this session.</p></div>
+</section>
+<section id="measurements" aria-labelledby="measurements-title">
+<p class="eyebrow">EARLY MEASUREMENT</p><h2 id="measurements-title">A small synthetic timing test</h2>
+<p>This historical smoke test used <strong>six objects</strong> and one exact-key WHOIS query on the same VM. It is useful for checking the harness; sustained-load, realistic-data and production comparisons remain to be done.</p>
+<div class="table-wrap" role="region" aria-label="Historical timing results" tabindex="0"><table class="numbers"><caption>3 November 2026 · 1,000 requests per implementation · lower latency is better</caption><thead><tr><th scope="col">Measurement</th><th scope="col">IRRd v4.5.4</th><th scope="col">RIRRd</th></tr></thead><tbody>
+<tr><th scope="row">Successful queries / second</th><td>116.32</td><td>1,618.74</td></tr>
+<tr><th scope="row">Median latency</th><td>65.65 ms</td><td>4.53 ms</td></tr>
+<tr><th scope="row">95th percentile latency</th><td>78.53 ms</td><td>7.58 ms</td></tr>
+<tr><th scope="row">99th percentile latency</th><td>83.97 ms</td><td>9.71 ms</td></tr>
+<tr><th scope="row">Maximum latency</th><td>347.57 ms</td><td>26.71 ms</td></tr>
+</tbody></table></div>
+<details><summary>Method, versions and limits</summary><div class="method"><p>Debian 13 x86-64; previous VM configuration: 8 CPUs and 31 GiB RAM. Eight client threads, 20 warmups, a new TCP connection per request, reference followed by candidate, one measured run. No build or fuzz workload ran during timing. Both implementations used the six-object synthetic fixture and their recorded development configuration. The upstream oracle used one WHOIS worker.</p><p>RIRRd code: <code>acb6cac</code>. IRRd: <code>8e8080dab744a348b7d0e6efcb53f403301dd075</code> (v4.5.4). The RIRRd release binary and pinned upstream Docker image ran on the same host.</p><p>The VM has since been upgraded to 24 CPUs and 62 GiB RAM. The figures above predate that upgrade. They do not measure full feature parity, realistic registry scale, sustained capacity or equivalent peak memory. Broader performance claims require repeated, controlled workloads and larger licence-cleared datasets.</p></div></details>
+</section>
+<section id="roadmap" aria-labelledby="roadmap-title"><p class="eyebrow">WORK AHEAD</p><h2 id="roadmap-title">Closing the compatibility gaps</h2><ol class="roadmap"><li><h3>Authorisation and object workflows</h3><p>Remaining classes and reference rules, key certificates/OpenPGP, scoped tokens, overrides, suspension, accounts, mail and notifications.</p></li><li><h3>Mirroring and recovery</h3><p>Signed NRTMv4 publication and scheduling, retention and recovery, and replication tests in both directions with official IRRd.</p></li><li><h3>Queries and live policy</h3><p>Broader WHOIS and GraphQL parity, source aliases, live RPKI refresh, scope filtering and route preference.</p></li><li><h3>Release qualification</h3><p>Linux x86-64/ARM64 packaging, upgrades and rollback, security review, migration, signing and sustained load.</p></li></ol><p>This public site serves development information only. No public registry service is available here.</p></section>
+</main>
+<footer class="shell"><p>RIRRd · In development</p><p><a href="https://github.com/Peravix/Rirrd">GitHub repository (currently private)</a> · Planned open-source release</p><p class="fine">RIRRd is a separate implementation; IRRd is the upstream compatibility reference. Content reflects the verified checkpoint above.</p></footer>
+</body></html>
