@@ -1,7 +1,7 @@
 # Native Linux packages
 
-These definitions build a Debian package and an RPM for a target-native
-`x86_64` or `aarch64` release binary. Use a Debian 12 build environment
+These definitions build a Debian package and an RPM for an `x86_64` or
+`aarch64` release binary. The default target is the packaging host architecture. Use a Debian 12 build environment
 for the same glibc baseline as CI. The Linux packaging host needs Bash,
 `dpkg-deb`, `readelf` and `rpmbuild`.
 
@@ -25,6 +25,32 @@ starts the packaged unit through systemd, queries the running daemon over
 WHOIS, stops it through systemd and verifies the database. Both supervised
 checks passed in the linked run.
 [Workflow](../../.github/workflows/native-packages.yml) · [Passing run](https://github.com/Peravix/Rirrd/actions/runs/41615975939)
+
+## Explicit architecture and cross builds
+
+`--arch amd64` and `--arch arm64` select package metadata and the required ELF
+architecture explicitly. An ELF mismatch fails before any package is created.
+Cross packaging needs the matching GNU cross `strip` tool and a way to run the
+binary's `--version` command, such as QEMU with binfmt registration. It does not
+convert a host executable into another architecture.
+
+For an ARM64 development check on an x86-64 Debian host:
+
+```sh
+sudo apt install gcc-aarch64-linux-gnu libc6-dev-arm64-cross qemu-user qemu-user-binfmt rpm
+rustup target add aarch64-unknown-linux-gnu
+export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
+export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER='qemu-aarch64 -L /usr/aarch64-linux-gnu'
+export QEMU_LD_PREFIX=/usr/aarch64-linux-gnu
+cargo test --locked --release --target aarch64-unknown-linux-gnu --all-targets
+cargo build --locked --release --target aarch64-unknown-linux-gnu
+bash deploy/packages/build.sh --arch arm64 target/aarch64-unknown-linux-gnu/release/rust-irrd dist-arm64
+```
+
+Use the pinned baseline build environment and native CI for release qualification.
+Emulated checks establish execution under QEMU, not native ARM64 performance.
+The [upgraded VM evidence](../../docs/compatibility/UPGRADED_VM_CHECKPOINT.md)
+records both successful release-profile checks and an emulated debug timeout.
 
 ## Install and bootstrap
 

@@ -54,7 +54,14 @@ jobs:
           work="$RUNNER_TEMP/native-packages"
           export SOURCE_DATE_EPOCH
           SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)
-          bash deploy/packages/build.sh "$work/target/release/rust-irrd" "$work/dist"
+          wrong_arch=arm64
+          if [[ "$DEB_ARCH" = arm64 ]]; then wrong_arch=amd64; fi
+          if bash deploy/packages/build.sh --arch "$wrong_arch" "$work/target/release/rust-irrd" "$work/wrong-arch" > "$work/arch-rejection.log" 2>&1; then
+            echo "Package builder accepted the wrong ELF architecture" >&2
+            exit 1
+          fi
+          grep -Fx 'binary does not match the selected ELF architecture' "$work/arch-rejection.log"
+          bash deploy/packages/build.sh --arch "$DEB_ARCH" "$work/target/release/rust-irrd" "$work/dist"
           cd "$work/dist"
           debs=( ./*.deb )
           rpms=( ./*.rpm )

@@ -6,22 +6,39 @@ die() {
     exit 1
 }
 
-[[ $# -eq 2 ]] || die "usage: bash deploy/packages/build.sh NATIVE_BINARY OUTPUT_DIRECTORY"
-[[ $(uname -s) = Linux ]] || die "native package builds require Linux"
+usage="usage: bash deploy/packages/build.sh [--arch amd64|arm64] BINARY OUTPUT_DIRECTORY"
+package_machine=$(uname -m)
+if [[ ${1-} == --arch ]]; then
+    [[ $# -eq 4 ]] || die "$usage"
+    case $2 in
+        amd64) package_machine=x86_64 ;;
+        arm64) package_machine=aarch64 ;;
+        *) die "$usage" ;;
+    esac
+    shift 2
+fi
+[[ $# -eq 2 ]] || die "$usage"
+[[ $(uname -s) = Linux ]] || die "package builds require Linux"
 for tool in dpkg-deb readelf rpmbuild; do
     command -v "$tool" >/dev/null || die "required tool missing: $tool"
 done
-case $(uname -m) in
+case $package_machine in
     x86_64) deb_arch=amd64; rpm_arch=x86_64; elf_arch='Advanced Micro Devices X86-64' ;;
     aarch64) deb_arch=arm64; rpm_arch=aarch64; elf_arch='AArch64' ;;
-    *) die "native package builds support only x86_64 and ARM64" ;;
+    *) die "package builds support only x86_64 and ARM64" ;;
 esac
 
 package_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 binary=$(realpath -- "$1")
 [[ -x "$binary" ]] || die "expected an executable release binary"
 if ! LC_ALL=C readelf -h "$binary" | grep -E "Machine:[[:space:]]+$elf_arch$" >/dev/null; then
-    die "binary does not match the native ELF architecture"
+    die "binary does not match the selected ELF architecture"
+fi
+rpm_cross_args=()
+if [[ $package_machine != "$(uname -m)" ]]; then
+    strip_tool="$package_machine-linux-gnu-strip"
+    command -v "$strip_tool" >/dev/null || die "required cross strip tool missing: $strip_tool"
+    rpm_cross_args+=(--define "__strip $(command -v "$strip_tool")")
 fi
 version=$("$binary" --version)
 [[ $version =~ ^rust-irrd[[:space:]]([0-9]+\.[0-9]+\.[0-9]+)$ ]] ||
@@ -71,7 +88,7 @@ install -m 0755 "$binary" "$top/SOURCES/rust-irrd"
 install -m 0644 "$work/rust-irrd.service" "$work/irrd.toml" \
     "$package_dir/rust-irrd.sysusers.conf" "$package_dir/rust-irrd.tmpfiles.conf" \
     "$package_dir/copyright" "$top/SOURCES/"
-rpmbuild -bb --target "$rpm_arch" \
+rpmbuild -bb --target "$rpm_arch" "${rpm_cross_args[@]}" \
     --define "_topdir $top" \
     --define "package_version $version" \
     --define "package_release $release" \
