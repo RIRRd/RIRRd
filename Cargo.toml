@@ -6,6 +6,8 @@ publish = false
 
 [dependencies]
 anyhow = "1"
+async-graphql = { version = "=7.2.1", default-features = false, features = ["dynamic-schema"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
 clap = { version = "4", features = ["derive"] }
 flate2 = "1"
 redb = "=2.6.3"

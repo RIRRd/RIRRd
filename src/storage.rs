@@ -1,23 +1,49 @@
 //! Durable, indexed storage for locally imported source snapshots.
 
-use std::{collections::HashSet, io::Write, path::Path};
+use std::{
+    collections::HashSet,
+    io::Write,
+    net::{Ipv4Addr, Ipv6Addr},
+    ops::RangeInclusive,
+    path::Path,
+};
 
 use anyhow::{Context, Result, ensure};
 use redb::{
     Database, Durability, MultimapTableDefinition, MultimapTableHandle, ReadOnlyTable,
-    ReadableMultimapTable, ReadableTable, ReadableTableMetadata, TableDefinition,
+    ReadableMultimapTable, ReadableTable, ReadableTableMetadata, TableDefinition, TableHandle,
 };
 
-use crate::rpsl::Object;
+use crate::rpsl::{Object, lookup_attributes};
 
 type Identity = (&'static str, &'static str, &'static str);
 type ExactKey = (&'static str, &'static str);
+type PrefixKey<'a> = (&'a str, &'a str, u128, u8, u32);
+type InverseKey = (
+    &'static str,
+    &'static str,
+    &'static str,
+    &'static str,
+    &'static str,
+);
 
 // Identity is (source, class, key). The exact index maps (source, key) to classes.
 const OBJECTS: TableDefinition<Identity, &str> = TableDefinition::new("objects_v1");
 const EXACT: MultimapTableDefinition<ExactKey, &str> = MultimapTableDefinition::new("exact_v1");
 // The origin index maps (source, class, origin) to distinct canonical prefixes.
 const ORIGINS: MultimapTableDefinition<Identity, &str> = MultimapTableDefinition::new("origins_v1");
+// Per-source order by network address permits one range scan for all descendants.
+const PREFIXES: TableDefinition<PrefixKey<'static>, ()> = TableDefinition::new("route_prefixes_v1");
+// A row is (source, field, normalized value, class, object key).
+const INVERSE: TableDefinition<InverseKey, ()> = TableDefinition::new("inverse_v1");
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PrefixMatch {
+    Exact,
+    ClosestCovering,
+    AllCovering,
+    MoreSpecific,
+}
 
 pub struct Store {
     db: Database,
@@ -26,21 +52,59 @@ pub struct Store {
 impl Store {
     pub fn open(path: &Path) -> Result<Self> {
         let db = Database::create(path).with_context(|| format!("open {}", path.display()))?;
+        Self::initialize(db)
+    }
+
+    /// Open an existing registry database and upgrade its indexes before serving queries.
+    pub fn open_for_service(path: &Path) -> Result<Self> {
+        let db = Database::open(path).with_context(|| format!("open {}", path.display()))?;
+        {
+            let read = db.begin_read()?;
+            read.open_table(OBJECTS)
+                .context("missing or invalid registry objects table")?;
+            read.open_multimap_table(EXACT)
+                .context("missing or invalid registry exact lookup index")?;
+        }
+        Self::initialize(db)
+    }
+
+    fn initialize(db: Database) -> Result<Self> {
         let mut write = db.begin_write()?;
         write.set_durability(Durability::Immediate);
         {
             let records = write.open_table(OBJECTS)?;
             write.open_multimap_table(EXACT)?;
-            let needs_backfill = !write
+            let backfill_origins = !write
                 .list_multimap_tables()?
                 .any(|table| table.name() == ORIGINS.name());
+            let tables: HashSet<_> = write
+                .list_tables()?
+                .map(|table| table.name().to_owned())
+                .collect();
+            let backfill_prefixes = !tables.contains(PREFIXES.name());
+            let backfill_inverse = !tables.contains(INVERSE.name());
             let mut origins = write.open_multimap_table(ORIGINS)?;
-            if needs_backfill {
+            let mut prefixes = write.open_table(PREFIXES)?;
+            let mut inverse = write.open_table(INVERSE)?;
+            if backfill_origins || backfill_prefixes || backfill_inverse {
                 for entry in records.iter()? {
-                    let (identity, _) = entry?;
+                    let (identity, text) = entry?;
                     let (source, class, key) = identity.value();
                     if let Some((prefix, origin)) = route_index_parts(class, key)? {
-                        origins.insert((source, class, origin), prefix)?;
+                        if backfill_origins {
+                            origins.insert((source, class, origin), prefix)?;
+                        }
+                        if backfill_prefixes {
+                            prefixes
+                                .insert(prefix_index_key(source, class, prefix, origin)?, ())?;
+                        }
+                    }
+                    if backfill_inverse {
+                        let attributes =
+                            lookup_attributes(class, text.value()).map_err(anyhow::Error::msg)?;
+                        for (field, value) in attributes.inverse_entries() {
+                            inverse.insert((source, field, value.as_ref(), class, key), ())?;
+                        }
                     }
                 }
             }
@@ -71,10 +135,13 @@ impl Store {
         let mut write = self.db.begin_write()?;
         write.set_durability(Durability::Immediate);
         let mut count = 0;
+        let mut skipped_lookup_values = 0;
         {
             let mut records = write.open_table(OBJECTS)?;
             let mut exact = write.open_multimap_table(EXACT)?;
             let mut origins = write.open_multimap_table(ORIGINS)?;
+            let mut prefixes = write.open_table(PREFIXES)?;
+            let mut inverse = write.open_table(INVERSE)?;
 
             // Appending the smallest character gives the exclusive end of this source's range.
             let next_source = format!("{source}\0");
@@ -83,7 +150,7 @@ impl Store {
                 |_, _| true,
             )?;
             for entry in old_records {
-                let (identity, _) = entry?;
+                let (identity, text) = entry?;
                 let (source, class, key) = identity.value();
                 ensure!(
                     exact.remove((source, key), class)?,
@@ -94,16 +161,34 @@ impl Store {
                         origins.remove((source, class, origin), prefix)?,
                         "object is missing from the route origin index"
                     );
+                    ensure!(
+                        prefixes
+                            .remove(prefix_index_key(source, class, prefix, origin)?)?
+                            .is_some(),
+                        "object is missing from the route prefix index"
+                    );
+                }
+                let attributes =
+                    lookup_attributes(class, text.value()).map_err(anyhow::Error::msg)?;
+                for (field, value) in attributes.inverse_entries().collect::<HashSet<_>>() {
+                    ensure!(
+                        inverse
+                            .remove((source, field, value.as_ref(), class, key))?
+                            .is_some(),
+                        "object is missing from the inverse lookup index"
+                    );
                 }
             }
 
             for object in objects {
+                let object = object?;
+                let attributes = object.lookup_attributes().map_err(anyhow::Error::msg)?;
                 let Object {
                     source: object_source,
                     class,
                     key,
                     text,
-                } = object?;
+                } = object;
                 ensure!(
                     object_source == source,
                     "object source does not match {source}"
@@ -126,32 +211,120 @@ impl Store {
                         !origins.insert((source.as_str(), class.as_str(), origin), prefix)?,
                         "unexpected duplicate entry in the route origin index"
                     );
+                    ensure!(
+                        prefixes
+                            .insert(prefix_index_key(&source, &class, prefix, origin)?, ())?
+                            .is_none(),
+                        "unexpected duplicate entry in the route prefix index"
+                    );
+                }
+                skipped_lookup_values += attributes.skipped_invalid_values;
+                for (field, value) in attributes.inverse_entries() {
+                    inverse.insert(
+                        (
+                            source.as_str(),
+                            field,
+                            value.as_ref(),
+                            class.as_str(),
+                            key.as_str(),
+                        ),
+                        (),
+                    )?;
                 }
                 count += 1;
             }
         }
         write.commit()?;
+        if skipped_lookup_values != 0 {
+            tracing::warn!(%source, skipped_lookup_values, "retained malformed lookup attribute values in snapshot text without indexing them");
+        }
         Ok(count)
     }
 
     /// Find up to `limit` objects by their key in the given source priority order.
     pub fn exact(&self, key: &str, sources: &[String], limit: usize) -> Result<Vec<Object>> {
+        self.exact_keys(std::iter::once(key.to_uppercase()), sources, &[], limit)
+    }
+
+    /// Find objects for all keys in one read snapshot, optionally restricted by class.
+    pub fn exact_objects(
+        &self,
+        keys: &[String],
+        sources: &[String],
+        classes: &[String],
+        limit: usize,
+    ) -> Result<Vec<Object>> {
+        let mut seen = HashSet::new();
+        let keys = keys
+            .iter()
+            .map(|key| key.to_uppercase())
+            .filter(|key| seen.insert(key.clone()));
+        self.exact_keys(keys, sources, classes, limit)
+    }
+
+    fn exact_keys(
+        &self,
+        keys: impl IntoIterator<Item = String>,
+        sources: &[String],
+        classes: &[String],
+        limit: usize,
+    ) -> Result<Vec<Object>> {
         if limit == 0 || sources.is_empty() {
             return Ok(Vec::new());
         }
-        let key = key.to_uppercase();
         let read = self.db.begin_read()?;
         let exact = read.open_multimap_table(EXACT)?;
         let records = read.open_table(OBJECTS)?;
         let mut objects = Vec::new();
+        for key in keys {
+            for source in sources {
+                for entry in exact.get((source.as_str(), key.as_str()))? {
+                    let entry = entry?;
+                    let class = entry.value();
+                    if classes.is_empty() || classes.iter().any(|filter| filter == class) {
+                        let object = read_object(&records, source, class, &key)?
+                            .context("exact lookup index points to a missing object")?;
+                        objects.push(object);
+                        if objects.len() == limit {
+                            return Ok(objects);
+                        }
+                    }
+                }
+            }
+        }
+        Ok(objects)
+    }
+
+    /// Find objects containing the exact lookup attribute value in source priority order.
+    pub fn inverse(
+        &self,
+        field: &str,
+        value: &str,
+        sources: &[String],
+        limit: usize,
+    ) -> Result<Vec<Object>> {
+        if limit == 0 || sources.is_empty() {
+            return Ok(Vec::new());
+        }
+        let field = field.to_ascii_lowercase();
+        let value = value.to_uppercase();
+        if field == "origin" {
+            return self.routes_by_origin(&value, sources, limit);
+        }
+        let next_value = format!("{value}\0");
+        let read = self.db.begin_read()?;
+        let records = read.open_table(OBJECTS)?;
+        let inverse = read.open_table(INVERSE)?;
+        let mut objects = Vec::new();
         for source in sources {
-            for entry in exact
-                .get((source.as_str(), key.as_str()))?
-                .take(limit - objects.len())
-            {
-                let entry = entry?;
-                let object = read_object(&records, source, entry.value(), &key)?
-                    .context("exact lookup index points to a missing object")?;
+            let source = source.as_str();
+            let lower = (source, field.as_str(), value.as_str(), "", "");
+            let upper = (source, field.as_str(), next_value.as_str(), "", "");
+            for entry in inverse.range(lower..upper)?.take(limit - objects.len()) {
+                let (identity, _) = entry?;
+                let (source, _, _, class, key) = identity.value();
+                let object = read_object(&records, source, class, key)?
+                    .context("inverse lookup index points to a missing object")?;
                 objects.push(object);
             }
             if objects.len() == limit {
@@ -159,6 +332,36 @@ impl Store {
             }
         }
         Ok(objects)
+    }
+
+    fn routes_by_origin(
+        &self,
+        origin: &str,
+        sources: &[String],
+        limit: usize,
+    ) -> Result<Vec<Object>> {
+        let read = self.db.begin_read()?;
+        let records = read.open_table(OBJECTS)?;
+        let origins = read.open_multimap_table(ORIGINS)?;
+        let mut routes = Vec::new();
+        for source in sources {
+            for class in ["route", "route6"] {
+                for prefix in origins
+                    .get((source.as_str(), class, origin))?
+                    .take(limit - routes.len())
+                {
+                    let prefix = prefix?;
+                    let key = format!("{}{origin}", prefix.value());
+                    let route = read_object(&records, source, class, &key)?
+                        .context("route origin index points to a missing route")?;
+                    routes.push(route);
+                }
+                if routes.len() == limit {
+                    return Ok(routes);
+                }
+            }
+        }
+        Ok(routes)
     }
 
     /// Find the first object of the specified class and canonical key in source order.
@@ -205,6 +408,86 @@ impl Store {
             }
             if routes.len() == limit {
                 break;
+            }
+        }
+        Ok(routes)
+    }
+
+    /// Find routes with the requested prefix relationship in a single read snapshot.
+    pub fn routes_matching_prefix(
+        &self,
+        class: &str,
+        prefix: &str,
+        mode: PrefixMatch,
+        sources: &[String],
+        limit: usize,
+    ) -> Result<Vec<Object>> {
+        if limit == 0 || sources.is_empty() {
+            return Ok(Vec::new());
+        }
+        if mode == PrefixMatch::Exact {
+            return self.routes_at_prefix(class, prefix, sources, limit);
+        }
+        let prefix = RoutePrefix::parse(class, prefix)?;
+        let read = self.db.begin_read()?;
+        let records = read.open_table(OBJECTS)?;
+        let prefixes = read.open_table(PREFIXES)?;
+        let mut routes = Vec::new();
+        let mut collect = |range: RangeInclusive<PrefixKey<'_>>| -> Result<usize> {
+            for entry in prefixes.range(range)?.take(limit - routes.len()) {
+                let (index_key, _) = entry?;
+                let (source, class, network, length, origin) = index_key.value();
+                let key = route_key(class, network, length, origin)?;
+                let object = read_object(&records, source, class, &key)?
+                    .context("route prefix index points to a missing route")?;
+                routes.push(object);
+            }
+            Ok(routes.len())
+        };
+        let covering = |source, length| {
+            let network = prefix.network_at(length);
+            (source, class, network, length, 0)..=(source, class, network, length, u32::MAX)
+        };
+        match mode {
+            PrefixMatch::Exact => unreachable!(),
+            PrefixMatch::ClosestCovering => {
+                for length in (0..prefix.length).rev() {
+                    let mut count = 0;
+                    for source in sources {
+                        count = collect(covering(source.as_str(), length))?;
+                        if count == limit {
+                            break;
+                        }
+                    }
+                    if count > 0 {
+                        break;
+                    }
+                }
+            }
+            PrefixMatch::AllCovering => {
+                'sources: for source in sources {
+                    for length in (0..=prefix.length).rev() {
+                        if collect(covering(source.as_str(), length))? == limit {
+                            break 'sources;
+                        }
+                    }
+                }
+            }
+            PrefixMatch::MoreSpecific => {
+                if prefix.length == prefix.width {
+                    return Ok(routes);
+                }
+                let last = prefix.network | prefix.host_mask(prefix.length);
+                for source in sources {
+                    let source = source.as_str();
+                    // A longer prefix starting inside a CIDR block is contained in it.
+                    // A shorter prefix can only share the block's first address.
+                    let lower = (source, class, prefix.network, prefix.length + 1, 0);
+                    let upper = (source, class, last, prefix.width, u32::MAX);
+                    if collect(lower..=upper)? == limit {
+                        break;
+                    }
+                }
             }
         }
         Ok(routes)
@@ -262,12 +545,14 @@ impl Store {
         Ok(count)
     }
 
-    /// Check that the exact and route origin indexes cover the stored identities.
+    /// Check that the indexes cover the stored identities and attributes.
     pub fn verify(&self) -> Result<u64> {
         let read = self.db.begin_read()?;
         let records = read.open_table(OBJECTS)?;
         let exact = read.open_multimap_table(EXACT)?;
         let origins = read.open_multimap_table(ORIGINS)?;
+        let prefixes = read.open_table(PREFIXES)?;
+        let inverse = read.open_table(INVERSE)?;
         let mut indexed = 0;
         let mut routes = 0;
         for entry in exact.iter()? {
@@ -309,7 +594,105 @@ impl Store {
             indexed_routes == routes,
             "some routes are missing from the route origin index"
         );
+        for entry in prefixes.iter()? {
+            let (identity, _) = entry?;
+            let (source, class, network, length, origin) = identity.value();
+            let key = route_key(class, network, length, origin)?;
+            ensure!(
+                records.get((source, class, key.as_str()))?.is_some(),
+                "route prefix index points to a missing route"
+            );
+        }
+        ensure!(
+            prefixes.len()? == routes,
+            "some routes are missing from the route prefix index"
+        );
+        let mut indexed_attributes = 0;
+        for entry in records.iter()? {
+            let (identity, text) = entry?;
+            let (source, class, key) = identity.value();
+            let attributes = lookup_attributes(class, text.value()).map_err(anyhow::Error::msg)?;
+            for (field, value) in attributes.inverse_entries().collect::<HashSet<_>>() {
+                ensure!(
+                    inverse
+                        .get((source, field, value.as_ref(), class, key))?
+                        .is_some(),
+                    "object is missing from the inverse lookup index"
+                );
+                indexed_attributes += 1;
+            }
+        }
+        ensure!(
+            inverse.len()? == indexed_attributes,
+            "unexpected inverse lookup index entries"
+        );
         Ok(indexed)
+    }
+}
+
+struct RoutePrefix {
+    network: u128,
+    length: u8,
+    width: u8,
+}
+
+impl RoutePrefix {
+    fn parse(class: &str, prefix: &str) -> Result<Self> {
+        let (address, length) = prefix.split_once('/').context("invalid route prefix")?;
+        let length: u8 = length.parse().context("invalid route prefix length")?;
+        let (network, width) = match class {
+            "route" => (u128::from(u32::from(address.parse::<Ipv4Addr>()?)), 32),
+            "route6" => (u128::from(address.parse::<Ipv6Addr>()?), 128),
+            _ => anyhow::bail!("invalid route class"),
+        };
+        ensure!(length <= width, "invalid route prefix length");
+        let route = Self {
+            network,
+            length,
+            width,
+        };
+        ensure!(
+            route.network_at(length) == network,
+            "route prefix contains host bits"
+        );
+        Ok(route)
+    }
+
+    fn host_mask(&self, length: u8) -> u128 {
+        u128::MAX
+            .checked_shr(u32::from(128 - (self.width - length)))
+            .unwrap_or(0)
+    }
+
+    fn network_at(&self, length: u8) -> u128 {
+        self.network & !self.host_mask(length)
+    }
+}
+
+fn prefix_index_key<'a>(
+    source: &'a str,
+    class: &'a str,
+    prefix: &str,
+    origin: &str,
+) -> Result<PrefixKey<'a>> {
+    let prefix = RoutePrefix::parse(class, prefix)?;
+    let origin = origin
+        .strip_prefix("AS")
+        .context("invalid route origin")?
+        .parse()?;
+    Ok((source, class, prefix.network, prefix.length, origin))
+}
+
+fn route_key(class: &str, network: u128, length: u8, origin: u32) -> Result<String> {
+    match class {
+        "route" => Ok(format!(
+            "{}/{length}AS{origin}",
+            Ipv4Addr::from(u32::try_from(network)?)
+        )),
+        "route6" => {
+            Ok(format!("{}/{length}AS{origin}", Ipv6Addr::from(network)).to_ascii_uppercase())
+        }
+        _ => anyhow::bail!("invalid route class in prefix index"),
     }
 }
 
@@ -443,12 +826,125 @@ mod tests {
     }
 
     #[test]
+    fn batch_exact_filters_before_limit_and_deduplicates_keys() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = Store::open(&dir.path().join("registry.redb"))?;
+        let sources = [String::from("TEST2"), String::from("TEST")];
+        let low = object("TEST", "role", "AA1-TEST");
+        let later = object("TEST", "role", "AA2-TEST");
+        store.replace_source("TEST", [Ok(later.clone()), Ok(low.clone())])?;
+        store.replace_source("TEST2", [Ok(object("TEST2", "person", "AA1-TEST"))])?;
+        let keys = [
+            String::from("aa1-test"),
+            String::from("AA1-TEST"),
+            String::from("AA2-TEST"),
+        ];
+        let classes = [String::from("role")];
+        assert_eq!(
+            store.exact_objects(&keys, &sources, &classes, 2)?,
+            [low, later]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn inverse_queries_preserve_valid_values_and_reuse_origin_index() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = Store::open(&dir.path().join("registry.redb"))?;
+        let sources = [String::from("TEST2"), String::from("TEST")];
+        let mut high = object("TEST2", "route6", "2001:DB8::/32AS64496");
+        high.text
+            .push_str("mnt-by: Example-MNT, bad value!, EXAMPLE-MNT\n");
+        let mut low = object("TEST", "route", "192.0.2.0/24AS64496");
+        low.text.push_str("mnt-by: Other-MNT,\n+ EXAMPLE-MNT\n");
+        let mut unrelated = object("TEST", "aut-num", "AS64496");
+        unrelated.text.push_str("mnt-by: EXAMPLE-MNT2\n");
+        store.replace_source("TEST2", [Ok(high.clone())])?;
+        store.replace_source("TEST", [Ok(low.clone()), Ok(unrelated)])?;
+
+        let expected = [high, low];
+        assert_eq!(
+            store.inverse("MNT-BY", "example-mnt", &sources, 10)?,
+            expected
+        );
+        assert_eq!(
+            store.inverse("mnt-by", "example-mnt", &sources, 1)?,
+            expected[..1]
+        );
+        assert_eq!(
+            store.inverse("mnt-by", "example-mnt", &sources[1..], 10)?,
+            expected[1..]
+        );
+        assert!(
+            store
+                .inverse("mnt-by", "bad value!", &sources, 10)?
+                .is_empty()
+        );
+        assert_eq!(store.inverse("origin", "as64496", &sources, 10)?, expected);
+        assert_eq!(store.verify()?, 3);
+        Ok(())
+    }
+
+    #[test]
+    fn inverse_index_backfills_and_replaces_atomically() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("registry.redb");
+        let sources = [String::from("TEST")];
+        let mut old = object("TEST", "aut-num", "AS64496");
+        old.text.push_str("mnt-by: TEST-MNT, TEST-MNT\n");
+        let mut new = object("TEST", "aut-num", "AS64497");
+        new.text.push_str("mnt-by: TEST-MNT\n");
+        let store = Store::open(&path)?;
+        store.replace_source("TEST", [Ok(old.clone())])?;
+        let write = store.db.begin_write()?;
+        assert!(write.delete_table(INVERSE)?);
+        write.commit()?;
+        drop(store);
+
+        let store = Store::open_for_service(&path)?;
+        let query = || store.inverse("mnt-by", "TEST-MNT", &sources, 2);
+        assert_eq!(query()?, std::slice::from_ref(&old));
+        assert!(
+            store
+                .replace_source(
+                    "TEST",
+                    [Ok(new.clone()), Err(anyhow::anyhow!("import failed"))]
+                )
+                .is_err()
+        );
+        assert_eq!(query()?, std::slice::from_ref(&old));
+        let replacement = std::iter::once_with(|| {
+            assert_eq!(query().unwrap(), [old]);
+            Ok(new.clone())
+        });
+        store.replace_source("TEST", replacement)?;
+        assert_eq!(query()?, [new]);
+        assert_eq!(store.verify()?, 1);
+
+        let write = store.db.begin_write()?;
+        write
+            .open_table(INVERSE)?
+            .insert(("TEST", "mnt-by", "OTHER-MNT", "aut-num", "AS64497"), ())?;
+        write.commit()?;
+        assert!(
+            store
+                .verify()
+                .unwrap_err()
+                .to_string()
+                .contains("unexpected inverse lookup index entries")
+        );
+        Ok(())
+    }
+
+    #[test]
     fn verifies_index_coverage_and_dangling_references() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("registry.redb");
         assert!(Store::open_existing(&path).is_err());
+        assert!(Store::open_for_service(&path).is_err());
         assert!(!path.exists());
         drop(Database::create(&path)?);
+        assert!(Store::open_for_service(&path).is_err());
         assert!(Store::open_existing(&path)?.verify().is_err());
 
         let store = Store::open(&path)?;
@@ -583,6 +1079,170 @@ mod tests {
             store
                 .routes_at_prefix("route", "192.0.2.0/24", &[], 8)?
                 .is_empty()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn route_covering_queries_select_the_nearest_prefix_across_sources() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = Store::open(&dir.path().join("registry.redb"))?;
+        let sources = [String::from("TEST2"), String::from("TEST")];
+        let high_parent = object("TEST2", "route", "192.0.0.0/16AS64498");
+        let high_root = object("TEST2", "route", "0.0.0.0/0AS0");
+        let exact = object("TEST", "route", "192.0.2.0/24AS64496");
+        let close = object("TEST", "route", "192.0.2.0/23AS64496");
+        let close_other_origin = object("TEST", "route", "192.0.2.0/23AS4294967295");
+        store.replace_source("TEST2", [Ok(high_parent.clone()), Ok(high_root.clone())])?;
+        store.replace_source(
+            "TEST",
+            [
+                Ok(close_other_origin.clone()),
+                Ok(exact.clone()),
+                Ok(close.clone()),
+            ],
+        )?;
+
+        let nearest = PrefixMatch::ClosestCovering;
+        let all = PrefixMatch::AllCovering;
+        assert_eq!(
+            store.routes_matching_prefix("route", "192.0.2.0/24", nearest, &sources, 8)?,
+            [close.clone(), close_other_origin.clone()]
+        );
+        assert_eq!(
+            store.routes_matching_prefix("route", "192.0.2.0/24", nearest, &sources[..1], 8)?,
+            std::slice::from_ref(&high_parent)
+        );
+        assert_eq!(
+            store.routes_matching_prefix("route", "192.0.2.0/24", all, &sources, 8)?,
+            [
+                high_parent,
+                high_root.clone(),
+                exact,
+                close,
+                close_other_origin
+            ]
+        );
+        assert_eq!(
+            store.routes_matching_prefix("route", "0.0.0.0/0", all, &sources, 1)?,
+            [high_root]
+        );
+        assert!(
+            store
+                .routes_matching_prefix("route", "0.0.0.0/0", nearest, &sources, 8)?
+                .is_empty()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn route_descendants_exclude_exact_sibling_and_ancestor_prefixes() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = Store::open(&dir.path().join("registry.redb"))?;
+        let sources = [String::from("TEST2"), String::from("TEST")];
+        let high = object("TEST2", "route6", "2001:DB8:0:FFFF::/64AS64496");
+        let first = object("TEST", "route6", "2001:DB8::/33AS64496");
+        let last = object(
+            "TEST",
+            "route6",
+            "2001:DB8:FFFF:FFFF:FFFF:FFFF:FFFF:FFFF/128AS4294967295",
+        );
+        store.replace_source("TEST2", [Ok(high.clone())])?;
+        store.replace_source(
+            "TEST",
+            [
+                Ok(object("TEST", "route6", "::/0AS64496")),
+                Ok(object("TEST", "route6", "2001:DB8::/31AS64496")),
+                Ok(object("TEST", "route6", "2001:DB8::/32AS64496")),
+                Ok(object("TEST", "route6", "2001:DB9::/32AS64496")),
+                Ok(object("TEST", "route", "0.0.0.0/0AS64496")),
+                Ok(first.clone()),
+                Ok(last.clone()),
+            ],
+        )?;
+        let more = PrefixMatch::MoreSpecific;
+        let expected = [high, first, last];
+        assert_eq!(
+            store.routes_matching_prefix("route6", "2001:DB8::/32", more, &sources, 8)?,
+            expected
+        );
+        assert_eq!(
+            store.routes_matching_prefix("route6", "2001:DB8::/32", more, &sources, 2)?,
+            expected[..2]
+        );
+        assert_eq!(
+            store.routes_matching_prefix("route6", "2001:DB8::/32", more, &sources[1..], 8)?,
+            expected[1..]
+        );
+        assert_eq!(
+            store
+                .routes_matching_prefix("route6", "::/0", more, &sources, 20)?
+                .len(),
+            6
+        );
+        assert!(
+            store
+                .routes_matching_prefix("route6", "2001:DB8::/128", more, &sources, 8)?
+                .is_empty()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn prefix_index_backfills_and_tracks_committed_replacement() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("registry.redb");
+        let sources = [String::from("TEST")];
+        let old = object("TEST", "route", "192.0.2.0/24AS64496");
+        let new = object("TEST", "route", "192.0.3.0/24AS64496");
+        let store = Store::open(&path)?;
+        store.replace_source("TEST", [Ok(old.clone())])?;
+        let write = store.db.begin_write()?;
+        assert!(write.delete_table(PREFIXES)?);
+        write.commit()?;
+        drop(store);
+        let store = Store::open(&path)?;
+        let query = || {
+            store.routes_matching_prefix(
+                "route",
+                "192.0.2.0/23",
+                PrefixMatch::MoreSpecific,
+                &sources,
+                8,
+            )
+        };
+        assert_eq!(query()?, std::slice::from_ref(&old));
+        assert!(
+            store
+                .replace_source(
+                    "TEST",
+                    [Ok(new.clone()), Err(anyhow::anyhow!("import failed"))]
+                )
+                .is_err()
+        );
+        assert_eq!(query()?, std::slice::from_ref(&old));
+        let replacement = std::iter::once_with(|| {
+            assert_eq!(query().unwrap(), [old]);
+            Ok(new.clone())
+        });
+        store.replace_source("TEST", replacement)?;
+        assert_eq!(query()?, [new]);
+        assert_eq!(store.verify()?, 1);
+
+        let write = store.db.begin_write()?;
+        write.open_table(PREFIXES)?.remove(prefix_index_key(
+            "TEST",
+            "route",
+            "192.0.3.0/24",
+            "AS64496",
+        )?)?;
+        write.commit()?;
+        assert!(
+            store
+                .verify()
+                .unwrap_err()
+                .to_string()
+                .contains("missing from the route prefix index")
         );
         Ok(())
     }

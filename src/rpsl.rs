@@ -8,6 +8,10 @@ use std::borrow::Cow;
 use std::fmt;
 use std::net::{Ipv4Addr, Ipv6Addr};
 
+#[path = "rpsl/lookup.rs"]
+pub mod lookup;
+pub(crate) use lookup::{is_inverse_field, lookup_attributes};
+
 pub const MAX_OBJECT_BYTES: usize = 64 * 1024;
 
 #[derive(Clone, PartialEq, Eq)]
@@ -223,8 +227,15 @@ fn without_comment(value: &str) -> &str {
 }
 
 fn required<'a>(value: Option<&'a str>, attribute: &str) -> Result<Cow<'a, str>, String> {
-    let value = value.unwrap_or_default();
-    let normalised = if value.contains('\n') {
+    let normalised = normalise_attribute(value.unwrap_or_default());
+    if normalised.is_empty() {
+        return Err(format!("missing or empty {attribute} attribute"));
+    }
+    Ok(normalised)
+}
+
+fn normalise_attribute(value: &str) -> Cow<'_, str> {
+    if value.contains('\n') {
         Cow::Owned(
             value
                 .split('\n')
@@ -235,11 +246,7 @@ fn required<'a>(value: Option<&'a str>, attribute: &str) -> Result<Cow<'a, str>,
         )
     } else {
         Cow::Borrowed(without_comment(value).trim())
-    };
-    if normalised.is_empty() {
-        return Err(format!("missing or empty {attribute} attribute"));
     }
-    Ok(normalised)
 }
 
 pub(crate) fn generic_name(value: &str) -> bool {

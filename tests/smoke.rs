@@ -36,6 +36,10 @@ struct Server {
 
 impl Server {
     fn start(config: &Path) -> (Self, SocketAddr) {
+        Self::start_listener(config, "WHOIS listening")
+    }
+
+    fn start_listener(config: &Path, listener: &'static str) -> (Self, SocketAddr) {
         let child = cli(config)
             .arg("server")
             .stdout(Stdio::null())
@@ -54,7 +58,7 @@ impl Server {
                 let Ok(log) = serde_json::from_str::<Value>(&line) else {
                     continue;
                 };
-                if log["fields"]["message"] == "WHOIS listening"
+                if log["fields"]["message"] == listener
                     && let Some(sender) = ready.take()
                 {
                     let _ = sender.send(line);
@@ -218,16 +222,179 @@ max_snapshot_bytes = 4096
     assert_eq!(whois(address, b"!r2001:db8::/32,o\n"), "A8\nAS64496\nC\n");
     assert_eq!(whois(address, b"!r2001:db8::/33,o\n"), "D\n");
     let route = "route6: 2001:db8::/32\norigin: AS64496\nsource: TEST\n";
-    assert_eq!(
-        whois(address, b"!r2001:db8::/32\n"),
-        format!("A{}\n{route}C\n", route.len())
-    );
+    for query in [
+        b"!r2001:db8::/32\n".as_slice(),
+        b"!r2001:db8:1::/48,l\n",
+        b"!r2001:db8::/32,L\n",
+        b"!r2001:db8::/31,M\n",
+    ] {
+        assert_eq!(
+            whois(address, query),
+            format!("A{}\n{route}C\n", route.len())
+        );
+    }
     assert_eq!(
         whois(address, b"TEST-MNT\r\n"),
         "mntner: TEST-MNT\r\nsource: TEST\r\n\r\n"
     );
     assert_eq!(
-        whois(address, b"-i origin AS64496\r\n"),
+        whois(address, b"-i auth AS64496\r\n"),
         "% Invalid or unsupported query\r\n"
+    );
+    assert_eq!(
+        whois(address, b"-i origin as64496\r\n"),
+        format!("{}\n\n\n", route.trim_end())
+    );
+    assert_eq!(
+        whois(address, b"-x 2001:db8::/32\r\n"),
+        format!("{}\n\n\n", route.trim_end())
+    );
+}
+
+#[test]
+fn whois_pipelines_commands_and_keeps_source_selection_per_connection() {
+    let workspace = tempfile::tempdir().unwrap();
+    let config = workspace.path().join("irrd.toml");
+    fs::write(
+        &config,
+        r#"database = "test.redb"
+sources = ["TEST", "OTHER"]
+listen = "127.0.0.1:0"
+max_connections = 4
+io_timeout_seconds = 2
+max_snapshot_bytes = 4096
+"#,
+    )
+    .unwrap();
+    for source in ["TEST", "OTHER"] {
+        let snapshot = workspace.path().join(format!("{source}.rpsl"));
+        let mut records = format!("aut-num: AS64496\nsource: {source}\n");
+        if source == "TEST" {
+            records.push_str(
+                "\nas-set: AS-ROOT\nmembers: AS64496, AS-CHILD\nsource: TEST\n\n\
+                 as-set: AS-CHILD\nmembers: AS64497\nsource: TEST\n\n\
+                 route: 192.0.2.0/24\norigin: AS64496\nmnt-by: TEST-MNT\nsource: TEST\n",
+            );
+        }
+        fs::write(&snapshot, records).unwrap();
+        successful(
+            cli(&config)
+                .args(["import", "snapshot", "--source", source, "--file"])
+                .arg(snapshot)
+                .output()
+                .unwrap(),
+        );
+    }
+
+    let (_server, address) = Server::start(&config);
+    let other = "aut-num: AS64496\nsource: OTHER\n";
+    let test = "aut-num: AS64496\nsource: TEST\n";
+    assert_eq!(
+        whois(
+            address,
+            b"!!\n!s-lc\n!sother,test\n!sMISSING\n!s-lc\n!maut-num,AS64496\n!Q\n"
+        ),
+        format!(
+            "A11\nTEST,OTHER\nC\nC\nF Invalid source selection\nA11\nOTHER,TEST\nC\nA{}\n{other}C\n",
+            other.len()
+        )
+    );
+    assert_eq!(
+        whois(address, b"!maut-num,AS64496\n"),
+        format!("A{}\n{test}C\n", test.len())
+    );
+    for (query, body) in [
+        ("!iAS-ROOT", "AS-CHILD AS64496"),
+        ("!iAS-ROOT,1", "AS64496 AS64497"),
+        ("!a4AS-ROOT", "192.0.2.0/24"),
+        (
+            "!otest-mnt",
+            "route: 192.0.2.0/24\norigin: AS64496\nmnt-by: TEST-MNT\nsource: TEST",
+        ),
+    ] {
+        assert_eq!(
+            whois(address, format!("{query}\n").as_bytes()),
+            format!("A{}\n{body}\nC\n", body.len() + 1)
+        );
+    }
+    drop(_server);
+    let purge = || {
+        let mut command = cli(&config);
+        command.args(["source", "purge", "--source", "OTHER"]);
+        command
+    };
+    assert!(!purge().output().unwrap().status.success());
+    for _ in 0..2 {
+        successful(purge().arg("--yes").output().unwrap());
+    }
+    let verified = successful(cli(&config).args(["database", "verify"]).output().unwrap());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&verified).unwrap()["objects"],
+        4
+    );
+    let (_server, address) = Server::start(&config);
+    assert_eq!(
+        whois(address, b"!!\n!sOTHER\n!maut-num,AS64496\n!q\n"),
+        "C\nD\n"
+    );
+    assert_eq!(
+        whois(address, b"!maut-num,AS64496\n"),
+        format!("A{}\n{test}C\n", test.len())
+    );
+}
+
+#[test]
+fn graphql_serves_filtered_registry_objects_over_http() {
+    let workspace = tempfile::tempdir().unwrap();
+    let config = workspace.path().join("irrd.toml");
+    fs::write(
+        &config,
+        r#"database = "test.redb"
+sources = ["TEST"]
+listen = "127.0.0.1:0"
+http_listen = "127.0.0.1:0"
+max_connections = 4
+io_timeout_seconds = 2
+max_snapshot_bytes = 4096
+"#,
+    )
+    .unwrap();
+    let snapshot = workspace.path().join("snapshot.rpsl");
+    fs::write(
+        &snapshot,
+        "mntner: TEST-MNT\nauth: BCRYPT-PW synthetic-secret\nsource: TEST\n",
+    )
+    .unwrap();
+    successful(
+        cli(&config)
+            .args(["import", "snapshot", "--source", "TEST", "--file"])
+            .arg(snapshot)
+            .output()
+            .unwrap(),
+    );
+    let (_server, address) = Server::start_listener(&config, "GraphQL listening");
+    let body = serde_json::json!({
+        "query": "{ rpslObjects(rpslPk: [\"TEST-MNT\"]) { rpslPk objectClass source objectText } }"
+    });
+    let body = body.to_string();
+    let request = format!(
+        "POST /graphql/ HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+        body.len()
+    );
+    let response = whois(address, request.as_bytes());
+    assert!(response.starts_with("HTTP/1.1 200 "), "{response}");
+    assert!(!response.contains("synthetic-secret"));
+    let (_, body) = response.split_once("\r\n\r\n").unwrap();
+    let body: Value = serde_json::from_str(body).unwrap();
+    assert!(body.get("errors").is_none(), "{body}");
+    let object = &body["data"]["rpslObjects"][0];
+    assert_eq!(object["rpslPk"], "TEST-MNT");
+    assert_eq!(object["objectClass"], "mntner");
+    assert_eq!(object["source"], "TEST");
+    assert!(
+        object["objectText"]
+            .as_str()
+            .unwrap()
+            .contains("source: TEST")
     );
 }

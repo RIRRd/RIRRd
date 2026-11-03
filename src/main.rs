@@ -1,8 +1,10 @@
 #![forbid(unsafe_code)]
 
 mod config;
+mod graphql;
 mod import;
 mod rpsl;
+mod sets;
 mod storage;
 mod whois;
 
@@ -10,11 +12,12 @@ use std::{
     io::{BufWriter, Write},
     path::{Path, PathBuf},
     sync::Arc,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result, ensure};
 use clap::{Parser, Subcommand};
+use tokio::{net::TcpListener, sync::watch, task::JoinSet};
 use tracing_subscriber::EnvFilter;
 
 use crate::{config::Config, storage::Store};
@@ -46,6 +49,21 @@ enum Command {
     Export {
         #[command(subcommand)]
         command: ExportCommand,
+    },
+    Source {
+        #[command(subcommand)]
+        command: SourceCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum SourceCommand {
+    /// Remove one source's stored objects and indexes.
+    Purge {
+        #[arg(long)]
+        source: String,
+        #[arg(long, required = true)]
+        yes: bool,
     },
 }
 
@@ -118,11 +136,11 @@ fn main() -> Result<()> {
             );
         }
         Command::Server => {
-            let store = Arc::new(Store::open_existing(&config.database)?);
+            let store = Arc::new(Store::open_for_service(&config.database)?);
             tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()?
-                .block_on(whois::serve(&config, store))?;
+                .block_on(serve(config, store))?;
         }
         Command::Export {
             command:
@@ -141,8 +159,73 @@ fn main() -> Result<()> {
                 serde_json::json!({ "source": source, "objects": objects })
             );
         }
+        Command::Source {
+            command: SourceCommand::Purge { source, yes },
+        } => {
+            ensure!(yes, "source purge requires --yes");
+            ensure!(config.sources.contains(&source), "source is not configured");
+            let store = Store::open_for_service(&config.database)?;
+            store.replace_source(&source, std::iter::empty())?;
+            println!(
+                "{}",
+                serde_json::json!({ "source": source, "purged": true })
+            );
+        }
     }
     Ok(())
+}
+
+async fn serve(config: Config, store: Arc<Store>) -> Result<()> {
+    let whois = TcpListener::bind(config.listen)
+        .await
+        .context("binding WHOIS")?;
+    let http = match config.http_listen {
+        Some(address) => Some(
+            TcpListener::bind(address)
+                .await
+                .context("binding GraphQL HTTP")?,
+        ),
+        None => None,
+    };
+    let (stop, stopped) = watch::channel(false);
+    let mut services = JoinSet::new();
+    if let Some(http) = http {
+        let store = store.clone();
+        let sources = config.sources.clone();
+        let timeout = Duration::from_secs(config.io_timeout_seconds);
+        let mut stopped = stopped.clone();
+        services.spawn(graphql::serve(http, store, sources, timeout, async move {
+            let _ = stopped.changed().await;
+        }));
+    }
+    services.spawn(async move { whois::serve(whois, &config, store, stopped).await });
+    let mut result = tokio::select! {
+        result = shutdown_signal() => result.context("waiting for shutdown"),
+        service = services.join_next() => match service {
+            Some(Ok(Err(error))) => Err(error),
+            Some(Err(error)) => Err(error.into()),
+            _ => Err(anyhow::anyhow!("a listener stopped unexpectedly")),
+        },
+    };
+    let _ = stop.send(true);
+    while let Some(service) = services.join_next().await {
+        result = result.and_then(|()| service?);
+    }
+    result
+}
+
+async fn shutdown_signal() -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        let mut terminate = signal(SignalKind::terminate())?;
+        tokio::select! {
+            result = tokio::signal::ctrl_c() => result,
+            _ = terminate.recv() => Ok(()),
+        }
+    }
+    #[cfg(not(unix))]
+    tokio::signal::ctrl_c().await
 }
 
 fn export(store: &Store, source: &str, path: &Path) -> Result<u64> {

@@ -20,14 +20,27 @@ From another terminal, use a TCP client to send a query terminated by LF or CRLF
 printf '!mroute,192.0.2.0/24AS64496\n' | nc 127.0.0.1 4343
 ```
 
-The supported TCP requests are a bare case-insensitive primary key, `!m<class>,<key>`, `!g<asn>` for IPv4 origins, `!6<asn>` for IPv6 origins, `!r<prefix>` for exact route matches, `!r<prefix>,o` for their origins and `!v`. `!m` uses configured source order, case-insensitive keys matching the pinned upstream code and legacy space/hyphen handling for route composite keys. Each connection processes one request. Bare and exact route lookups return at most 16 matches, and origin lookups return at most 4,096 distinct prefixes. A request exceeding either limit receives an error. `!m` returns a single result or the IRRd `D` frame. The parser accepts a subset of IRRd RPSL and validates record structure and identity.
+| WHOIS request | Behaviour |
+|---|---|
+| Bare primary key, `!m<class>,<key>` | Case-insensitive exact keys. `!m` returns the first result in source priority order and accepts legacy space or hyphen separators in route keys. |
+| `!r<prefix>[,o|l|L|M]`, `-x`, `-l`, `-L`, `-M` | Exact routes, exact origins, nearest strict cover, all covers including exact, and strict descendants. |
+| `!g<asn>`, `!6<asn>` | Distinct IPv4 and IPv6 prefixes for an origin. |
+| `!o<maintainer>`, `-i <field> <value>` | Maintainer or supported inverse-attribute lookup. |
+| `!i<set>[,1]`, `!a[4|6]<as-set>` | Direct or recursive members, or originating routes for an AS-set. |
+| `!!`, `-k`, `!q` | Start a persistent connection or close it. Each session has an idle deadline and a 1,024-line budget. |
+| `!s<source-list>`, `!s-lc`, `!e<set-list>`, `!e-lc` | Select and inspect query sources or recursive set exclusions for the current connection. |
+| `!v`, `!n<client>` | Report version or acknowledge client identification. |
+
+Bare, route and inverse lookups return at most 16 objects. A single-AS origin lookup returns at most 4,096 distinct prefixes. Set expansion has separate traversal limits. Requests exceeding a limit fail as a whole. The mirror parser validates record structure and identity. Indexing retains valid optional lookup values and reports malformed values that it skipped.
 
 | Configuration | Purpose |
 |---|---|
 | `database` | redb file. A relative path is resolved against the TOML file's parent. |
 | `sources` | Ordered allowlist for imports and WHOIS queries, with 1–256 distinct uppercase names. |
 | `listen` | TCP socket address. The example binds IPv4 loopback on port 4343. |
+| `http_listen` | Optional loopback HTTP address for read-only GraphQL. |
 | `max_connections` | Concurrent client limit, 1–4096. |
+| `max_connections_per_ip` | Optional concurrent WHOIS limit per client IP, at most the global limit. |
 | `io_timeout_seconds` | Deadline per read, lookup or write, 1–300 seconds. |
 | `max_snapshot_bytes` | Uncompressed input byte limit, 1 byte–64 GiB. Individual records are limited to 64 KiB. |
 
@@ -42,6 +55,28 @@ cargo run --locked -- --config examples/irrd.toml export snapshot --source EXAMP
 Export reads one committed view, writes raw objects to a temporary file, then publishes it without overwriting an existing file. You can import the snapshot into a new database configured for that source. This source-level round trip carries the stored RPSL, with blank object separators added as needed. Source serials, recovery metadata and a versioned backup format are future work.
 
 Use the example on a trusted local machine. Keep database and snapshot files private because stored raw text can contain maintainer credentials. Public WHOIS rendering removes `auth` and supplied `rpki-ov-state` fields.
+
+## GraphQL
+
+Set `http_listen = "127.0.0.1:8080"` in TOML. Send JSON by POST to `/graphql/` with a `query` field. The implemented subset accepts bounded exact-key queries through `rpslObjects`, with optional object classes and sources. For example:
+
+```graphql
+{
+  rpslObjects(rpslPk: ["192.0.2.0/24AS64496"], objectClass: ["route"]) {
+    rpslPk
+    objectClass
+    source
+    objectText
+    ... on RPSLRoute { origin }
+  }
+}
+```
+
+## Index upgrades and source purge
+
+On opening an existing registry database, the server adds missing lookup indexes in one transaction. Back up the database before upgrading. To roll back the binary, restore a pre-upgrade copy before importing or purging sources.
+
+Stop the daemon before purging a source. Use `source purge --source EXAMPLE --yes` with the same configuration to remove that source's objects and their index entries. A repeated purge succeeds. Remove the source from configuration separately if it should no longer be selectable. Purge is logical removal from the registry and database indexes.
 
 ## Development checks
 

@@ -11,13 +11,15 @@ IRRd v4.5.4, commit `8e8080dab744a348b7d0e6efcb53f403301dd075`, is the pinned co
 | 0 Research | Baseline, feature and RPSL schema inventory, standards links, threat model and benchmark design recorded. Storage trade-offs are qualitative pending measured evaluation and the inventory needs differential evidence. |
 | 1 Foundation | CLI, validated TOML, structured JSON logs, process lifecycle, embedded store and Windows/Linux CI workflow. CI execution and audit results are separate verification gates. |
 | 2 RPSL and storage | Structural parsing for 19 classes, canonical identities, bounded plain/gzip snapshot replacement, exact and origin indexes, and logical verification. Full attribute and reference validation, source journals and prefix/set/reverse indexes are open. |
-| 3 Queries | Bare exact TCP lookups and IRRd-style version, class/key, exact route prefix and origin queries. Persistent connections, RIPE flags and broader IRRd command semantics, GraphQL, and upstream interoperability remain open. |
+| 3 Queries | Persistent TCP, source/exclusion state, exact/covering/covered prefixes, origin and inverse indexes, and direct and recursive set expansion. Optional loopback GraphQL serves bounded exact-object queries. Broader RIPE flag combinations, full GraphQL schema and upstream interoperability remain open. |
 | 4 Mirroring | Local snapshot import/export and tested object round trip. Remote fetch, scheduling, serials, NRTMv3/v4 and interoperability remain open. |
 | 5–7 Registry services | Authoritative writes, authentication, RPKI and scope filtering, REST and admin UI remain open. |
 | 8–10 Release | Initial local tests, RustSec scan, RPSL fuzz target, process-kill recovery test and synthetic smoke benchmark. Fuzz execution, host-crash and storage-failure recovery, broader security review, load tests, release packaging, production migration and readiness gates remain open. |
 
 ## Verification
 
+- Query checkpoint on Windows passed 36 unit and 3 end-to-end tests, including per-IP admission, TCP pipelining and session isolation, prefix boundaries, inverse lookups, set expansion and credential-redacted GraphQL HTTP. Root dependency audit passed with 160 locked dependencies. An upstream-oracle job is configured for a Linux runner.
+- The [upstream issue inventory](docs/compatibility/IRRD_ISSUE_BACKLOG.md) tracks 34 open issues and six open pull requests. Added local coverage for parts of #349 and #608, and an explicit offline source purge for part of #952.
 - Windows Rust 1.99.1 passed formatting, Clippy with warnings denied, 19 unit tests and one CLI/TCP integration test. One ignored helper is invoked by the process-kill test, which confirmed the last acknowledged snapshot and indexes survived termination during replacement.
 - The RustSec 0.22.2 scan checked 83 dependencies in the root lockfile against 1,402 advisories and exited successfully. The released Windows executable was checksum-verified. The source build of the audit tool required a C compiler absent from this host.
 - The exact-key differential harness passed 13 fixture cases in a Rust-to-Rust self-check. This exercises the harness. Upstream execution remains pending. The [Compose oracle](tools/oracle/README.md) passed configuration validation only.
@@ -38,6 +40,6 @@ IRRd v4.5.4, commit `8e8080dab744a348b7d0e6efcb53f403301dd075`, is the pinned co
 
 1. Run formatting, Clippy and locked tests as shown in the [README](README.md). Run the RustSec audit and a Linux RPSL fuzz campaign.
 2. Bring up the pinned upstream service on an isolated Linux runner using the [oracle instructions](tools/oracle/README.md). Load a licence-cleared corpus into both services and run the WHOIS differential harness. Record object counts, schema/format differences and exact wire evidence.
-3. Implement a canonical prefix type and add transactional indexes for covering, covered and inverse lookups. Extend storage invariants and bounded WHOIS route and reverse commands with the oracle tests.
+3. Extend the upstream oracle corpus for covering, covered, inverse and set queries. Add remaining RIPE flags and prove default source, error and ordering behavior with transcript comparisons.
 4. Implement source generations and journals, then add a bounded in-process sync worker. Preserve serial continuity and all-or-nothing index publication. Use pinned v4.5.4 fixtures before implementing broader NRTMv4 draft interoperability.
 5. Advance GraphQL and authoritative submission on stable query and storage contracts. Keep all unmet security, interoperability and production readiness gates in the compatibility matrix.
