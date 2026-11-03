@@ -47,6 +47,14 @@ curl --fail --get --data-urlencode 'prefix=193.0.0.0/21' \
   --data-urlencode 'origin=AS3333' http://127.0.0.1:9280/v1/rpki/validate
 ```
 
+Status includes `rov_index_bytes`, the lookup table's owned capacity estimate,
+including family-specific records and prefix-length directories. It excludes
+allocator bookkeeping, the validator's repository cache, RTR history and the rest
+of the process. Compare process RSS separately. IPv4 and IPv6 rows use separate
+compact indexes; importing JSON does not allocate an intermediate wide-record
+array. Normal validation, AS0 handling and bounded covering explanations retain
+the same semantics.
+
 The live UK node exposes these bounded HTTP endpoints through HTTPS. Its RTR
 listener is private loopback. For remote lab evaluation, an SSH port forward
 from a router's management host can reach it:

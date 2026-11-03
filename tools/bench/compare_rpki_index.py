@@ -19,7 +19,11 @@ work=args.work.resolve()
 if work.is_relative_to(ROOT):parser.error('Keep generated benchmarks outside the repository')
 work.mkdir(parents=True,exist_ok=True)
 baseline=subprocess.check_output(['git','rev-parse',args.baseline+'^{commit}'],cwd=ROOT,text=True).strip()
-(work/'baseline.rs').write_bytes(subprocess.check_output(['git','show',baseline+':src/rpki.rs'],cwd=ROOT))
+baseline_source=subprocess.check_output(['git','show',baseline+':src/rpki.rs'],cwd=ROOT,text=True)
+if 'pub fn memory_bytes(' not in baseline_source:
+    directories=' + self.lengths_v4.capacity() + self.lengths_v6.capacity()' if 'lengths_v4:' in baseline_source else ''
+    baseline_source+='\nimpl RoaTable {pub fn memory_bytes(&self)->usize {std::mem::size_of::<Self>() + self.vrps.capacity()*std::mem::size_of::<Vrp>()'+directories+'}}\n'
+(work/'baseline.rs').write_text(baseline_source)
 shutil.copyfile(ROOT/'src/rpki.rs',work/'candidate.rs')
 lock=tomllib.loads((ROOT/'Cargo.lock').read_text());versions={p['name']:p['version'] for p in lock['package'] if p['name'] in ['anyhow','serde','serde_json','libc']}
 (work/'Cargo.toml').write_text('[package]\nname="rirrd-rov-kernel-comparison"\nversion="0.0.0"\nedition="2024"\n[workspace]\n[dependencies]\nanyhow="='+versions['anyhow']+'"\nserde={version="='+versions['serde']+'",features=["derive"]}\nserde_json="='+versions['serde_json']+'"\n[[bin]]\nname="rov-compare"\npath="main.rs"\n')
@@ -52,7 +56,7 @@ fn main(){
  for round in 0..3 {let mut timings=[0.0;2];let mut cpu=[0.0;2];let mut checks=[0usize;2];for side in if round%2==0{[0,1]}else{[1,0]}{for(p,a)in queries.iter().take(128){if side==0{black_box(old.validate(p,*a).unwrap());}else{black_box(new.validate(p,*a).unwrap());}}
  let cpu_start=cpu_time();let start=Instant::now();for i in 0..100000 {let(p,a)=&queries[i%queries.len()];checks[side]+=if side==0{match black_box(old.validate(p,*a).unwrap()){baseline::Validation::Valid=>1,baseline::Validation::Invalid=>2,baseline::Validation::NotFound=>3}}else{match black_box(new.validate(p,*a).unwrap()){candidate::Validation::Valid=>1,candidate::Validation::Invalid=>2,candidate::Validation::NotFound=>3}};}
  timings[side]=start.elapsed().as_secs_f64();cpu[side]=cpu_time()-cpu_start;}assert_eq!(checks[0],checks[1]);rows.push(serde_json::json!({"profile":(["v4_exact_valid","v4_more_specific_valid","v4_invalid","v4_not_found","v6_exact_valid","v6_more_specific_64","v6_more_specific_128","v6_invalid","v6_not_found"][mode]),"round":round,"queries":100000,"baseline_seconds":timings[0],"candidate_seconds":timings[1],"baseline_cpu_seconds":cpu[0],"candidate_cpu_seconds":cpu[1],"checksum":checks[0]}));}}
- println!("{}",serde_json::json!({"vrps":new.len(),"baseline_build_seconds":old_build,"candidate_build_seconds":new_build,"samples":rows}));
+ println!("{}",serde_json::json!({"vrps":new.len(),"baseline_index_bytes":old.memory_bytes(),"candidate_index_bytes":new.memory_bytes(),"baseline_build_seconds":old_build,"candidate_build_seconds":new_build,"samples":rows}));
 }
 ''')
 subprocess.run(['cargo','build','--offline','--release','--manifest-path',str(work/'Cargo.toml')],check=True,stdout=subprocess.DEVNULL)

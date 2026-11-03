@@ -17,6 +17,7 @@ def request(path,body=None):
     except HTTPError as e:return e.code,e.read().decode()
 code,status=request('/v1/rpki/status');assert code==200 and status['usable'],status
 assert status['vrps_ipv4']+status['vrps_ipv6']==status['vrps']
+assert isinstance(status['rov_index_bytes'],int) and 0<status['rov_index_bytes']<status['vrps']*48
 assert sum(a['vrps_ipv4'] for a in status['trust_anchors'])==status['vrps_ipv4']
 assert sum(a['vrps_ipv6'] for a in status['trust_anchors'])==status['vrps_ipv6']
 assert 'rtr_listen' not in status
@@ -30,4 +31,4 @@ assert [r['state'] for r in batch['results']]==['VALID','INVALID'],batch
 assert isinstance(batch['dataset_serial'],int)
 for body in [{'routes':[]},{'routes':[{'prefix':'malformed','origin':'AS3333'}]},{'routes':[{'prefix':'193.0.0.0/21','origin':'AS3333'}]*101}]:
     code,data=request('/v1/rpki/validate',body);assert code==400,(code,data)
-print(json.dumps({'vrps':status['vrps'],'ipv4':status['vrps_ipv4'],'ipv6':status['vrps_ipv6'],'anchors':len(status['trust_anchors']),'rejected_publication_points':status['rejected_publication_points'],'validation_seconds':status['validation_seconds'],'checks':'covering ROAs, atomic batch VALID/INVALID, malformed/empty/oversized route counts rejected'}))
+print(json.dumps({'vrps':status['vrps'],'rov_index_bytes':status['rov_index_bytes'],'ipv4':status['vrps_ipv4'],'ipv6':status['vrps_ipv6'],'anchors':len(status['trust_anchors']),'rejected_publication_points':status['rejected_publication_points'],'validation_seconds':status['validation_seconds'],'checks':'covering ROAs, atomic batch VALID/INVALID, malformed/empty/oversized route counts rejected'}))

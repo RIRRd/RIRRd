@@ -88,7 +88,7 @@ impl Shared {
             });
         json!({"enabled":enabled,"usable":usable,"state":if !enabled{"disabled"}else if dataset.is_some_and(|d|self.config.as_ref().is_some_and(|c|d.completed.elapsed() >= Duration::from_secs(c.expire_seconds))){"expired"}else{inner.state},
             "engine":"Routinator 0.15.3 / rpki-rs (embedded Rust library)","independent_validation":true,"transport":"RRDP; rsync disabled",
-            "vrps":dataset.map(|d|d.table.len()),"vrps_ipv4":dataset.map(|d|d.table.family_counts().0),"vrps_ipv6":dataset.map(|d|d.table.family_counts().1),"serial":dataset.map(|d|d.serial),"last_success":dataset.map(|d|d.timestamp),
+            "vrps":dataset.map(|d|d.table.len()),"rov_index_bytes":dataset.map(|d|d.table.memory_bytes()),"vrps_ipv4":dataset.map(|d|d.table.family_counts().0),"vrps_ipv6":dataset.map(|d|d.table.family_counts().1),"serial":dataset.map(|d|d.serial),"last_success":dataset.map(|d|d.timestamp),
             "validation_seconds":dataset.map(|d|d.validation_seconds),"dataset_age_seconds":dataset.map(|d|d.completed.elapsed().as_secs()),"refresh_seconds":self.config.as_ref().map(|c|c.refresh_seconds),"expire_seconds":self.config.as_ref().map(|c|c.expire_seconds),"trust_anchors":dataset.map(|d|&d.anchors),
             "trust_anchors_with_valid_publication_points":dataset.map(|d|d.trust_anchors),"rejected_publication_points":dataset.map(|d|d.rejected),
             "rtr_listen":self.config.as_ref().and_then(|c|c.rtr_listen).map(|a|a.to_string()),"rtr_exposure":"loopback only",

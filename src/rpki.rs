@@ -19,41 +19,103 @@ pub enum Validation {
     NotFound,
 }
 
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+struct PackedVrp<N> {
+    network: N,
+    length: u8,
+    origin: u32,
+    max_length: u8,
+}
+
+trait Address: Copy + Ord {
+    fn masked(self, length: u8) -> Self;
+    fn ip(self) -> IpAddr;
+}
+impl Address for u32 {
+    fn masked(self, length: u8) -> Self {
+        self & u32::MAX.checked_shl(u32::from(32 - length)).unwrap_or(0)
+    }
+    fn ip(self) -> IpAddr {
+        IpAddr::V4(self.into())
+    }
+}
+impl Address for u128 {
+    fn masked(self, length: u8) -> Self {
+        self & u128::MAX.checked_shl(u32::from(128 - length)).unwrap_or(0)
+    }
+    fn ip(self) -> IpAddr {
+        IpAddr::V6(self.into())
+    }
+}
+
 pub struct RoaTable {
-    vrps: Vec<Vrp>,
+    v4: Vec<PackedVrp<u32>>,
+    v6: Vec<PackedVrp<u128>>,
     lengths_v4: Vec<u8>,
     lengths_v6: Vec<u8>,
 }
 
 impl RoaTable {
-    fn indexed(mut vrps: Vec<Vrp>) -> Self {
-        vrps.sort_unstable();
-        vrps.dedup();
-        let mut v4 = [false; 33];
-        let mut v6 = [false; 129];
-        for entry in &vrps {
-            match entry.prefix {
-                Prefix::V4(_, length) => v4[usize::from(length)] = true,
-                Prefix::V6(_, length) => v6[usize::from(length)] = true,
-            }
-        }
+    fn empty() -> Self {
         Self {
-            vrps,
-            lengths_v4: (0..=32).rev().filter(|&n| v4[usize::from(n)]).collect(),
-            lengths_v6: (0..=128).rev().filter(|&n| v6[usize::from(n)]).collect(),
+            v4: Vec::new(),
+            v6: Vec::new(),
+            lengths_v4: Vec::new(),
+            lengths_v6: Vec::new(),
         }
     }
 
-    fn covering_lengths(&self, route: Prefix, inclusive: bool) -> impl Iterator<Item = u8> + '_ {
-        let lengths = match route {
-            Prefix::V4(..) => &self.lengths_v4,
-            Prefix::V6(..) => &self.lengths_v6,
-        };
-        let first =
-            lengths.partition_point(|&n| n > route.length() || (!inclusive && n == route.length()));
-        lengths[first..].iter().copied()
+    fn push(&mut self, vrp: Vrp) {
+        match vrp.prefix {
+            Prefix::V4(network, length) => self.v4.push(PackedVrp {
+                network,
+                length,
+                origin: vrp.origin,
+                max_length: vrp.max_length,
+            }),
+            Prefix::V6(network, length) => self.v6.push(PackedVrp {
+                network,
+                length,
+                origin: vrp.origin,
+                max_length: vrp.max_length,
+            }),
+        }
     }
-    /// Read a complete JSON document exported by a trusted RPKI validator.
+
+    fn finalized(mut self) -> Self {
+        fn finish<N: Address>(rows: &mut Vec<PackedVrp<N>>, width: u8) -> Vec<u8> {
+            rows.sort_unstable();
+            rows.dedup();
+            // Return substantial growth/duplicate slack; avoid copying a large
+            // index merely to reclaim a few spare records on every refresh.
+            if rows.capacity() > rows.len().saturating_add(rows.len() / 8).saturating_add(64) {
+                rows.shrink_to_fit();
+            }
+            let mut present = [false; 129];
+            for row in rows.iter() {
+                present[usize::from(row.length)] = true;
+            }
+            (0..=width)
+                .rev()
+                .filter(|&n| present[usize::from(n)])
+                .collect()
+        }
+        self.lengths_v4 = finish(&mut self.v4, 32);
+        self.lengths_v6 = finish(&mut self.v6, 128);
+        self
+    }
+
+    #[cfg(test)]
+    fn indexed(records: Vec<Vrp>) -> Self {
+        let mut table = Self::empty();
+        for row in records {
+            table.push(row);
+        }
+        table.finalized()
+    }
+
+    /// Read directly into compact family-specific records without an intermediate
+    /// vector whose IPv4 rows carry IPv6 alignment and enum storage.
     pub fn read(reader: impl Read, max_bytes: u64) -> Result<Self> {
         let limit = max_bytes.saturating_add(1);
         let mut reader = BufReader::new(reader.take(limit));
@@ -62,154 +124,190 @@ impl RoaTable {
             limit - reader.get_ref().limit() <= max_bytes,
             "ROA feed exceeds the configured byte limit"
         );
-        Ok(Self::indexed(feed?.0.roas))
+        Ok(feed?.0.roas.finalized())
     }
 
-    /// Construct the ROV index directly from the embedded validator's verified payloads.
     #[cfg(test)]
     pub fn from_payloads(payloads: impl IntoIterator<Item = (String, u32, u8)>) -> Result<Self> {
-        let mut vrps = Vec::new();
+        let mut table = Self::empty();
         for (prefix, origin, max_length) in payloads {
-            ensure!(vrps.len() < MAX_VRPS, "ROA payload limit exceeded");
+            ensure!(table.len() < MAX_VRPS, "ROA payload limit exceeded");
             let prefix = Prefix::parse(&prefix)?;
             ensure!(
-                max_length >= prefix.length()
-                    && max_length
-                        <= if matches!(prefix, Prefix::V6(..)) {
-                            128
-                        } else {
-                            32
-                        },
+                (prefix.length()..=prefix.width()).contains(&max_length),
                 "invalid payload maximum length"
             );
-            vrps.push(Vrp {
+            table.push(Vrp {
                 prefix,
                 origin,
                 max_length,
             });
         }
-        Ok(Self::indexed(vrps))
+        Ok(table.finalized())
     }
 
-    /// Build directly from verified binary prefixes without allocating and
-    /// reparsing a CIDR string for every payload on every refresh.
     pub fn from_verified_prefixes(
         payloads: impl IntoIterator<Item = (IpAddr, u8, u32, u8)>,
     ) -> Result<Self> {
-        let input = payloads.into_iter();
-        let mut vrps = Vec::with_capacity(input.size_hint().0.min(MAX_VRPS));
-        for (address, length, origin, max_length) in input {
-            ensure!(vrps.len() < MAX_VRPS, "ROA payload limit exceeded");
+        let mut table = Self::empty();
+        for (address, length, origin, max_length) in payloads {
+            ensure!(table.len() < MAX_VRPS, "ROA payload limit exceeded");
             let prefix = Prefix::from_parts(address, length)?;
             ensure!(
                 (length..=prefix.width()).contains(&max_length),
                 "invalid payload maximum length"
             );
-            vrps.push(Vrp {
+            table.push(Vrp {
                 prefix,
                 origin,
                 max_length,
             });
         }
-        Ok(Self::indexed(vrps))
+        Ok(table.finalized())
     }
 
     pub fn family_counts(&self) -> (usize, usize) {
-        let ipv4 = self
-            .vrps
-            .partition_point(|v| matches!(v.prefix, Prefix::V4(..)));
-        (ipv4, self.vrps.len() - ipv4)
+        (self.v4.len(), self.v6.len())
     }
-
-    /// A bounded explanation, ordered most-specific first. The validation
-    /// decision still considers every covering VRP, even when this is truncated.
-    pub fn covering_payloads(&self, prefix: &str) -> Result<(Vec<serde_json::Value>, bool)> {
-        let route = Prefix::parse(prefix)?;
-        let mut result = Vec::new();
-        for length in self.covering_lengths(route, true) {
-            let candidate = route.ancestor(length);
-            let lower = self.vrps.partition_point(|v| v.prefix < candidate);
-            for vrp in self.vrps[lower..]
-                .iter()
-                .take_while(|v| v.prefix == candidate)
-            {
-                if result.len() == 32 {
-                    return Ok((result, true));
-                }
-                let address = match candidate {
-                    Prefix::V4(a, _) => IpAddr::V4(a.into()),
-                    Prefix::V6(a, _) => IpAddr::V6(a.into()),
-                };
-                result.push(serde_json::json!({"prefix":format!("{address}/{length}"),"asn":vrp.origin,"max_length":vrp.max_length}));
-            }
-        }
-        Ok((result, false))
-    }
-
-    /// Number of distinct validated prefix, origin and max-length tuples.
     pub fn len(&self) -> usize {
-        self.vrps.len()
+        self.v4.len() + self.v6.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.v4.is_empty() && self.v6.is_empty()
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.vrps.is_empty()
+    /// Owned index allocation estimate, not RSS or the entire validator cache.
+    pub fn memory_bytes(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + self.v4.capacity() * std::mem::size_of::<PackedVrp<u32>>()
+            + self.v6.capacity() * std::mem::size_of::<PackedVrp<u128>>()
+            + self.lengths_v4.capacity()
+            + self.lengths_v6.capacity()
     }
 
     pub fn validate(&self, prefix: &str, origin: u32) -> Result<Validation> {
-        let route = Prefix::parse(prefix)?;
-        if self.is_empty() {
-            return Ok(Validation::NotFound);
+        match Prefix::parse(prefix)? {
+            Prefix::V4(address, length) => Ok(Self::validate_rows(
+                &self.v4,
+                &self.lengths_v4,
+                address,
+                length,
+                origin,
+            )),
+            Prefix::V6(address, length) => Ok(Self::validate_rows(
+                &self.v6,
+                &self.lengths_v6,
+                address,
+                length,
+                origin,
+            )),
         }
-        // Exact, valid announcements are common. Do not make them walk or
-        // search the length directory before the same direct lookup as before.
-        let exact = self.covering_verdict(route, origin, route.length());
+    }
+
+    fn validate_rows<N: Address>(
+        rows: &[PackedVrp<N>],
+        lengths: &[u8],
+        address: N,
+        length: u8,
+        origin: u32,
+    ) -> Validation {
+        if rows.is_empty() {
+            return Validation::NotFound;
+        }
+        let exact = Self::covering_verdict(rows, address, length, origin, length);
         if exact == Some(Validation::Valid) {
-            return Ok(Validation::Valid);
+            return Validation::Valid;
         }
         let mut covered = exact.is_some();
-        for length in self.covering_lengths(route, false) {
-            match self.covering_verdict(route.ancestor(length), origin, route.length()) {
-                Some(Validation::Valid) => return Ok(Validation::Valid),
+        let first = lengths.partition_point(|&n| n >= length);
+        for &parent in &lengths[first..] {
+            match Self::covering_verdict(rows, address.masked(parent), parent, origin, length) {
+                Some(Validation::Valid) => return Validation::Valid,
                 Some(_) => covered = true,
                 None => {}
             }
         }
-        Ok(if covered {
+        if covered {
             Validation::Invalid
         } else {
             Validation::NotFound
-        })
+        }
     }
 
     #[inline]
-    fn covering_verdict(&self, candidate: Prefix, origin: u32, length: u8) -> Option<Validation> {
-        // The last record before (prefix, origin) carries this origin's largest
-        // maxLength when present. Other origins still establish coverage.
-        let upper = self
-            .vrps
-            .partition_point(|entry| (entry.prefix, entry.origin) <= (candidate, origin));
-        if let Some(entry) = upper.checked_sub(1).and_then(|n| self.vrps.get(n))
-            && entry.prefix == candidate
+    fn covering_verdict<N: Address>(
+        rows: &[PackedVrp<N>],
+        network: N,
+        length: u8,
+        origin: u32,
+        route_length: u8,
+    ) -> Option<Validation> {
+        let upper = rows.partition_point(|entry| {
+            (entry.network, entry.length, entry.origin) <= (network, length, origin)
+        });
+        if let Some(entry) = upper.checked_sub(1).and_then(|n| rows.get(n))
+            && (entry.network, entry.length) == (network, length)
         {
             return Some(
-                if origin != 0 && origin == entry.origin && length <= entry.max_length {
+                if origin != 0 && origin == entry.origin && route_length <= entry.max_length {
                     Validation::Valid
                 } else {
                     Validation::Invalid
                 },
             );
         }
-        self.vrps
-            .get(upper)
-            .filter(|entry| entry.prefix == candidate)
+        rows.get(upper)
+            .filter(|entry| (entry.network, entry.length) == (network, length))
             .map(|_| Validation::Invalid)
+    }
+
+    /// A bounded explanation; validation still considers every covering record.
+    pub fn covering_payloads(&self, prefix: &str) -> Result<(Vec<serde_json::Value>, bool)> {
+        match Prefix::parse(prefix)? {
+            Prefix::V4(address, length) => Ok(Self::covering_rows(
+                &self.v4,
+                &self.lengths_v4,
+                address,
+                length,
+            )),
+            Prefix::V6(address, length) => Ok(Self::covering_rows(
+                &self.v6,
+                &self.lengths_v6,
+                address,
+                length,
+            )),
+        }
+    }
+    fn covering_rows<N: Address>(
+        rows: &[PackedVrp<N>],
+        lengths: &[u8],
+        address: N,
+        length: u8,
+    ) -> (Vec<serde_json::Value>, bool) {
+        let mut out = Vec::new();
+        let first = lengths.partition_point(|&n| n > length);
+        for &parent in &lengths[first..] {
+            let network = address.masked(parent);
+            let lower =
+                rows.partition_point(|entry| (entry.network, entry.length) < (network, parent));
+            for entry in rows[lower..]
+                .iter()
+                .take_while(|entry| (entry.network, entry.length) == (network, parent))
+            {
+                if out.len() == 32 {
+                    return (out, true);
+                }
+                out.push(serde_json::json!({"prefix":format!("{}/{parent}",network.ip()),"asn":entry.origin,"max_length":entry.max_length}));
+            }
+        }
+        (out, false)
     }
 }
 
 #[derive(Deserialize)]
 struct Feed {
     #[serde(deserialize_with = "read_vrps")]
-    roas: Vec<Vrp>,
+    roas: RoaTable,
 }
 
 // A derived struct also accepts positional arrays. Require object syntax for
@@ -236,19 +334,19 @@ impl<'de, T: Deserialize<'de>> Deserialize<'de> for JsonObject<T> {
     }
 }
 
-fn read_vrps<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<Vrp>, D::Error> {
+fn read_vrps<'de, D: Deserializer<'de>>(deserializer: D) -> Result<RoaTable, D::Error> {
     struct VrpSequence;
 
     impl<'de> Visitor<'de> for VrpSequence {
-        type Value = Vec<Vrp>;
+        type Value = RoaTable;
 
         fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
             formatter.write_str("an array of validated ROA payloads")
         }
 
         fn visit_seq<A: SeqAccess<'de>>(self, mut sequence: A) -> Result<Self::Value, A::Error> {
-            let mut vrps = Vec::new();
-            while let Some(JsonObject(vrp)) = sequence.next_element()? {
+            let mut vrps = RoaTable::empty();
+            while let Some(JsonObject(vrp)) = sequence.next_element::<JsonObject<Vrp>>()? {
                 if vrps.len() == MAX_VRPS {
                     return Err(de::Error::custom("ROA feed exceeds the record limit"));
                 }
@@ -261,7 +359,7 @@ fn read_vrps<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<Vrp>, D::
     deserializer.deserialize_seq(VrpSequence)
 }
 
-#[derive(Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(try_from = "VrpInput")]
 struct Vrp {
     prefix: Prefix,
@@ -405,6 +503,29 @@ mod tests {
     }
 
     #[test]
+    fn compact_index_reclaims_duplicate_slack_and_keeps_families_separate() -> Result<()> {
+        // This bound includes Vec capacity and the table, rather than len alone.
+        let payloads = (0..4096u32).flat_map(|n| {
+            let entry = (IpAddr::V4((0x0a00_0000 | (n << 8)).into()), 24, 64496, 32);
+            [entry; 4]
+        });
+        let index = RoaTable::from_verified_prefixes(payloads)?;
+        assert_eq!(index.family_counts(), (4096, 0));
+        assert!(index.memory_bytes() < 4096 * 16);
+        assert_eq!(index.validate("10.0.1.1/32", 64496)?, Validation::Valid);
+        assert_eq!(
+            index.validate("2001:db8::/32", 64496)?,
+            Validation::NotFound
+        );
+        let feed = table(
+            r#"{"roas":[{"prefix":"192.0.2.0/24","asn":"AS64496","maxLength":24},{"prefix":"192.0.2.0/24","asn":"AS64496","maxLength":24}]}"#,
+        )?;
+        assert_eq!(feed.len(), 1);
+        assert_eq!(feed.validate("192.0.2.0/24", 64496)?, Validation::Valid);
+        Ok(())
+    }
+
+    #[test]
     fn length_index_matches_full_scan_across_both_families_and_as_zero() -> Result<()> {
         let mut records = Vec::new();
         // Include default routes, sparse lengths, multiple origins and AS0.
@@ -420,7 +541,7 @@ mod tests {
                 });
             }
         }
-        let table = RoaTable::indexed(records);
+        let table = RoaTable::indexed(records.clone());
         for n in 0..512u32 {
             for query in [
                 Prefix::V4(0x0a00_0000 | (n << 12), 32).ancestor((n % 33) as u8),
@@ -432,8 +553,7 @@ mod tests {
                     Prefix::V6(a, l) => (IpAddr::V6(a.into()), l),
                 };
                 for origin in [0, 64496, 64497, 64498, 64500] {
-                    let covering: Vec<_> = table
-                        .vrps
+                    let covering: Vec<_> = records
                         .iter()
                         .filter(|v| {
                             query.width() == v.prefix.width()
