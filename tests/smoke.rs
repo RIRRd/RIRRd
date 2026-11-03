@@ -56,7 +56,7 @@ prefixes = ["198.51.100.128/25"]
     fs::write(
         &snapshot,
         format!(
-            "{}\n{}\n{}\ninetnum: 192.0.2.0 - 192.0.2.255\nmnt-by: ROOT-MNT\nsource: TEST\n\naut-num: AS64496\nmnt-by: ROOT-MNT\nsource: TEST\n",
+            "{}\n{}\n{}\ninetnum: 192.0.2.0 - 192.0.2.255\nmnt-by: ROOT-MNT\nsource: TEST\n\naut-num: AS64496\nmnt-by: ROOT-MNT\nsource: TEST\n\nas-block: AS64497 - AS64505\nmnt-by: NEW-MNT\nsource: TEST\n\nas-block: AS64497 - AS64499\nmnt-by: ROOT-MNT\nsource: TEST\n",
             mntner("ROOT-MNT", &root_hash.to_string(), "ROOT-MNT"),
             person("Test Admin", "ADMIN-TEST", "ROOT-MNT"),
             mntner("NEW-MNT", &new_hash.to_string(), "NEW-MNT")
@@ -115,7 +115,7 @@ prefixes = ["198.51.100.128/25"]
     let verification = successful(cli(&config).args(["database", "verify"]).output().unwrap());
     assert_eq!(
         serde_json::from_slice::<Value>(&verification).unwrap()["objects"],
-        5
+        7
     );
     successful(submit("TEST", &contact, "root test secret\n", false));
     let unprovisioned = mntner("UNPROVISIONED-MNT", &new_hash.to_string(), "ROOT-MNT");
@@ -194,11 +194,25 @@ prefixes = ["198.51.100.128/25"]
     let route_set = "route-set: AS64497:RS-EXAMPLE\nmp-members: 2001:db8::/32^+\nmnt-by: NEW-MNT\nsource: TEST\n";
     successful(submit("TEST", route_set, "new test secret\n", false));
     let aut_num = "aut-num: AS64497\nas-name: AS-EXAMPLE\nadmin-c: ADMIN-TEST\ntech-c: ADMIN-TEST\nmnt-by: NEW-MNT\nsource: TEST\n";
+    let wrong_block = submit("TEST", aut_num, "new test secret\n", false);
+    assert!(!wrong_block.status.success());
     assert!(
-        !submit("TEST", aut_num, "new test secret\n", false)
-            .status
-            .success()
+        String::from_utf8_lossy(&wrong_block.stderr).contains("parent maintainer authentication")
     );
+    let unallocated = submit(
+        "TEST",
+        &aut_num.replace("AS64497", "AS64600"),
+        "new test secret\n",
+        false,
+    );
+    assert!(!unallocated.status.success());
+    assert!(String::from_utf8_lossy(&unallocated.stderr).contains("no covering AS-block"));
+    successful(submit(
+        "TEST",
+        aut_num,
+        "root test secret\nnew test secret\n",
+        false,
+    ));
     let updated_aut_num = aut_num
         .replace("AS64497", "AS64496")
         .replace("NEW-MNT", "ROOT-MNT");

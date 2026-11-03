@@ -158,10 +158,8 @@ pub fn validate(object: &Object) -> Result<()> {
                 route = Some(network);
             }
             "origin" | "aut-num" => ensure!(
-                scalar(attribute)
-                    .and_then(asn)
-                    .is_some_and(|number| number != 0),
-                "{name} must be a nonzero AS number"
+                scalar(attribute).and_then(asn).is_some_and(assignable_asn),
+                "{name} must be an AS number allowed for authoritative objects"
             ),
             "as-name" => ensure!(
                 scalar(attribute).is_some_and(|value| valid_name_with_prefix(value, Some("AS-"))),
@@ -263,12 +261,16 @@ pub fn set_creation_asn(object: &Object) -> Result<u32> {
         matches!(object.class.as_str(), "as-set" | "route-set"),
         "set creation policy requires an AS-SET or ROUTE-SET"
     );
-    object
+    let parent = object
         .key
         .split_once(':')
         .and_then(|(first, _)| asn(first))
-        .filter(|&number| number != 0)
-        .ok_or_else(|| anyhow!("new set names must start with a nonzero ASN component"))
+        .ok_or_else(|| anyhow!("new set names must start with an ASN component"))?;
+    ensure!(
+        object.key.split(':').filter_map(asn).all(assignable_asn),
+        "new set names must not contain reserved AS numbers"
+    );
+    Ok(parent)
 }
 
 /// Extract authorising maintainers from existing or submitted data.
@@ -448,6 +450,11 @@ fn asn(value: &str) -> Option<u32> {
         return None;
     }
     digits.parse().ok()
+}
+
+fn assignable_asn(number: u32) -> bool {
+    // AS_TRANS and the two last ASNs are reserved. Private-use ASNs are allowed.
+    !matches!(number, 0 | 23456 | 65535 | u32::MAX)
 }
 
 fn set_name(value: &str, prefixes: &[&str]) -> bool {
@@ -897,5 +904,27 @@ mod tests {
         for identity in ["64496", "AS4294967296", "AS64496.1"] {
             assert!(parse(&AUT_NUM.replace("as064496", identity)).is_err());
         }
+    }
+
+    #[test]
+    fn applies_reserved_asn_policy_to_authoritative_identities() -> Result<()> {
+        for asn in [0, 23456, 65535, u32::MAX, 64512, 4_200_000_000] {
+            let allowed = asn == 64512 || asn == 4_200_000_000;
+            let aut_num = object(&AUT_NUM.replace("as064496", &format!("AS{asn}")));
+            assert_eq!(validate(&aut_num).is_ok(), allowed);
+            for (class, prefix) in [("route", "192.0.2.0/24"), ("route6", "2001:db8::/32")] {
+                let route = object(&format!(
+                    "{class}: {prefix}\norigin: AS{asn}\nmnt-by: EXAMPLE-MNT\nsource: TEST\n"
+                ));
+                assert_eq!(validate(&route).is_ok(), allowed);
+            }
+            let set = object(&AS_SET.replace(
+                "AS064496:AS-EXAMPLE",
+                &format!("AS64496:AS{asn}:AS-EXAMPLE"),
+            ));
+            validate(&set)?;
+            assert_eq!(set_creation_asn(&set).is_ok(), allowed);
+        }
+        Ok(())
     }
 }

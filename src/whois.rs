@@ -249,21 +249,9 @@ fn execute_http(query: &str, store: &Store, client: &Client) -> Result<(StatusCo
                 no_content()
             }
             SessionCommand::Exclude(names) if parse_exclusions(names).is_some() => no_content(),
+            SessionCommand::Timeout(value) if parse_timeout(value).is_some() => no_content(),
             _ => invalid(),
         });
-    }
-    if let Some(value) = prepared.strip_prefix("!t") {
-        return Ok(
-            if value
-                .trim()
-                .parse::<u16>()
-                .is_ok_and(|value| (1..=1000).contains(&value))
-            {
-                no_content()
-            } else {
-                invalid()
-            },
-        );
     }
     if prepared.is_empty() && query.starts_with('-') {
         return Ok(no_content());
@@ -390,6 +378,7 @@ async fn handle(
     let mut selected = access.sources.clone();
     let mut excluded: Arc<[String]> = Arc::new([]);
     let mut persistent = false;
+    let mut idle = deadline;
     let mut line = Vec::new();
     for _ in 0..MAX_SESSION_QUERIES {
         line.clear();
@@ -397,7 +386,7 @@ async fn handle(
         let read = tokio::select! {
             biased;
             _ = stopped.changed() => return,
-            read = timeout(deadline, bounded.read_until(b'\n', &mut line)) => read,
+            read = timeout(idle, bounded.read_until(b'\n', &mut line)) => read,
         };
         if !matches!(read, Ok(Ok(n)) if n > 0) {
             return;
@@ -422,6 +411,14 @@ async fn handle(
                 None => "F Invalid set exclusion\n".to_owned(),
             },
             Some(SessionCommand::Identify | SessionCommand::Noop) => "C\n".to_owned(),
+            Some(SessionCommand::Timeout(value)) => match parse_timeout(value) {
+                Some(requested) => {
+                    idle = requested.min(deadline);
+                    "C\n".to_owned()
+                }
+                None if value.is_empty() => "F Missing parameter for t query\n".to_owned(),
+                None => format!("F Invalid value for timeout: {value}\n"),
+            },
             Some(SessionCommand::SelectSources(requested)) => {
                 match select_sources(requested, &access.sources) {
                     Some(requested) => {
@@ -485,6 +482,7 @@ enum SessionCommand<'a> {
     SelectSources(&'a str),
     ListExclusions,
     Exclude(&'a str),
+    Timeout(&'a str),
     Identify,
     Noop,
 }
@@ -497,11 +495,19 @@ fn session_command(command: &str) -> Option<SessionCommand<'_>> {
         "!s-*" => Some(SessionCommand::Noop),
         "!e-lc" => Some(SessionCommand::ListExclusions),
         _ if command.starts_with("!e") => command.strip_prefix("!e").map(SessionCommand::Exclude),
+        _ if command.starts_with("!t") => command.strip_prefix("!t").map(SessionCommand::Timeout),
         _ if command.starts_with("!n") && command.len() > 2 => Some(SessionCommand::Identify),
         _ => command
             .strip_prefix("!s")
             .map(SessionCommand::SelectSources),
     }
+}
+
+fn parse_timeout(value: &str) -> Option<Duration> {
+    let seconds = value.trim().parse::<u64>().ok()?;
+    (1..=1000)
+        .contains(&seconds)
+        .then(|| Duration::from_secs(seconds))
 }
 
 fn ripe_modifiers<'a>(
@@ -1053,6 +1059,76 @@ mod tests {
             assert_eq!(parse_query(invalid), None);
         }
         assert_eq!(parse_query(&[b'A'; 513]), None);
+    }
+
+    #[tokio::test]
+    async fn tcp_timeout_command_changes_only_the_sessions_idle_read_ceiling() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let config_file = directory.path().join("irrd.toml");
+        std::fs::write(
+            &config_file,
+            r#"
+database = "registry.redb"
+sources = ["TEST"]
+listen = "127.0.0.1:0"
+max_connections = 4
+io_timeout_seconds = 3
+max_snapshot_bytes = 4096
+"#,
+        )?;
+        let config = Config::load(&config_file)?;
+        let store = Arc::new(Store::open(&config.database)?);
+        let listener = TcpListener::bind(config.listen).await?;
+        let address = listener.local_addr()?;
+        let (stop, stopped) = watch::channel(false);
+        let server = tokio::spawn(async move { serve(listener, &config, store, stopped).await });
+
+        let mut short = BufReader::new(TcpStream::connect(address).await?);
+        short
+            .get_mut()
+            .write_all(b"!!\r\n!t1\r\n!t0\r\n!t1001\r\n!t\r\n")
+            .await?;
+        let mut line = String::new();
+        for expected in [
+            "C\n",
+            "F Invalid value for timeout: 0\n",
+            "F Invalid value for timeout: 1001\n",
+            "F Missing parameter for t query\n",
+        ] {
+            line.clear();
+            timeout(Duration::from_secs(2), short.read_line(&mut line)).await??;
+            assert_eq!(line, expected);
+        }
+
+        let mut capped = BufReader::new(TcpStream::connect(address).await?);
+        capped.get_mut().write_all(b"!!\n!t1000\n").await?;
+        line.clear();
+        timeout(Duration::from_secs(2), capped.read_line(&mut line)).await??;
+        assert_eq!(line, "C\n");
+
+        let mut standalone = TcpStream::connect(address).await?;
+        standalone.write_all(b"!t1\n").await?;
+        line.clear();
+        timeout(Duration::from_secs(2), standalone.read_to_string(&mut line)).await??;
+        assert_eq!(line, "C\n");
+
+        line.clear();
+        assert_eq!(
+            timeout(Duration::from_millis(2500), short.read_line(&mut line)).await??,
+            0
+        );
+        capped.get_mut().write_all(b"!s-lc\n").await?;
+        let mut frame = [0; 10];
+        timeout(Duration::from_secs(2), capped.read_exact(&mut frame)).await??;
+        assert_eq!(&frame, b"A5\nTEST\nC\n");
+        assert_eq!(
+            timeout(Duration::from_secs(5), capped.read_line(&mut line)).await??,
+            0
+        );
+
+        let _ = stop.send(true);
+        timeout(Duration::from_secs(3), server).await???;
+        Ok(())
     }
 
     #[tokio::test]

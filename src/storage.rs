@@ -30,7 +30,7 @@ use crate::{
 type Identity<'a> = (&'a str, &'a str, &'a str);
 type ExactKey = (&'static str, &'static str);
 type PrefixKey<'a> = (&'a str, &'a str, u128, u8, u32);
-type InetnumCoverKey<'a> = (&'a str, u32, u8, u32, &'a str);
+type RangeCoverKey<'a> = (&'a str, u32, u8, u32, &'a str);
 type InverseKey = (
     &'static str,
     &'static str,
@@ -52,8 +52,10 @@ const ORIGINS: MultimapTableDefinition<Identity<'static>, &str> =
 // Per-source order by network address permits one range scan for all descendants.
 const PREFIXES: TableDefinition<PrefixKey<'static>, ()> = TableDefinition::new("route_prefixes_v1");
 // Keyed by source, block network, block length, allocation size minus one and object key.
-const INETNUM_COVER: TableDefinition<InetnumCoverKey<'static>, ()> =
+const INETNUM_COVER: TableDefinition<RangeCoverKey<'static>, ()> =
     TableDefinition::new("inetnum_cover_v1");
+const AS_BLOCK_COVER: TableDefinition<RangeCoverKey<'static>, ()> =
+    TableDefinition::new("as_block_cover_v1");
 // A row is (source, field, normalized value, class, object key).
 const INVERSE: TableDefinition<InverseKey, ()> = TableDefinition::new("inverse_v1");
 const SERIALS: TableDefinition<&str, u64> = TableDefinition::new("source_serials_v1");
@@ -128,10 +130,12 @@ impl Store {
             let backfill_prefixes = !tables.contains(PREFIXES.name());
             let backfill_inverse = !tables.contains(INVERSE.name());
             let backfill_inetnum = !tables.contains(INETNUM_COVER.name());
+            let backfill_as_block = !tables.contains(AS_BLOCK_COVER.name());
             let mut origins = write.open_multimap_table(ORIGINS)?;
             let mut prefixes = write.open_table(PREFIXES)?;
             let mut inverse = write.open_table(INVERSE)?;
             let mut inetnum_cover = write.open_table(INETNUM_COVER)?;
+            let mut as_block_cover = write.open_table(AS_BLOCK_COVER)?;
             write.open_table(SERIALS)?;
             write.open_table(NRTM4_STATE)?;
             write.open_table(JOURNAL)?;
@@ -149,7 +153,12 @@ impl Store {
                     }
                 }
             }
-            if backfill_origins || backfill_prefixes || backfill_inverse || backfill_inetnum {
+            if backfill_origins
+                || backfill_prefixes
+                || backfill_inverse
+                || backfill_inetnum
+                || backfill_as_block
+            {
                 for entry in records.iter()? {
                     let (identity, text) = entry?;
                     let (source, class, key) = identity.value();
@@ -172,6 +181,11 @@ impl Store {
                     if backfill_inetnum && class == "inetnum" {
                         for entry in inetnum_cover_keys(source, key)? {
                             inetnum_cover.insert(entry, ())?;
+                        }
+                    }
+                    if backfill_as_block && class == "as-block" {
+                        for entry in as_block_cover_keys(source, key)? {
+                            as_block_cover.insert(entry, ())?;
                         }
                     }
                 }
@@ -560,7 +574,7 @@ impl Store {
                 passwords,
                 |class, key| read_object(&records, &source, class, key),
                 |class, key| indexes.has_strong_reference(&source, class, key),
-                |route| indexes.route_parent(&records, route),
+                |object| indexes.allocation_parent(&records, object),
                 self.legacy_md5_sources.contains(&source),
             )?;
             for change in &changes {
@@ -1082,6 +1096,11 @@ impl Store {
             Err(redb::TableError::TableDoesNotExist(_)) => None,
             Err(error) => return Err(error.into()),
         };
+        let as_block_cover = match read.open_table(AS_BLOCK_COVER) {
+            Ok(table) => Some(table),
+            Err(redb::TableError::TableDoesNotExist(_)) => None,
+            Err(error) => return Err(error.into()),
+        };
         let mut indexed = 0;
         let mut routes = 0;
         for entry in exact.iter()? {
@@ -1138,6 +1157,7 @@ impl Store {
         );
         let mut indexed_attributes = 0;
         let mut indexed_inetnum_blocks = 0;
+        let mut indexed_as_blocks = 0;
         for entry in records.iter()? {
             let (identity, text) = entry?;
             let (source, class, key) = identity.value();
@@ -1150,6 +1170,17 @@ impl Store {
                         "object is missing from the inetnum cover index"
                     );
                     indexed_inetnum_blocks += 1;
+                }
+            }
+            if class == "as-block"
+                && let Some(as_block_cover) = &as_block_cover
+            {
+                for entry in as_block_cover_keys(source, key)? {
+                    ensure!(
+                        as_block_cover.get(entry)?.is_some(),
+                        "object is missing from the AS-block cover index"
+                    );
+                    indexed_as_blocks += 1;
                 }
             }
             let attributes = lookup_attributes(class, text.value()).map_err(anyhow::Error::msg)?;
@@ -1171,6 +1202,12 @@ impl Store {
             ensure!(
                 inetnum_cover.len()? == indexed_inetnum_blocks,
                 "unexpected inetnum cover index entries"
+            );
+        }
+        if let Some(as_block_cover) = as_block_cover {
+            ensure!(
+                as_block_cover.len()? == indexed_as_blocks,
+                "unexpected AS-block cover index entries"
             );
         }
         verify_journal(&read)?;
@@ -1284,7 +1321,8 @@ struct WriteIndexes<'txn> {
     origins: MultimapTable<'txn, Identity<'static>, &'static str>,
     prefixes: Table<'txn, PrefixKey<'static>, ()>,
     inverse: Table<'txn, InverseKey, ()>,
-    inetnum_cover: Table<'txn, InetnumCoverKey<'static>, ()>,
+    inetnum_cover: Table<'txn, RangeCoverKey<'static>, ()>,
+    as_block_cover: Table<'txn, RangeCoverKey<'static>, ()>,
 }
 
 impl<'txn> WriteIndexes<'txn> {
@@ -1295,6 +1333,7 @@ impl<'txn> WriteIndexes<'txn> {
             prefixes: write.open_table(PREFIXES)?,
             inverse: write.open_table(INVERSE)?,
             inetnum_cover: write.open_table(INETNUM_COVER)?,
+            as_block_cover: write.open_table(AS_BLOCK_COVER)?,
         })
     }
 
@@ -1319,6 +1358,25 @@ impl<'txn> WriteIndexes<'txn> {
         Ok(false)
     }
 
+    fn allocation_parent(
+        &self,
+        records: &ObjectWriteTable<'_>,
+        object: &Object,
+    ) -> Result<Option<Object>> {
+        if object.class != "aut-num" {
+            return self.route_parent(records, object);
+        }
+        let source = object.source.as_str();
+        let asn = stored_asn(&object.key)?;
+        let Some(key) = narrowest_cover_key(&self.as_block_cover, source, asn, 32, "AS-block")?
+        else {
+            return Ok(None);
+        };
+        let parent = read_object(records, source, "as-block", &key)?
+            .context("AS-block cover index points to a missing allocation")?;
+        Ok(Some(parent))
+    }
+
     fn route_parent(
         &self,
         records: &ObjectWriteTable<'_>,
@@ -1331,7 +1389,13 @@ impl<'txn> WriteIndexes<'txn> {
         let prefix = RoutePrefix::parse(class, prefix)?;
 
         if class == "route" {
-            if let Some(key) = self.inetnum_parent_key(source, &prefix)? {
+            if let Some(key) = narrowest_cover_key(
+                &self.inetnum_cover,
+                source,
+                u32::try_from(prefix.network)?,
+                prefix.length,
+                "inetnum",
+            )? {
                 let parent = read_object(records, source, "inetnum", &key)?
                     .context("inetnum cover index points to a missing allocation")?;
                 return Ok(Some(parent));
@@ -1366,32 +1430,6 @@ impl<'txn> WriteIndexes<'txn> {
         Ok(None)
     }
 
-    fn inetnum_parent_key(&self, source: &str, prefix: &RoutePrefix) -> Result<Option<String>> {
-        let mut best = None::<(u32, String)>;
-        let mut tied = false;
-        for length in (0..=prefix.length).rev() {
-            let network = u32::try_from(prefix.network_at(length))?;
-            let first = (source, network, length, 0, "");
-            let last = (source, network, length + 1, 0, "");
-            // A canonical query CIDR contained by an allocation lies in one of
-            // its maximal aligned blocks. Candidates in each block sort by size.
-            for entry in self.inetnum_cover.range(first..last)?.take(2) {
-                let (key, _) = entry?;
-                let (_, _, _, size, object_key) = key.value();
-                match best.as_ref().map(|(best_size, _)| size.cmp(best_size)) {
-                    None | Some(Ordering::Less) => {
-                        best = Some((size, object_key.to_owned()));
-                        tied = false;
-                    }
-                    Some(Ordering::Equal) => tied = true,
-                    Some(Ordering::Greater) => break,
-                }
-            }
-        }
-        ensure!(!tied, "ambiguous covering inetnum parent");
-        Ok(best.map(|(_, key)| key))
-    }
-
     fn insert(&mut self, object: &Object) -> Result<usize> {
         let source = object.source.as_str();
         let class = object.class.as_str();
@@ -1417,6 +1455,14 @@ impl<'txn> WriteIndexes<'txn> {
                 ensure!(
                     self.inetnum_cover.insert(entry, ())?.is_none(),
                     "duplicate inetnum cover index entry"
+                );
+            }
+        }
+        if class == "as-block" {
+            for entry in as_block_cover_keys(source, key)? {
+                ensure!(
+                    self.as_block_cover.insert(entry, ())?.is_none(),
+                    "duplicate AS-block cover index entry"
                 );
             }
         }
@@ -1453,6 +1499,14 @@ impl<'txn> WriteIndexes<'txn> {
                 );
             }
         }
+        if class == "as-block" {
+            for entry in as_block_cover_keys(source, key)? {
+                ensure!(
+                    self.as_block_cover.remove(entry)?.is_some(),
+                    "object is missing from the AS-block cover index"
+                );
+            }
+        }
         let attributes = lookup_attributes(class, text).map_err(anyhow::Error::msg)?;
         for (field, value) in attributes.inverse_entries().collect::<HashSet<_>>() {
             ensure!(
@@ -1466,10 +1520,43 @@ impl<'txn> WriteIndexes<'txn> {
     }
 }
 
+fn narrowest_cover_key(
+    table: &Table<'_, RangeCoverKey<'static>, ()>,
+    source: &str,
+    address: u32,
+    query_length: u8,
+    allocation_class: &str,
+) -> Result<Option<String>> {
+    let mut best = None::<(u32, String)>;
+    let mut tied = false;
+    for length in (0..=query_length).rev() {
+        let mask = u32::MAX.checked_shl(u32::from(32 - length)).unwrap_or(0);
+        let network = address & mask;
+        let first = (source, network, length, 0, "");
+        let last = (source, network, length + 1, 0, "");
+        // A query contained by an allocation fits in one of its maximal
+        // aligned blocks. Each block's candidates sort by allocation size.
+        for entry in table.range(first..last)?.take(2) {
+            let (key, _) = entry?;
+            let (_, _, _, size, object_key) = key.value();
+            match best.as_ref().map(|(best_size, _)| size.cmp(best_size)) {
+                None | Some(Ordering::Less) => {
+                    best = Some((size, object_key.to_owned()));
+                    tied = false;
+                }
+                Some(Ordering::Equal) => tied = true,
+                Some(Ordering::Greater) => break,
+            }
+        }
+    }
+    ensure!(!tied, "ambiguous covering {allocation_class} parent");
+    Ok(best.map(|(_, key)| key))
+}
+
 fn inetnum_cover_keys<'a>(
     source: &'a str,
     key: &'a str,
-) -> Result<impl Iterator<Item = InetnumCoverKey<'a>>> {
+) -> Result<impl Iterator<Item = RangeCoverKey<'a>>> {
     let address_number = |value: &str| -> Result<u32> {
         let ip = value.split_once('/').map_or(value, |(ip, _)| ip);
         Ok(u32::from(
@@ -1489,9 +1576,38 @@ fn inetnum_cover_keys<'a>(
         let address = address_number(key)?;
         (address, address)
     };
+    range_cover_keys(source, key, first, last).context("invalid stored inetnum range")
+}
+
+fn stored_asn(value: &str) -> Result<u32> {
+    let digits = value.strip_prefix("AS").context("invalid stored ASN key")?;
+    ensure!(
+        digits.bytes().all(|byte| byte.is_ascii_digit()),
+        "invalid stored ASN key"
+    );
+    digits.parse().context("invalid stored ASN key")
+}
+
+fn as_block_cover_keys<'a>(
+    source: &'a str,
+    key: &'a str,
+) -> Result<impl Iterator<Item = RangeCoverKey<'a>>> {
+    let (first, last) = key
+        .split_once(" - ")
+        .context("invalid stored AS-block key")?;
+    range_cover_keys(source, key, stored_asn(first)?, stored_asn(last)?)
+        .context("invalid stored AS-block range")
+}
+
+fn range_cover_keys<'a>(
+    source: &'a str,
+    key: &'a str,
+    first: u32,
+    last: u32,
+) -> Result<impl Iterator<Item = RangeCoverKey<'a>>> {
     let size = last
         .checked_sub(first)
-        .context("reversed stored inetnum range")?;
+        .context("reversed allocation range")?;
     let mut next = u64::from(first);
     let end = u64::from(last);
     Ok(std::iter::from_fn(move || {
@@ -1972,6 +2088,100 @@ mod tests {
         let records = write.open_table(OBJECTS)?;
         let indexes = WriteIndexes::open(&write)?;
         indexes.route_parent(&records, route)
+    }
+
+    fn allocation_parent(store: &Store, object: &Object) -> Result<Option<Object>> {
+        let write = store.db.begin_write()?;
+        let records = write.open_table(OBJECTS)?;
+        let indexes = WriteIndexes::open(&write)?;
+        indexes.allocation_parent(&records, object)
+    }
+
+    #[test]
+    fn as_block_cover_backfills_and_tracks_transactional_replacement() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("registry.redb");
+        let store = Store::open(&path)?;
+        let aut_num = object("TEST", "aut-num", "AS64496");
+        let maximum = object("TEST", "aut-num", "AS4294967295");
+        let broad = object("TEST", "as-block", "AS0 - AS4294967295");
+        let narrower = object("TEST", "as-block", "AS64490 - AS64496");
+        let exact = object("TEST", "as-block", "AS64496 - AS64496");
+        let foreign = object("OTHER", "as-block", &exact.key);
+        store.replace_source("OTHER", [Ok(foreign)])?;
+        store.replace_source("TEST", [Ok(broad.clone()), Ok(narrower.clone())])?;
+        assert_eq!(
+            allocation_parent(&store, &aut_num)?.as_ref(),
+            Some(&narrower)
+        );
+        assert_eq!(allocation_parent(&store, &maximum)?.as_ref(), Some(&broad));
+
+        assert!(
+            store
+                .replace_source(
+                    "TEST",
+                    [
+                        Ok(exact.clone()),
+                        Err(anyhow::anyhow!("interrupted snapshot"))
+                    ]
+                )
+                .is_err()
+        );
+        assert_eq!(
+            allocation_parent(&store, &aut_num)?.as_ref(),
+            Some(&narrower)
+        );
+
+        let write = store.db.begin_write()?;
+        assert!(write.delete_table(AS_BLOCK_COVER)?);
+        write.commit()?;
+        assert_eq!(store.verify()?, 3); // Older backups need not carry the index.
+        drop(store);
+
+        let store = Store::open_for_service(&path)?;
+        assert_eq!(store.verify()?, 3);
+        assert_eq!(
+            allocation_parent(&store, &aut_num)?.as_ref(),
+            Some(&narrower)
+        );
+        store.replace_source("TEST", [Ok(exact.clone())])?;
+        assert_eq!(allocation_parent(&store, &aut_num)?.as_ref(), Some(&exact));
+        assert!(allocation_parent(&store, &maximum)?.is_none());
+        assert_eq!(store.verify()?, 2);
+
+        let write = store.db.begin_write()?;
+        {
+            let mut cover = write.open_table(AS_BLOCK_COVER)?;
+            let key = as_block_cover_keys("TEST", &exact.key)?.next().unwrap();
+            assert!(cover.remove(key)?.is_some());
+        }
+        write.commit()?;
+        assert!(
+            store
+                .verify()
+                .unwrap_err()
+                .to_string()
+                .contains("AS-block cover index")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn as_block_cover_rejects_equally_specific_parents_without_fallback() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = Store::open(&dir.path().join("registry.redb"))?;
+        let aut_num = object("TEST", "aut-num", "AS64496");
+        let broad = object("TEST", "as-block", "AS64000 - AS65000");
+        let left = object("TEST", "as-block", "AS64490 - AS64500");
+        let right = object("TEST", "as-block", "AS64495 - AS64505");
+        store.replace_source("TEST", [Ok(broad), Ok(left), Ok(right)])?;
+        assert!(
+            allocation_parent(&store, &aut_num)
+                .unwrap_err()
+                .to_string()
+                .contains("ambiguous covering AS-block")
+        );
+        Ok(())
     }
 
     #[test]

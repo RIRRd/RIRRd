@@ -31,7 +31,7 @@ pub fn authorize(
     passwords: &[String],
     existing: impl Fn(&str, &str) -> Result<Option<Object>>,
     referenced: impl Fn(&str, &str) -> Result<bool>,
-    route_parent: impl Fn(&Object) -> Result<Option<Object>>,
+    allocation_parent: impl Fn(&Object) -> Result<Option<Object>>,
     legacy_md5: bool,
 ) -> Result<()> {
     ensure!(
@@ -117,10 +117,6 @@ pub fn authorize(
             );
         }
         ensure!(
-            object.class != "aut-num" || previous.is_some(),
-            "new aut-num objects require operator provisioning"
-        );
-        ensure!(
             any_maintainer(
                 object,
                 &existing,
@@ -135,7 +131,10 @@ pub fn authorize(
             None
         } else {
             match object.class.as_str() {
-                "route" | "route6" => route_parent(object)?,
+                "route" | "route6" => allocation_parent(object)?,
+                "aut-num" => Some(
+                    allocation_parent(object)?.context("no covering AS-block in this source")?,
+                ),
                 "as-set" | "route-set" => {
                     let asn = set_creation_asn(object)?;
                     existing("aut-num", &format!("AS{asn}"))?
