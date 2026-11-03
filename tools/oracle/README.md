@@ -165,3 +165,10 @@ Opaque domain delegation text is preserved without DNS resolution or DNS changes
 `check_mirror_admission.py` checks three non-strict upstream rejections of unsafe
 control characters inside AS-set member names; the deployment withholds the
 complete record rather than inventing a cleaned member identity.
+
+For repeatable authorization runs, use a fresh isolated PostgreSQL volume. Loading
+an RPSL source clears its objects and journal, but upstream protected-name tombstones
+can survive that load. A repeated suite can therefore reject a synthetic contact
+name that a previous test deleted. Reset only the dedicated oracle volume (never
+an operational registry database), or create a new named test volume. The normal
+CI workflow already creates and removes its isolated volume per run.

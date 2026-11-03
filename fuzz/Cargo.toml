@@ -26,3 +26,20 @@ path = "fuzz_targets/nrtm3.rs"
 test = false
 doc = false
 bench = false
+
+[dependencies.anyhow]
+version = "1"
+
+[dependencies.serde]
+version = "1"
+features = ["derive"]
+
+[dependencies.serde_json]
+version = "1"
+
+[[bin]]
+name = "rpki"
+path = "fuzz_targets/rpki.rs"
+test = false
+doc = false
+bench = false
