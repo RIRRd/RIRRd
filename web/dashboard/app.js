@@ -275,7 +275,7 @@
       const regions=[...new Set(network.map(n=>n.region))].filter(Boolean).sort();
       regions.forEach(region=>el('region-filter').add(new Option(region,region)));
       text('network-nodes',network.length);text('network-regions',regions.length);
-      text('network-sponsors',new Set(network.map(n=>n.sponsor).filter(Boolean)).size);
+      text('network-sponsors',new Set(network.map(n=>n.provider || n.sponsor).filter(Boolean)).size);
       renderDirectory();
     } catch (error) {text('network-list','Directory unavailable: '+errorText(error));}
   }
@@ -291,9 +291,9 @@
     for (const node of rows) {
       const card=document.createElement('article');card.className='directory-node';
       const title=document.createElement('h3');title.textContent=node.name;
-      const detail=document.createElement('p');detail.textContent=[node.city,node.country,node.sponsor?'Sponsor: '+node.sponsor:null].filter(Boolean).join(' · ');
+      const detail=document.createElement('p');detail.textContent=[node.city,node.country,node.provider?'Hosted by '+node.provider:node.sponsor?'Sponsor: '+node.sponsor:null].filter(Boolean).join(' · ');
       const endpoint=document.createElement('code');endpoint.textContent=node.whois || 'No WHOIS endpoint listed';
-      const verified=document.createElement('p');verified.textContent='Verified: '+node.verified_at+' · '+(node.sources || []).join(', ');
+      const verified=document.createElement('p');verified.textContent='Service checked: '+node.verified_at+' · '+(node.verification_scope || '')+' · '+(node.sources || []).join(', ');
       card.append(title,detail,endpoint,verified);el('network-list').append(card);
     }
   }

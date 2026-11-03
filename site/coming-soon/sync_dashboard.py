@@ -25,6 +25,11 @@ for name in ['index.html','style.css','app.js','network.json']:
 meta={'mode':'preview','version':'0.1.0','source_revision':revision,'node':{'name':'RIRRd dashboard preview','location':None,'sponsor':None},'sources':['EXAMPLE'],'whois_listen':None,'max_connections':8,'database_cache_mib':16}
 if args.live:
  meta.update(mode='live',public_service=True,node={'name':'RIRRd public test registry','location':None,'sponsor':None},sources=[r['source'] for r in json.loads((core/'tools/live-service/sources.json').read_text())['sources'] if r['state']=='enabled'],whois_listen='rirrd.co.uk:43',max_connections=128,database_cache_mib=64)
+if args.live:
+ profile=json.loads((core/'tools/live-service/node.json').read_text())
+ meta['node']={**profile,'sponsor':profile['provider']}
+ for source,name in [('index.html','index.html'),('style.css','node.css'),('app.js','node.js')]:
+  shutil.copyfile(core/'web/node'/source,root/'public'/name)
 (out/'meta.json').write_text(json.dumps(meta,indent=2)+'\n')
 fixture=(core/'tools/router-integration/fixture.rpsl').read_text()
 records=[]

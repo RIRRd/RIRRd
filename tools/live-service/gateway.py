@@ -17,6 +17,7 @@ import urllib.parse
 
 MAX_BODY = 16 * 1024
 MAX_RESPONSE = 2 * 1024 * 1024
+NODE = json.loads(Path(__file__).with_name('node.json').read_text())
 
 
 class State:
@@ -207,11 +208,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
             loaded = [s['source'] for s in stats.get('sources', []) if s['state'] == 'loaded']
             return self.respond(200, json.dumps({'mode': 'live', 'public_service': True,
                 'source_revision': stats.get('release', {}).get('source_commit'),
-                'version': '0.1.0', 'node': {'name': 'RIRRd public test registry', 'location': None, 'sponsor': None},
+                'version': '0.1.0', 'node': {**NODE, 'sponsor': NODE['provider']},
                 'sources': loaded, 'whois_listen': 'rirrd.co.uk:43',
                 'http_sources': [s['source'] for s in stats.get('sources', []) if s['state'] == 'loaded' and s.get('http_access', True)],
                 'max_connections': 128, 'database_cache_mib': 64}).encode())
-        permitted = (self.command == 'GET' and path.path == '/v1/whois/') or (
+        permitted = (self.command == 'GET' and path.path in ('/v1/whois/', '/v1/rpki/status', '/v1/rpki/validate')) or (
             self.command == 'POST' and path.path == '/graphql/' and not path.query)
         if not permitted:
             return self.respond(404)
@@ -251,7 +252,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         except (OSError, http.client.HTTPException):
             self.respond(503, b'{"error":"Registry temporarily unavailable"}')
         finally:
-            state.record(time.monotonic() - started, error)
+            if path.path != '/v1/rpki/status':
+                state.record(time.monotonic() - started, error)
             connection.close()
 
 

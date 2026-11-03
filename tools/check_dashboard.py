@@ -131,8 +131,8 @@ def main():
                 assert 'route' in browser.js('document.getElementById("source-detail-content").textContent')
                 assert browser.js('document.querySelectorAll("#source-detail-content details").length')>0
             browser.js('location.hash="network"')
-            browser.wait('document.getElementById("network-list").textContent.includes("No verified community nodes")')
-            assert browser.js('document.getElementById("network-nodes").textContent')=='0'
+            browser.wait('document.getElementById("network-list").textContent.includes("HYEHOST LLC")')
+            assert browser.js('document.getElementById("network-nodes").textContent')=='1'
             for width in [320,390,1440]:
                 browser.call('Emulation.setDeviceMetricsOverride',{'width':width,'height':1100,'deviceScaleFactor':1,'mobile':width<650},True)
                 for page in ['overview','query','sources','api','network','connect']:
@@ -150,7 +150,7 @@ def main():
             if args.mode=='preview':assert not any('/graphql' in url or '/v1/' in url for url in requests),'preview contacted a registry API'
             exceptions=[e for e in browser.events if e.get('method')=='Runtime.exceptionThrown']
             assert not exceptions,'browser JavaScript exception'
-            print(args.mode+': object/prefix/origin/set queries, source handling, empty directory, no external requests; all six views fit 320/390/1440px')
+            print(args.mode+': object/prefix/origin/set queries, source handling, UK project node directory, no external requests; all six views fit 320/390/1440px')
         finally:browser.close()
 
 if __name__=='__main__':main()

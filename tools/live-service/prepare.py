@@ -252,7 +252,9 @@ max_connections_per_ip = 8
 io_timeout_seconds = 10
 max_snapshot_bytes = 1610612736
 [node]
-name = "RIRRd public test registry"
+name = "RIRRd UK 01"
+location = "United Kingdom"
+sponsor = "HYEHOST LLC"
 '''
     if args.resume:
         if config.read_text() not in (config_text, config_text + mirror_schedule(completed.values(), catalog['classes'])):

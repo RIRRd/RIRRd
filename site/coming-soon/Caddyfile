@@ -6,17 +6,17 @@
 rirrd.co.uk {
 	root * /var/www/rirrd-coming-soon
 	encode gzip
-	@dashboard path /dashboard/*
-	@dashboardAssets path /dashboard/ /dashboard/index.html /dashboard/app.js /dashboard/style.css
+	@dashboard path /dashboard/* / /node.js /node.css
+	@dashboardAssets path /dashboard/ /dashboard/index.html /dashboard/app.js /dashboard/style.css / /node.js /node.css
 	header @dashboardAssets Cache-Control "no-cache"
-	@page not path /dashboard/*
+	@page not path /dashboard/* / /node.js /node.css
 	header {
 		X-Content-Type-Options nosniff
 		Referrer-Policy no-referrer
 	}
 	header @dashboard Content-Security-Policy "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
 	header @page Content-Security-Policy "default-src 'none'; style-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'"
-	@queries path /graphql/ /v1/whois/ /dashboard/meta.json /dashboard/live.json
+	@queries path /graphql/ /v1/whois/ /v1/rpki/status /v1/rpki/validate /dashboard/meta.json /dashboard/live.json
 	reverse_proxy @queries 127.0.0.1:9281 {
 		header_up Host 127.0.0.1
 		header_up X-RIRRd-Client {remote_host}

@@ -120,6 +120,7 @@ values = {'SMALL_HOST':small_html,'HIGHLIGHTS':highlights,'ROWS':''.join(rows),'
 for key,value in values.items():
     text=text.replace('@@'+key+'@@',value)
 assert '@@' not in text
-(root/'public/index.html').write_text(text)
+(root/'public/project').mkdir(exist_ok=True)
+(root/'public/project/index.html').write_text(text)
 (root/'public/comparison.json').write_text(json.dumps(raw,indent=2)+'\n')
 print('Rendered validated benchmark:', raw['completed_at'])
