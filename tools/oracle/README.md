@@ -143,3 +143,12 @@ password after authentication against stored maintainers. Duplicate identical
 passwords are normalised; distinct multiple passwords and mixed dummy/real
 hashes are rejected. No dummy hash is stored, and replacement hashing is charged
 to the submission work budget. Maintainer creation still requires provisioning.
+
+For repeated timing samples, use `benchmark_pair.py --first reference` and
+`--first candidate` in alternating runs. Set `--reference-workers` to the actual
+reference configuration and pass `--candidate-binary` to record its SHA-256.
+The helper records timestamps, fixture SHA-256 and host resources. Changing the
+worker configuration requires a separate IRRd runtime config and restart; the
+argument records metadata and does not reconfigure the daemon. Retain each run.
+The 24-CPU VM checkpoint uses five runs, eight IRRd workers and a Rust connection
+cap of eight; the historical single-worker reference results are a different profile.
