@@ -85,3 +85,8 @@ The browser's `--submit-preview` option is only for an isolated temporary queue.
 It must not submit dummy nodes to the real community service. The live check
 covers the directory, query tools, source filtering, IPv4/IPv6 and recursive
 AS-set examples, RPKI validation and responsive layouts.
+
+Static deployments compare service/configuration content and retain running
+processes when it is unchanged. Updating only site assets does not reset registry,
+gateway or submission-service uptime/counters, and does not reload unchanged Caddy
+configuration. Both complete asset releases are prepared before switching roots.

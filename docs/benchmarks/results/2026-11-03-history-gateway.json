@@ -1,0 +1,64 @@
+{
+  "kind": "loopback HTTP history; 1440 synthetic samples, four clients; server CPU excludes client",
+  "baseline_commit": "a47609825e3db2f1428f8604e420a7605fd55949",
+  "candidate_commit": "20960d1649c44febeb925af2ea4df674df46c2c2",
+  "driver_sha256": "9097ddebcdbc4fadd4bd7f3e55c719fceb143fe0be7780d878b7bb450aa0a415",
+  "candidate_source_sha256": "ea413351b467399a9c3d6e664336775486c162118b2d5474f11bdf584848c48e",
+  "cpu": 23,
+  "samples": [
+    {
+      "round": 0,
+      "implementation": "baseline",
+      "requests": 400,
+      "wall_seconds": 2.975133524996636,
+      "response_bytes": 220546,
+      "cpu_seconds": 2.932603533,
+      "peak_rss_bytes": 27811840
+    },
+    {
+      "round": 0,
+      "implementation": "candidate",
+      "requests": 400,
+      "wall_seconds": 0.45078704199841013,
+      "response_bytes": 197498,
+      "cpu_seconds": 0.40652377000000006,
+      "peak_rss_bytes": 26718208
+    },
+    {
+      "round": 1,
+      "implementation": "candidate",
+      "requests": 400,
+      "wall_seconds": 0.4334711449992028,
+      "response_bytes": 197498,
+      "cpu_seconds": 0.3761107960000001,
+      "peak_rss_bytes": 26718208
+    },
+    {
+      "round": 1,
+      "implementation": "baseline",
+      "requests": 400,
+      "wall_seconds": 2.9152432750015578,
+      "response_bytes": 220546,
+      "cpu_seconds": 2.8633185169999997,
+      "peak_rss_bytes": 28274688
+    },
+    {
+      "round": 2,
+      "implementation": "baseline",
+      "requests": 400,
+      "wall_seconds": 2.549643250000372,
+      "response_bytes": 220546,
+      "cpu_seconds": 2.4854623179999997,
+      "peak_rss_bytes": 28274688
+    },
+    {
+      "round": 2,
+      "implementation": "candidate",
+      "requests": 400,
+      "wall_seconds": 0.4430398209988198,
+      "response_bytes": 197498,
+      "cpu_seconds": 0.404150714,
+      "peak_rss_bytes": 26718208
+    }
+  ]
+}

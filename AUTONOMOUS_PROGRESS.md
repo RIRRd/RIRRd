@@ -1,3 +1,12 @@
+## UI and resource-efficiency continuation — 3 November 2026
+
+The [efficiency checkpoint](docs/benchmarks/UI_EFFICIENCY.md) records deployed
+rounded site/console layouts, preserved chart inspection, responsive SVG rendering,
+immutable history export caching and ROV prefix-length indexes. Raw paired
+measurements, normal-entry browser/API checks, Linux/ARM QEMU tests and RPKI fuzz
+results are linked. These bounded improvements do not close full parity or release
+qualification gaps.
+
 ## Two-domain beta launch — 3 November 2026
 
 The [beta checkpoint](docs/compatibility/BETA_LAUNCH_CHECKPOINT.md) records the

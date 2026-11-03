@@ -97,3 +97,13 @@ Resume also requires `--resume-reason 'brief public explanation'`. The upstream
 allowlist diagnosis was verified directly: the same GraphQL POST returned 400
 with `Host: localhost` and 200 with the configured endpoint Host. The corrected
 client passed a live request preflight before restarting the query suite.
+
+## ROV and monitoring delivery
+
+`compare_rpki_index.py` compares a pinned RIRRd source revision with the current
+ROV kernel using synthetic prevalidated payloads; CPU and wall time are recorded.
+`compare_history_gateway.py` exercises the normal history HTTP handler in isolated
+processes. Both require an explicit work/output location outside Git. See
+[the efficiency checkpoint](../../docs/benchmarks/UI_EFFICIENCY.md) for fixture,
+measurement scope, exact revisions and raw results. These do not run a public
+load test or replace the separate official IRRd oracle comparison.
