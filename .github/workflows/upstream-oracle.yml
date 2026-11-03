@@ -40,7 +40,9 @@ jobs:
           config="$RUNNER_TEMP/irrd-oracle-candidate.toml"
           cat > "$config" <<'TOML'
           database = "irrd-oracle-candidate.redb"
-          sources = ["DIFFERENTIAL"]
+          sources = ["DIFFERENTIAL", "AUTH-TEST", "AUTH-OTHER"]
+          authoritative_sources = ["AUTH-TEST", "AUTH-OTHER"]
+          http_authoritative_updates = true
           listen = "127.0.0.1:9043"
           http_listen = "127.0.0.1:9080"
           max_connections = 8
@@ -49,6 +51,10 @@ jobs:
           TOML
           bin=target/release/rust-irrd
           "$bin" --config "$config" import snapshot --source DIFFERENTIAL --file docs/compatibility/differential-whois.rpsl
+          fixture="$RUNNER_TEMP/irrd-auth-fixture.rpsl"
+          docker compose -p irrd-454-oracle -f tools/oracle/compose.yaml exec -T reference python < tools/oracle/make_auth_fixture.py > "$fixture"
+          docker compose -p irrd-454-oracle -f tools/oracle/compose.yaml exec -T reference sh -c 'cat > /var/lib/irrd/auth-fixture.rpsl; irrd_load_database --config /etc/irrd.yaml --source AUTH-TEST /var/lib/irrd/auth-fixture.rpsl' < "$fixture"
+          "$bin" --config "$config" import snapshot --source AUTH-TEST --authoritative-restore --file "$fixture"
           "$bin" --config "$config" server 2>"$RUNNER_TEMP/irrd-candidate.log" &
           candidate_pid=$!
           trap 'kill "$candidate_pid" 2>/dev/null || true; wait "$candidate_pid" 2>/dev/null || true' EXIT
@@ -59,6 +65,8 @@ jobs:
             kill -0 "$candidate_pid"
             sleep 0.1
           done
+          docker compose -p irrd-454-oracle -f tools/oracle/compose.yaml exec -T reference python < tools/oracle/check_policy_set_schema.py
+          python3 tools/oracle/compare_policy_set_auth.py
           python3 tools/oracle/compare_organisation_graphql.py
           python3 tools/differential_whois.py --reference 127.0.0.1:8043 --candidate 127.0.0.1:9043 --allow-filtered-auth-omission --normalize-attribute-padding
           python3 tools/differential_whois.py --http --reference 127.0.0.1:8000 --candidate 127.0.0.1:9080 --allow-filtered-auth-omission --normalize-attribute-padding

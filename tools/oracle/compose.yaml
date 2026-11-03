@@ -34,6 +34,18 @@ services:
       - "127.0.0.1:${IRRD_ORACLE_HTTP_PORT:-8000}:8000"
     volumes:
       - type: bind
+        source: ./smtp_sink.py
+        target: /fixture/smtp_sink.py
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./irrd.yaml
+        target: /etc/irrd.yaml
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
         source: ../../docs/compatibility/differential-whois.rpsl
         target: /fixture/differential-whois.rpsl
         read_only: true
@@ -43,6 +55,7 @@ services:
       - /bin/sh
       - -ec
       - |
+        python /fixture/smtp_sink.py &
         irrd_database_upgrade --config /etc/irrd.yaml
         irrd_load_database --config /etc/irrd.yaml --source DIFFERENTIAL /fixture/differential-whois.rpsl
         exec irrd --config /etc/irrd.yaml --foreground

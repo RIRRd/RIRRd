@@ -106,6 +106,32 @@ pub fn validate(object: &Object) -> Result<()> {
         "route6" => (&["route6", "origin", "mnt-by", "source"], ROUTE_OPTIONAL),
         "as-set" => (&["as-set", "mnt-by", "source"], AS_SET_OPTIONAL),
         "route-set" => (&["route-set", "mnt-by", "source"], ROUTE_SET_OPTIONAL),
+        "filter-set" => (
+            &["filter-set", "filter", "mnt-by", "source"],
+            &[
+                "descr",
+                "mp-filter",
+                "admin-c",
+                "tech-c",
+                "remarks",
+                "notify",
+                "changed",
+            ],
+        ),
+        "peering-set" => (
+            &["peering-set", "mnt-by", "source"],
+            &[
+                "descr",
+                "peering",
+                "mp-peering",
+                "admin-c",
+                "tech-c",
+                "remarks",
+                "notify",
+                "changed",
+            ],
+        ),
+        "rtr-set" => (&["rtr-set", "mnt-by", "source"], ROUTE_SET_OPTIONAL),
         "aut-num" => (
             &[
                 "aut-num", "as-name", "admin-c", "tech-c", "mnt-by", "source",
@@ -155,6 +181,11 @@ pub fn validate(object: &Object) -> Result<()> {
                     | "as-name"
                     | "organisation"
                     | "org-name"
+                    | "filter-set"
+                    | "peering-set"
+                    | "rtr-set"
+                    | "filter"
+                    | "mp-filter"
             )
         {
             return Err(anyhow!("duplicate {name} attribute"));
@@ -201,18 +232,30 @@ pub fn validate(object: &Object) -> Result<()> {
                     "invalid set reference in member-of"
                 );
             }
-            "as-set" | "route-set" => {
-                let prefix = if name == "as-set" { "AS-" } else { "RS-" };
+            "as-set" | "route-set" | "filter-set" | "peering-set" | "rtr-set" => {
+                let prefix = match name {
+                    "as-set" => "AS-",
+                    "route-set" => "RS-",
+                    "filter-set" => "FLTR-",
+                    "peering-set" => "PRNG-",
+                    _ => "RTRS-",
+                };
                 ensure!(
                     scalar(attribute).is_some_and(|value| set_name(value, &[prefix])),
                     "invalid {name} name"
                 );
             }
             "members" | "mp-members" => {
-                let mut values = list_values(attribute).peekable();
+                // The pinned reference-list parser ignores empty comma tokens.
+                // Router-set members are weak references and use that profile.
+                let mut values = list_values(attribute)
+                    .filter(|value| object.class != "rtr-set" || !value.is_empty())
+                    .peekable();
                 ensure!(values.peek().is_some(), "empty {name} attribute");
                 let valid = if object.class == "as-set" {
                     values.all(|value| asn(value).is_some() || set_name(value, &["AS-"]))
+                } else if object.class == "rtr-set" {
+                    values.all(|value| crate::rpsl::dns_name(value) || set_name(value, &["RTRS-"]))
                 } else {
                     values.all(|value| route_set_member(value, name == "mp-members"))
                 };
@@ -270,12 +313,15 @@ pub fn validate(object: &Object) -> Result<()> {
     Ok(())
 }
 
-/// Return the parent ASN required when creating a validated AS-SET or ROUTE-SET.
+/// Return the parent ASN required when creating a validated policy or router set.
 /// Updates to existing names use the ordinary schema rules.
 pub fn set_creation_asn(object: &Object) -> Result<u32> {
     ensure!(
-        matches!(object.class.as_str(), "as-set" | "route-set"),
-        "set creation policy requires an AS-SET or ROUTE-SET"
+        matches!(
+            object.class.as_str(),
+            "as-set" | "route-set" | "filter-set" | "peering-set" | "rtr-set"
+        ),
+        "set creation policy requires a supported set class"
     );
     let parent = object
         .key
@@ -483,10 +529,10 @@ fn set_name(value: &str, prefixes: &[&str]) -> bool {
             continue;
         }
         if !generic_name(component)
-            || !component.get(..3).is_some_and(|prefix| {
-                prefixes
-                    .iter()
-                    .any(|allowed| prefix.eq_ignore_ascii_case(allowed))
+            || !prefixes.iter().any(|allowed| {
+                component
+                    .get(..allowed.len())
+                    .is_some_and(|prefix| prefix.eq_ignore_ascii_case(allowed))
             })
             || component.eq_ignore_ascii_case("AS-ANY")
             || component.eq_ignore_ascii_case("RS-ANY")
@@ -979,6 +1025,76 @@ mod organisation_tests {
             ))
             .map_err(anyhow::Error::msg)?,
         )?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod policy_set_tests {
+    use super::*;
+
+    #[test]
+    fn validates_policy_and_router_sets_with_pinned_multiplicity() -> Result<()> {
+        let common = "admin-c: TC1-TEST\nmnt-by: TEST-MNT\nsource: TEST\n";
+        for (class, name, payload) in [
+            (
+                "filter-set",
+                "FLTR-TEST",
+                "filter: AS64496\nmp-filter: AFI IPV6 ANY\n",
+            ),
+            (
+                "peering-set",
+                "PRNG-TEST",
+                "peering: AS64496\npeering: AS64497\nmp-peering: AS64496\n",
+            ),
+            (
+                "rtr-set",
+                "RTRS-TEST",
+                "members: router.example, AS64496:RTRS-CHILD\nmp-members: 192.0.2.1\nmbrs-by-ref: MISSING-MNT\n",
+            ),
+        ] {
+            let text = format!("{class}: AS64496:{name}\n{payload}{common}");
+            let object = parse(&text).map_err(anyhow::Error::msg)?;
+            validate(&object)?;
+            assert_eq!(set_creation_asn(&object)?, 64496);
+            assert!(
+                validate(&parse(&text.replace(name, "WRONG-NAME")).map_err(anyhow::Error::msg)?)
+                    .is_err()
+            );
+            assert!(
+                validate(
+                    &parse(&format!("{text}auth: BCRYPT-PW secret\n"))
+                        .map_err(anyhow::Error::msg)?
+                )
+                .is_err()
+            );
+        }
+        for payload in [
+            "",
+            "filter: ANY\nfilter: ANY\n",
+            "filter: ANY\nmp-filter: ANY\nmp-filter: ANY\n",
+        ] {
+            let object = parse(&format!("filter-set: AS64496:FLTR-TEST\n{payload}{common}"))
+                .map_err(anyhow::Error::msg)?;
+            assert!(validate(&object).is_err());
+        }
+        let trailing = parse(&format!(
+            "rtr-set: AS64496:RTRS-TEST\nmembers: router.example,,router2.example,\n{common}"
+        ))
+        .map_err(anyhow::Error::msg)?;
+        validate(&trailing)?;
+        for member in [
+            "2001:db8::1",
+            "router..example",
+            "router.example/32",
+            "AS64496:RS-WRONG",
+        ] {
+            let object = parse(&format!(
+                "rtr-set: AS64496:RTRS-TEST\nmembers: {member}\n{common}"
+            ))
+            .map_err(anyhow::Error::msg)?;
+            assert!(validate(&object).is_err(), "{member}");
+        }
         Ok(())
     }
 }

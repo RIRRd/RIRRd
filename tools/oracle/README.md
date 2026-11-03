@@ -117,3 +117,21 @@ With both HTTP listeners ready, `python3 tools/oracle/compare_organisation_graph
 compares organisation values and nine supported field types against pinned upstream.
 It intentionally does not treat missing relationship/journal/updated fields as parity.
 The WHOIS corpus now contains 39 cases per transport.
+
+## Authoritative policy-set oracle
+
+The runtime configuration adds two synthetic authoritative sources, AUTH-TEST and
+AUTH-OTHER. They are separate from the read-only DIFFERENTIAL query fixture.
+`make_auth_fixture.py` generates test-only bcrypt credentials in the pinned Python
+container. Load its output once into both implementations (with operator restore
+for the Rust candidate), then run `compare_policy_set_auth.py`. The CI workflow
+contains the exact bootstrap sequence. The comparator checks 30 normal HTTP
+submission outcomes: wrong/owner/parent proofs, create/modify/delete, missing
+contacts and cross-source denial, with secret-free reports. It does not compare
+notification delivery or establish account/API-token/OpenPGP parity.
+
+`check_policy_set_schema.py` checks 17 strict parser decisions mirrored by the
+Rust validator tests, including the reference's empty comma-token handling.
+The reference runtime starts `smtp_sink.py` on container loopback port 1025.
+It discards synthetic notifications and never relays or logs message content.
+No SMTP port is published. Generated credentials/fixtures stay outside Git.

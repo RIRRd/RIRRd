@@ -1597,3 +1597,142 @@ fn authoritative_organisation_cli_and_http_preserve_authorization_and_references
     successful(submit(organisation, true, "organisation secret\n"));
     successful(submit(contact, true, "organisation secret\n"));
 }
+
+#[test]
+fn authoritative_policy_sets_require_parent_and_owner_and_preserve_atomicity() {
+    let workspace = tempfile::tempdir().unwrap();
+    let config = workspace.path().join("irrd.toml");
+    fs::write(&config, "database = \"test.redb\"\nsources = [\"TEST\", \"OTHER\"]\nauthoritative_sources = [\"TEST\"]\nlisten = \"127.0.0.1:0\"\nhttp_listen = \"127.0.0.1:0\"\nhttp_authoritative_updates = true\nmax_connections = 4\nio_timeout_seconds = 2\nmax_snapshot_bytes = 65536\n").unwrap();
+    let snapshot = workspace.path().join("bootstrap.rpsl");
+    let parent_hash = bcrypt::hash_with_salt("parent proof", 4, [12; 16]).unwrap();
+    let owner_hash = bcrypt::hash_with_salt("owner proof", 4, [13; 16]).unwrap();
+    fs::write(&snapshot, format!("mntner: PARENT-MNT\nauth: BCRYPT-PW {parent_hash}\nmnt-by: PARENT-MNT\nsource: TEST\n\nmntner: OWNER-MNT\nauth: BCRYPT-PW {owner_hash}\nmnt-by: OWNER-MNT\nsource: TEST\n\naut-num: AS64496\nmnt-by: PARENT-MNT\nsource: TEST\n\nperson: Set Contact\nnic-hdl: SET1-TEST\nmnt-by: OWNER-MNT\nsource: TEST\n")).unwrap();
+    successful(
+        cli(&config)
+            .args([
+                "import",
+                "snapshot",
+                "--source",
+                "TEST",
+                "--authoritative-restore",
+                "--file",
+            ])
+            .arg(&snapshot)
+            .output()
+            .unwrap(),
+    );
+    let submission = workspace.path().join("submission.rpsl");
+    let submit = |body: &str, passwords: &str, delete: bool| {
+        fs::write(&submission, body).unwrap();
+        let mut command = cli(&config);
+        command
+            .args(["update", "--source", "TEST", "--file"])
+            .arg(&submission)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        if delete {
+            command.arg("--delete");
+        }
+        let mut child = command.spawn().unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(passwords.as_bytes())
+            .unwrap();
+        child.wait_with_output().unwrap()
+    };
+    let objects = [
+        "filter-set: AS64496:FLTR-TEST\nfilter: AS64496\n",
+        "peering-set: AS64496:PRNG-TEST\npeering: AS64496\n",
+        "rtr-set: AS64496:RTRS-TEST\nmembers: router.example, AS64496:RTRS-CHILD\nmbrs-by-ref: NONEXISTENT-MNT\n",
+    ].map(|head| format!("{head}admin-c: SET1-TEST\nmnt-by: OWNER-MNT\nsource: TEST\n"));
+    for object in &objects {
+        for proof in ["owner proof\n", "parent proof\n", "wrong proof\n"] {
+            let denied = submit(object, proof, false);
+            assert!(!denied.status.success());
+            assert!(!String::from_utf8_lossy(&denied.stderr).contains(proof.trim()));
+        }
+    }
+    let mixed = format!(
+        "{}\n{}",
+        objects[0],
+        objects[1].replace("SET1-TEST", "MISSING-TEST")
+    );
+    assert!(
+        !submit(&mixed, "owner proof\nparent proof\n", false)
+            .status
+            .success()
+    );
+    let count = successful(cli(&config).args(["database", "verify"]).output().unwrap());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&count).unwrap()["objects"],
+        4
+    );
+    successful(submit(
+        &objects.join("\n"),
+        "owner proof\nparent proof\n",
+        false,
+    ));
+    let contact = "person: Set Contact\nnic-hdl: SET1-TEST\nsource: TEST\n";
+    assert!(!submit(contact, "owner proof\n", true).status.success());
+    let (server, tcp) = Server::start(&config);
+    for (class, key) in [
+        ("filter-set", "FLTR-TEST"),
+        ("peering-set", "PRNG-TEST"),
+        ("rtr-set", "RTRS-TEST"),
+    ] {
+        assert!(
+            whois(tcp, format!("!m{class},AS64496:{key}\n").as_bytes())
+                .contains("mnt-by: OWNER-MNT")
+        );
+    }
+    drop(server);
+    let (server, http) = Server::start_listener(&config, "GraphQL listening");
+    let request = |method: &str, object: &str, proofs: &[&str]| {
+        let body =
+            serde_json::json!({"objects":[{"object_text":object}],"passwords":proofs}).to_string();
+        let raw = whois(http,format!("{method} /v1/submit/ HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",body.len()).as_bytes());
+        assert!(raw.starts_with("HTTP/1.1 200 "), "{raw}");
+        assert!(!raw.contains("owner proof") && !raw.contains("parent proof"));
+        serde_json::from_str::<Value>(raw.split_once("\r\n\r\n").unwrap().1).unwrap()
+    };
+    for object in &objects {
+        assert_eq!(
+            request(
+                "POST",
+                &object.replace("source: TEST", "source: OTHER"),
+                &["owner proof"]
+            )["summary"]["failed"],
+            1
+        );
+        assert_eq!(
+            request(
+                "POST",
+                &object.replace("SET1-TEST", "MISSING-TEST"),
+                &["owner proof"]
+            )["summary"]["failed"],
+            1
+        );
+        assert_eq!(
+            request(
+                "POST",
+                &format!("{object}remarks: HTTP modified\n"),
+                &["owner proof"]
+            )["summary"]["successful_modify"],
+            1
+        );
+        assert_eq!(
+            request("DELETE", object, &["parent proof"])["summary"]["failed"],
+            1
+        );
+        assert_eq!(
+            request("DELETE", object, &["owner proof"])["summary"]["successful_delete"],
+            1
+        );
+    }
+    drop(server);
+    successful(submit(contact, "owner proof\n", true));
+    successful(cli(&config).args(["database", "verify"]).output().unwrap());
+}

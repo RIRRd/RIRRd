@@ -57,6 +57,9 @@ pub fn authorize(
                     | "route-set"
                     | "aut-num"
                     | "organisation"
+                    | "filter-set"
+                    | "peering-set"
+                    | "rtr-set"
             ),
             "unsupported authoritative object class"
         );
@@ -136,7 +139,7 @@ pub fn authorize(
                 "aut-num" => Some(
                     allocation_parent(object)?.context("no covering AS-block in this source")?,
                 ),
-                "as-set" | "route-set" => {
+                "as-set" | "route-set" | "filter-set" | "peering-set" | "rtr-set" => {
                     let asn = set_creation_asn(object)?;
                     existing("aut-num", &format!("AS{asn}"))?
                 }

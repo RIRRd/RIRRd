@@ -7,7 +7,7 @@ irrd:
     gnupg_keyring: /var/lib/irrd/gnupg
   email:
     from: oracle@example.invalid
-    smtp: localhost
+    smtp: localhost:1025
   rpki:
     roa_source: null
   server:
@@ -25,3 +25,7 @@ irrd:
   sources:
     DIFFERENTIAL:
       authoritative: false
+    AUTH-TEST:
+      authoritative: true
+    AUTH-OTHER:
+      authoritative: true

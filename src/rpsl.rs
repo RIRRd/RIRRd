@@ -259,7 +259,7 @@ pub(crate) fn generic_name(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
 }
 
-fn dns_name(value: &str) -> bool {
+pub(crate) fn dns_name(value: &str) -> bool {
     value.split('.').all(|label| {
         let bytes = label.as_bytes();
         bytes.first().is_some_and(u8::is_ascii_alphanumeric)
