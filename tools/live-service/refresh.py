@@ -83,6 +83,8 @@ def main():
                 loaded = {row['source'] for row in report['sources'] if row['state'] == 'loaded'}
                 if inputs['catalog_sha256'] != digest or loaded != expected or report['binary_sha256'] != inputs['binary_sha256']:
                     raise ValueError('Prepared candidate has inconsistent or changed inputs')
+                if report.get('configuration_sha256') and hashlib.sha256((destination / 'irrd.toml').read_bytes()).hexdigest() != report['configuration_sha256']:
+                    raise ValueError('Prepared generation configuration changed after verification')
                 subprocess.run([BINARY, '--config', str(destination / 'irrd.toml'), 'config', 'check'], check=True, capture_output=True)
                 with open(BINARY, 'rb') as binary:
                     same_runtime = hashlib.file_digest(binary, 'sha256').hexdigest() == report.get('runtime_binary_sha256')

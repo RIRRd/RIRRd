@@ -369,6 +369,7 @@ name = "RIRRd public test registry"
         raise ValueError('Runtime or catalog changed during verification; candidate not published')
     report['verified_at'] = now()
     report['database_bytes'] = database.stat().st_size
+    report['configuration_sha256'] = sha256(config)
     report['database_sha256'] = sha256(database)
     write_json(args.output / 'sources.json', report)
     print(json.dumps({'verified_objects': report['total_objects'], 'database_bytes': report['database_bytes']}))

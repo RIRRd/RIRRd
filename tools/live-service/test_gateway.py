@@ -166,8 +166,9 @@ class GatewayChecks(unittest.TestCase):
             report={'binary_sha256':'a'*64,'total_objects':10,'sources':[{'source':'TEST','state':'loaded','objects':10}]}
             (candidate/'sources.json').write_text(json.dumps(report));(candidate/'irrd.toml').write_text('test fixture')
             inputs={'binary_sha256':'a'*64,'catalog_sha256':digest}
-            for changed in ['count','catalog','bytes']:
+            for changed in ['count','catalog','bytes','config']:
                 variant={**report,'runtime_binary_sha256':hashlib.sha256(runtime.read_bytes()).hexdigest(),'database_sha256':hashlib.sha256(b'baseline').hexdigest()} if changed=='bytes' else report
+                if changed=='config':variant={**report,'configuration_sha256':'changed'}
                 (candidate/'sources.json').write_text(json.dumps(variant))
                 (candidate/'build-inputs.json').write_text(json.dumps({**inputs,'catalog_sha256':'wrong' if changed=='catalog' else digest}))
                 with mock.patch.object(refresh,'ROOT',root),mock.patch.object(refresh,'TOOLS',tools),mock.patch.object(refresh,'BINARY',str(runtime)),mock.patch.object(refresh.sys,'argv',['refresh.py','--activate','candidate']),mock.patch.object(refresh.subprocess,'run',return_value=SimpleNamespace(stdout='{"objects":9}')) as run:
@@ -175,7 +176,7 @@ class GatewayChecks(unittest.TestCase):
                     self.assertEqual((root/'current').resolve(),previous)
                     self.assertEqual(json.loads((root/'last-refresh.json').read_text())['state'],'failed')
                     self.assertTrue(all(call.args[0][0]==str(runtime) for call in run.call_args_list))
-                    self.assertEqual(run.call_count,0 if changed=='catalog' else 1 if changed=='bytes' else 2)
+                    self.assertEqual(run.call_count,0 if changed in ['catalog','config'] else 1 if changed=='bytes' else 2)
 
     def test_failed_build_resumes_verified_sources_and_rejects_changed_inputs(self):
         import gzip
