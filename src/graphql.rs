@@ -16,7 +16,7 @@ use async_graphql::{
     },
 };
 use axum::{
-    Json, Router,
+    Extension, Json, Router,
     extract::{DefaultBodyLimit, Request as HttpRequest, State},
     http::StatusCode,
     middleware::{self, Next},
@@ -597,7 +597,12 @@ async fn bound_http(State(limits): State<HttpLimits>, req: HttpRequest, next: Ne
     }
 }
 
-async fn execute(State(schema): State<Schema>, Json(request): Json<Request>) -> impl IntoResponse {
+async fn execute(
+    State(schema): State<Schema>,
+    Extension(store): Extension<Arc<Store>>,
+    Json(request): Json<Request>,
+) -> impl IntoResponse {
+    let _view = store.query_gate().read().await;
     Json(schema.execute(request).await)
 }
 
@@ -605,11 +610,12 @@ pub async fn serve(
     listener: TcpListener,
     store: Arc<Store>,
     sources: Vec<String>,
+    update_sources: Option<HashSet<String>>,
     timeout: Duration,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> Result<()> {
-    let schema = make_schema(store, sources)?;
-    let app = Router::new()
+    let schema = make_schema(store.clone(), sources)?;
+    let mut app = Router::new()
         .route("/graphql", post(execute))
         .route("/graphql/", post(execute))
         .layer(DefaultBodyLimit::max(MAX_HTTP_BYTES))
@@ -620,7 +626,15 @@ pub async fn serve(
             },
             bound_http,
         ))
-        .with_state(schema);
+        .with_state(schema)
+        .layer(Extension(store.clone()));
+    if let Some(update_sources) = update_sources {
+        app = app.merge(crate::submission_http::router(
+            store,
+            update_sources,
+            timeout,
+        ));
+    }
     tracing::info!(address = %listener.local_addr()?, "GraphQL listening");
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown)
@@ -840,6 +854,7 @@ mod tests {
             listener,
             store,
             vec!["TEST".into()],
+            None,
             Duration::from_secs(2),
             async move {
                 let _ = stopped.await;

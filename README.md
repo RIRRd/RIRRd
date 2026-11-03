@@ -133,6 +133,8 @@ Stop the server and run `rust-irrd update --source EXAMPLE --file changes.rpsl`.
 
 The submission applies atomically. Run `source history --source EXAMPLE` offline to read recent committed identities and actions. The history omits passwords, hashes and object bodies.
 
+For local HTTP submission, set `http_authoritative_updates = true` alongside a loopback `http_listen`. Send JSON to `/v1/submit/` using POST to create or modify, or DELETE to remove. Use an `objects` list with one `object_text` per entry and a top-level `passwords` list. Each submission covers a single authoritative source. The server commits the batch and its audit records together. HTTP reports omit object text and secrets. Deleted contact and maintainer names are protected from reuse in their source.
+
 ## Development checks
 
 See the [deployment examples](deploy/README.md) for Docker Compose and native systemd setup. A separate Linux CI job defines container bootstrap, WHOIS and shutdown verification.

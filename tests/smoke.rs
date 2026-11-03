@@ -23,6 +23,8 @@ fn authoritative_cli_checks_maintainers_and_rolls_back_a_mixed_batch() {
 sources = ["TEST", "MIRROR"]
 authoritative_sources = ["TEST"]
 listen = "127.0.0.1:0"
+http_listen = "127.0.0.1:0"
+http_authoritative_updates = true
 max_connections = 4
 io_timeout_seconds = 2
 max_snapshot_bytes = 4096
@@ -157,6 +159,40 @@ max_snapshot_bytes = 4096
     let (_server, address) = Server::start(&config);
     assert_eq!(whois(address, b"!mperson,OPER-TEST\n"), "D\n");
     assert!(!whois(address, b"!mmntner,NEW-MNT\n").contains("BCRYPT-PW"));
+    drop(_server);
+    let (_server, http) = Server::start_listener(&config, "GraphQL listening");
+    let request = |method: &str, path: &str, body: Value| {
+        let body = body.to_string();
+        let raw = whois(http, format!(
+            "{method} {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        ).as_bytes());
+        assert!(raw.starts_with("HTTP/1.1 200 "), "{raw}");
+        assert!(!raw.contains("root test secret"));
+        serde_json::from_str::<Value>(raw.split_once("\r\n\r\n").unwrap().1).unwrap()
+    };
+    let contact = person("HTTP Operator", "HTTP-TEST", "ROOT-MNT");
+    let payload =
+        serde_json::json!({"objects":[{"object_text":contact}],"passwords":["root test secret"]});
+    let accepted = request("POST", "/v1/submit/", payload.clone());
+    assert_eq!(accepted["summary"]["successful_create"], 1);
+    assert!(accepted["objects"][0]["new_object_text"].is_null());
+    let visible = request(
+        "POST",
+        "/graphql/",
+        serde_json::json!({
+            "query":"{ rpslObjects(rpslPk: [\"HTTP-TEST\"]) { rpslPk } }"
+        }),
+    );
+    assert_eq!(visible["data"]["rpslObjects"][0]["rpslPk"], "HTTP-TEST");
+    assert_eq!(
+        request("DELETE", "/v1/submit/", payload.clone())["summary"]["successful_delete"],
+        1
+    );
+    assert_eq!(
+        request("POST", "/v1/submit/", payload)["summary"]["failed"],
+        1
+    );
 }
 
 fn cli(config: &Path) -> Command {

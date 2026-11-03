@@ -314,6 +314,7 @@ async fn lookup(
         _ => true,
     };
     let lookup = tokio::task::spawn_blocking(move || {
+        let _view = store.query_gate().blocking_read();
         let result = execute(query, &store, &sources, &excluded);
         (result, permit)
     });

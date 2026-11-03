@@ -15,6 +15,7 @@ use redb::{
     ReadTransaction, ReadableMultimapTable, ReadableTable, ReadableTableMetadata, Table,
     TableDefinition, TableHandle, WriteTransaction,
 };
+use tokio::sync::RwLock;
 
 use crate::{
     authoritative::{Change, authorize},
@@ -53,6 +54,8 @@ const JOURNAL: TableDefinition<JournalKey, JournalValue> = TableDefinition::new(
 // Keyed by source and sequence. The value is (timestamp, class, key, action).
 const AUTH_AUDIT: TableDefinition<JournalKey, AuditValue> =
     TableDefinition::new("authoritative_audit_v1");
+const PROTECTED_NAMES: TableDefinition<Identity<'static>, ()> =
+    TableDefinition::new("authoritative_protected_names_v1");
 const NRTM3_RETAINED_OPERATIONS: u64 = 4096;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -75,6 +78,7 @@ pub struct AuditEntry {
 
 pub struct Store {
     db: Database,
+    query_gate: RwLock<()>,
 }
 
 impl Store {
@@ -116,7 +120,18 @@ impl Store {
             let mut inverse = write.open_table(INVERSE)?;
             write.open_table(SERIALS)?;
             write.open_table(JOURNAL)?;
-            write.open_table(AUTH_AUDIT)?;
+            let audit = write.open_table(AUTH_AUDIT)?;
+            let mut protected = write.open_table(PROTECTED_NAMES)?;
+            if !tables.contains(PROTECTED_NAMES.name()) {
+                for entry in audit.iter()? {
+                    let (identity, metadata) = entry?;
+                    let (source, _) = identity.value();
+                    let (_, class, key, action) = metadata.value();
+                    if action == "delete" {
+                        protected.insert(protected_name((source, class, key)), ())?;
+                    }
+                }
+            }
             if backfill_origins || backfill_prefixes || backfill_inverse {
                 for entry in records.iter()? {
                     let (identity, text) = entry?;
@@ -141,13 +156,24 @@ impl Store {
             }
         }
         write.commit()?;
-        Ok(Self { db })
+        Ok(Self {
+            db,
+            query_gate: RwLock::new(()),
+        })
     }
 
     /// Open without creating the file or initializing its application tables.
     pub fn open_existing(path: &Path) -> Result<Self> {
         let db = Database::open(path).with_context(|| format!("open {}", path.display()))?;
-        Ok(Self { db })
+        Ok(Self {
+            db,
+            query_gate: RwLock::new(()),
+        })
+    }
+
+    /// Hold a read guard across a service query that performs multiple reads.
+    pub fn query_gate(&self) -> &RwLock<()> {
+        &self.query_gate
     }
 
     /// Compact an offline registry after validating its application indexes and metadata.
@@ -333,10 +359,24 @@ impl Store {
         changes: Vec<Change>,
         passwords: &[String],
     ) -> Result<u64> {
+        Ok(self
+            .apply_authoritative_report(source, changes, passwords)?
+            .len() as u64)
+    }
+
+    /// Commit a submission and return API action names in input order.
+    /// Call from synchronous code or a blocking worker.
+    pub fn apply_authoritative_report(
+        &self,
+        source: &str,
+        changes: Vec<Change>,
+        passwords: &[String],
+    ) -> Result<Vec<&'static str>> {
         let source = canonical_source(source)?;
-        let count = changes.len() as u64;
+        let _gate = self.query_gate.blocking_write();
         let mut write = self.db.begin_write()?;
         write.set_durability(Durability::Immediate);
+        let mut actions = Vec::new();
         {
             let serials = write.open_table(SERIALS)?;
             ensure!(
@@ -354,6 +394,16 @@ impl Store {
             )?;
 
             let mut audit = write.open_table(AUTH_AUDIT)?;
+            let mut protected = write.open_table(PROTECTED_NAMES)?;
+            let pending_deletions: HashSet<_> = changes
+                .iter()
+                .filter_map(|change| match change {
+                    Change::Delete(object) => {
+                        Some(protected_name((&object.source, &object.class, &object.key)))
+                    }
+                    Change::Upsert(_) => None,
+                })
+                .collect();
             let mut sequence = audit
                 .range((source.as_str(), 0)..=(source.as_str(), u64::MAX))?
                 .next_back()
@@ -363,17 +413,28 @@ impl Store {
                 .duration_since(UNIX_EPOCH)
                 .context("system time before Unix epoch")?
                 .as_secs();
-            for change in changes {
-                let (identity, action) = match &change {
+            for change in &changes {
+                let (identity, audit_action, report_action) = match change {
                     Change::Upsert(object) => {
                         let identity = validate_identity(&source, object)?;
+                        let name = protected_name(identity);
+                        if pending_deletions.contains(&name) || protected.get(name)?.is_some() {
+                            ensure!(
+                                records.get(identity)?.is_some(),
+                                "authoritative object name is protected after deletion"
+                            );
+                        }
                         let (updated, skipped) =
                             upsert_object(&mut records, &mut indexes, identity, object)?;
                         ensure!(
                             skipped == 0,
                             "invalid lookup attributes in authoritative object"
                         );
-                        (identity, if updated { "update" } else { "create" })
+                        if updated {
+                            (identity, "update", "modify")
+                        } else {
+                            (identity, "create", "create")
+                        }
                     }
                     Change::Delete(object) => {
                         let identity = validate_identity(&source, object)?;
@@ -381,18 +442,20 @@ impl Store {
                             delete_object(&mut records, &mut indexes, identity)?,
                             "object to delete does not exist"
                         );
-                        (identity, "delete")
+                        protected.insert(protected_name(identity), ())?;
+                        (identity, "delete", "delete")
                     }
                 };
                 let (source, class, key) = identity;
                 sequence = sequence
                     .checked_add(1)
                     .context("authoritative audit sequence exhausted")?;
-                audit.insert((source, sequence), (timestamp, class, key, action))?;
+                audit.insert((source, sequence), (timestamp, class, key, audit_action))?;
+                actions.push(report_action);
             }
         }
         write.commit()?;
-        Ok(count)
+        Ok(actions)
     }
 
     /// Read recent successful authoritative operations, most recent first.
@@ -1073,6 +1136,15 @@ fn validate_identity<'a>(source: &str, object: &'a Object) -> Result<Identity<'a
     Ok((&object.source, &object.class, &object.key))
 }
 
+fn protected_name((source, class, key): Identity<'_>) -> Identity<'_> {
+    let category = if matches!(class, "person" | "role") {
+        "contact"
+    } else {
+        class
+    };
+    (source, category, key)
+}
+
 fn warn_skipped_lookup_values(source: &str, skipped_lookup_values: usize) {
     if skipped_lookup_values != 0 {
         tracing::warn!(%source, skipped_lookup_values, "retained malformed lookup attribute values in stored object text without indexing them");
@@ -1364,6 +1436,87 @@ mod tests {
         let indexes = WriteIndexes::open(&write)?;
         assert!(indexes.has_strong_reference("TEST", "mntner", "TEST-MNT")?);
         assert!(indexes.has_strong_reference("TEST", "person", "EO1-TEST")?);
+        Ok(())
+    }
+
+    #[test]
+    fn authoritative_protection_covers_contact_aliases_and_survives_reopen_and_purge() -> Result<()>
+    {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("registry.redb");
+        let store = Store::open(&path)?;
+        let passwords = [String::from("fixture password")];
+        let sources = [String::from("TEST")];
+        seed_authoritative_maintainer(&store, &passwords[0])?;
+        let person = authoritative_contact("Example Operator", "EO1-TEST")?;
+        let role = crate::rpsl::parse(&person.text.replacen("person:", "role:", 1))
+            .map_err(anyhow::Error::msg)?;
+        assert_eq!(
+            store.apply_authoritative_report(
+                "TEST",
+                vec![Change::Upsert(person.clone())],
+                &passwords
+            )?,
+            ["create"]
+        );
+        assert_eq!(
+            store.apply_authoritative_report(
+                "TEST",
+                vec![Change::Upsert(person.clone())],
+                &passwords
+            )?,
+            ["modify"]
+        );
+        let error = store
+            .apply_authoritative_report(
+                "TEST",
+                vec![Change::Upsert(role.clone()), Change::Delete(person.clone())],
+                &passwords,
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("name is protected"));
+        assert_eq!(
+            store.first("person", "EO1-TEST", &sources)?.as_ref(),
+            Some(&person)
+        );
+        assert!(store.first("role", "EO1-TEST", &sources)?.is_none());
+        assert_eq!(
+            store.apply_authoritative_report(
+                "TEST",
+                vec![Change::Delete(person.clone())],
+                &passwords
+            )?,
+            ["delete"]
+        );
+        for object in [person.clone(), role.clone()] {
+            let error = store
+                .apply_authoritative_report("TEST", vec![Change::Upsert(object)], &passwords)
+                .unwrap_err();
+            assert!(error.to_string().contains("name is protected"));
+        }
+        let write = store.db.begin_write()?;
+        assert!(write.delete_table(PROTECTED_NAMES)?);
+        write.commit()?;
+        drop(store);
+
+        let store = Store::open_for_service(&path)?;
+        store.replace_source("TEST", [])?;
+        seed_authoritative_maintainer(&store, &passwords[0])?;
+        let error = store
+            .apply_authoritative_report("TEST", vec![Change::Upsert(role)], &passwords)
+            .unwrap_err();
+        assert!(error.to_string().contains("name is protected"));
+        assert_eq!(store.source_history("TEST", 10)?.len(), 3);
+
+        // An operator can restore the old record from a trusted snapshot and update it.
+        let maintainer = store
+            .first("mntner", "TEST-MNT", &sources)?
+            .context("test maintainer missing")?;
+        store.replace_source("TEST", [Ok(maintainer), Ok(person.clone())])?;
+        assert_eq!(
+            store.apply_authoritative_report("TEST", vec![Change::Upsert(person)], &passwords)?,
+            ["modify"]
+        );
         Ok(())
     }
 

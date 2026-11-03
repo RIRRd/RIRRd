@@ -17,6 +17,8 @@ pub struct Config {
     pub authoritative_sources: HashSet<String>,
     pub listen: SocketAddr,
     pub http_listen: Option<SocketAddr>,
+    #[serde(default)]
+    pub http_authoritative_updates: bool,
     pub max_connections: usize,
     pub max_connections_per_ip: Option<usize>,
     #[serde(default)]
@@ -66,6 +68,11 @@ impl Config {
                 .iter()
                 .all(|source| seen.contains(source)),
             "authoritative_sources must be configured in sources"
+        );
+        ensure!(
+            !config.http_authoritative_updates
+                || (config.http_listen.is_some() && !config.authoritative_sources.is_empty()),
+            "HTTP updates require http_listen and at least one authoritative source"
         );
         for (source, peers) in &mut config.nrtm3_serve {
             ensure!(

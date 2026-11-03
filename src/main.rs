@@ -15,6 +15,7 @@ mod rpki;
 mod rpsl;
 mod sets;
 mod storage;
+mod submission_http;
 mod whois;
 
 use std::{
@@ -524,11 +525,21 @@ async fn serve(config: Config, store: Arc<Store>) -> Result<()> {
     if let Some(http) = http {
         let store = store.clone();
         let sources = config.sources.clone();
+        let update_sources = config
+            .http_authoritative_updates
+            .then(|| config.authoritative_sources.clone());
         let timeout = Duration::from_secs(config.io_timeout_seconds);
         let mut stopped = stopped.clone();
-        services.spawn(graphql::serve(http, store, sources, timeout, async move {
-            let _ = stopped.changed().await;
-        }));
+        services.spawn(graphql::serve(
+            http,
+            store,
+            sources,
+            update_sources,
+            timeout,
+            async move {
+                let _ = stopped.changed().await;
+            },
+        ));
     }
     services.spawn(async move { whois::serve(whois, &config, store, stopped).await });
     let mut result = tokio::select! {
