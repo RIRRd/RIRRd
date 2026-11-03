@@ -165,7 +165,7 @@ rust-irrd source sync-nrtm4 --source EXAMPLE --public-key peer.pem \
   --notification-url https://mirror.example.net/nrtm4/update-notification-file.jose
 ```
 
-Set the URL to a trusted peer. TLS uses the WebPKI root set. The client rejects redirects and fetches only signed relative references on the same HTTPS origin, after authenticating the notification. Subsequent syncs use the persisted signing key. Online scheduling and NRTMv4 server publication remain open.
+Set the URL to a trusted peer. TLS uses the WebPKI root set. The client rejects redirects and fetches only signed relative references on the same HTTPS origin, after authenticating the notification. A sync processes up to 512 referenced files within the configured byte limits and a 600-second default download budget. Use `--timeout-seconds` to set that budget. Subsequent syncs use the persisted signing key. Online scheduling and NRTMv4 server publication remain open.
 
 ## Offline route origin validation
 

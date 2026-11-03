@@ -129,6 +129,9 @@ enum SourceCommand {
         /// Independently trusted P-256 public key, required for the first sync.
         #[arg(long)]
         public_key: Option<PathBuf>,
+        /// Overall download budget in seconds.
+        #[arg(long, default_value_t = 600, value_parser = clap::value_parser!(u64).range(1..=3600))]
+        timeout_seconds: u64,
     },
     /// Read committed authoritative changes, newest first.
     History {
@@ -280,6 +283,7 @@ fn main() -> Result<()> {
                     source,
                     notification_url,
                     public_key,
+                    timeout_seconds,
                 },
         } => {
             let store = open_nrtm4_source(&config, &source)?;
@@ -290,7 +294,7 @@ fn main() -> Result<()> {
             let fetcher = nrtm4_remote::Fetcher::new(
                 &notification_url,
                 Duration::from_secs(config.io_timeout_seconds.min(30)),
-                Duration::from_secs(120),
+                Duration::from_secs(timeout_seconds),
             )?;
             let compact = fetcher.notification()?;
             let result = nrtm4_apply::apply_remote(

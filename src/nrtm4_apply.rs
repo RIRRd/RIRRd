@@ -18,7 +18,8 @@ use crate::{
     storage::Store,
 };
 
-const MAX_FILES: usize = 64;
+const MAX_LOCAL_FILES: usize = 64;
+const MAX_REMOTE_FILES: usize = 512;
 
 pub fn apply(
     store: &Store,
@@ -29,7 +30,7 @@ pub fn apply(
     max_bytes: u64,
 ) -> Result<Value> {
     ensure!(
-        paths.len() <= MAX_FILES,
+        paths.len() <= MAX_LOCAL_FILES,
         "too many NRTMv4 files for one application"
     );
     let key = public_key
@@ -109,8 +110,13 @@ fn apply_with_files<P: AsRef<Path>>(
                 .map(|file| (FileKind::Delta, file)),
         );
     }
+    let file_limit = if local_count.is_some() {
+        MAX_LOCAL_FILES
+    } else {
+        MAX_REMOTE_FILES
+    };
     ensure!(
-        selected.len() <= MAX_FILES,
+        selected.len() <= file_limit,
         "too many NRTMv4 files for one application"
     );
     if let Some(count) = local_count {

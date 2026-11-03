@@ -28,6 +28,9 @@ const MAX_FUTURE_NANOS: i128 = 5 * 60 * NANOS_PER_SECOND;
 #[serde(deny_unknown_fields)]
 struct ProtectedHeader {
     alg: String,
+    // Publishers may label their signing key. Trust comes from the configured or persisted key.
+    #[serde(default, rename = "kid")]
+    _key_id: String,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -381,6 +384,13 @@ mod tests {
         let compact = sign(&key, r#"{"alg":"ES256"}"#, &payload);
         assert!(verify(compact.as_bytes(), &unrelated, "TEST", now()).is_err());
         assert!(verify(compact.as_bytes(), &pem, "OTHER", now()).is_err());
+        let labeled = sign(
+            &key,
+            r#"{"kid":"publisher-key-2026","alg":"ES256"}"#,
+            &payload,
+        );
+        verify(labeled.as_bytes(), &pem, "TEST", now())?;
+        assert!(verify(labeled.as_bytes(), &unrelated, "TEST", now()).is_err());
 
         let mut tampered = compact.clone().into_bytes();
         let payload_offset = tampered.iter().position(|byte| *byte == b'.').unwrap() + 1;
@@ -396,6 +406,8 @@ mod tests {
             r#"{"alg":"none"}"#,
             r#"{"alg":"HS256"}"#,
             r#"{"alg":"ES256","alg":"ES256"}"#,
+            r#"{"alg":"ES256","kid":null}"#,
+            r#"{"alg":"ES256","kid":"a","kid":"b"}"#,
             r#"{"alg":"ES256","crit":["b64"],"b64":false}"#,
             r#"{"alg":"ES256","jku":"https://example.invalid"}"#,
         ] {
