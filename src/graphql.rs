@@ -1689,4 +1689,14 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(3), server).await???;
         Ok(())
     }
+    #[test]
+    fn converted_owner_identifiers_are_absent_from_structured_remarks() {
+        let object = crate::rpsl::parse_snapshot("route: 192.0.2.0/24\norigin: AS64496\nremarks: registro.br ownerid: 000.000.000-00\n+ private continuation\nremarks: Public provenance\nsource: TEST\n").unwrap();
+        let visible = VisibleObject::new(object);
+        assert_eq!(
+            visible.values("remarks").collect::<Vec<_>>(),
+            vec!["Public provenance"]
+        );
+        assert!(!visible.text.contains("000.000.000-00"));
+    }
 }

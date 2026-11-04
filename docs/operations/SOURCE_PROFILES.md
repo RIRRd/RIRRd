@@ -72,3 +72,9 @@ RIPE documents Latin-1 for its NRTMv3 interface even when the selected baseline
 is a UTF-8 export: [interface encoding](https://docs.db.ripe.net/RIPE-Database-Structure/Character-Encoding/).
 Known idle replies are matched exactly, including the older PANIX wording;
 arbitrary warnings or appended error/data lines do not count as successful polls.
+
+Source providers can publish derived conversion views alongside primary IRRs.
+The console displays supplied source provenance and refresh notes. Public object
+rendering removes Registro.BR owner-identifier remarks and their continuations;
+prefixes, origins and conversion provenance remain available. Raw, explicitly
+restricted operator exports retain the original records.

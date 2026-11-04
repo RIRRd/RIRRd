@@ -39,8 +39,15 @@ impl fmt::Debug for Object {
 impl Object {
     /// Render for unprivileged queries. The stored text can contain credentials.
     pub fn public_text(&self) -> Cow<'_, str> {
-        let sensitive = |name: &str| {
-            name.eq_ignore_ascii_case("auth") || name.eq_ignore_ascii_case("rpki-ov-state")
+        let sensitive = |name: &str, value: &str| {
+            const OWNER_ID: &str = "registro.br ownerid:";
+            name.eq_ignore_ascii_case("auth")
+                || name.eq_ignore_ascii_case("rpki-ov-state")
+                || (name.eq_ignore_ascii_case("remarks")
+                    && value
+                        .trim_start()
+                        .get(..OWNER_ID.len())
+                        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(OWNER_ID)))
         };
         let private_marker = self.text.contains("-----BEGIN PGP PRIVATE KEY BLOCK-----");
         let private_end = private_marker
@@ -53,7 +60,7 @@ impl Object {
                 || (private_marker && private_key_start(line, private_end))
                 || line
                     .split_once(':')
-                    .is_some_and(|(name, _)| sensitive(name))
+                    .is_some_and(|(name, value)| sensitive(name, value))
         });
         if !needs_filtering {
             return Cow::Borrowed(&self.text);
@@ -80,7 +87,7 @@ impl Object {
             if !is_continuation(line) {
                 suppress_continuations = line
                     .split_once(':')
-                    .is_some_and(|(name, _)| sensitive(name));
+                    .is_some_and(|(name, value)| sensitive(name, value));
             }
             if !suppress_continuations {
                 result.push_str(segment);
@@ -618,5 +625,15 @@ mod tests {
                 .public_text()
                 .contains("synthetic-private-payload")
         );
+    }
+    #[test]
+    fn converted_owner_identifiers_and_folds_are_not_public_routing_data() {
+        let text = "route: 192.0.2.0/24\norigin: AS64496\nremarks: Registro.BR ownerid: 000.000.000-00\n+ private continuation\nremarks: Public conversion provenance\nsource: REGISTROBR\n";
+        let object = parse_snapshot(text).unwrap();
+        let public = object.public_text();
+        assert!(!public.contains("000.000.000-00"));
+        assert!(!public.contains("private continuation"));
+        assert!(public.contains("Public conversion provenance"));
+        assert!(public.contains("origin: AS64496"));
     }
 }

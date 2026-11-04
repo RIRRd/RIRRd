@@ -93,6 +93,7 @@
     const row = sourceRows().find(row => row.source === el('source-detail').value); if (!row) return;
     const out = el('source-detail-content'); const opened=new Set(out.dataset.source===row.source?[...out.querySelectorAll('details[open]')].map(item=>item.dataset.receipt):[]);out.dataset.source=row.source;out.replaceChildren();
     const summary = document.createElement('p'); summary.textContent = row.source + ' · ' + health(row)[0] + (row.provider ? ' · ' + row.provider : ''); out.append(summary);
+    for (const message of [row.source_note, row.sync_note]) { if (message) { const note = document.createElement('p'); note.className = 'fine'; note.textContent = message; out.append(note); } }
     const grid = document.createElement('div'); grid.className = 'class-grid';
     for (const [name, total] of Object.entries(classes(row)).sort((a, b) => b[1] - a[1])) { const box = document.createElement('div'), label = document.createElement('span'), number = document.createElement('strong'); label.textContent = name; number.textContent = count(total); box.append(label, number); grid.append(box); }
     out.append(grid);
