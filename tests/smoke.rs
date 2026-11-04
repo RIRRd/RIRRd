@@ -1072,6 +1072,7 @@ fn quiet_range_cli_pins_only_the_current_cursor_and_rejects_real_gaps() {
                     Err(error) => panic!("accepting CLI mirror request: {error}"),
                 }
             };
+            stream.set_nonblocking(false).unwrap();
             stream.set_read_timeout(Some(IO_DEADLINE)).unwrap();
             let mut request = String::new();
             BufReader::new(&mut stream).read_line(&mut request).unwrap();

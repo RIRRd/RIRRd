@@ -114,6 +114,29 @@ Passing CI for that commit: [native/core](https://github.com/RIRRd/RIRRd/actions
 This establishes bounded peer admission and the exercised query/shutdown
 behavior; it does not establish complete replication or sustained-load parity.
 
+## Quiet primary-feed polling — 4 November 2026
+
+Runtime `e16b0ce4103a33ce010b3a33522ce125640b348e` handles a RIPE-style
+`%ERROR:401: invalid range` response as idle only when its complete numeric
+available range ends at exactly the requested start minus one. Bounds must be
+ordered, and only blank lines may follow. A cursor outside retention, a larger
+gap, an access error, overflow or trailing transcript remains an error. This
+adds an explicit peer-transport case without advancing the committed cursor or
+changing RPSL parsing or storage.
+
+TCP response cases, the normal CLI cursor-pinning/rollback test and the shared
+peer daemon test exercise this behavior. Local strict checks passed 183 Rust
+cases (one optional skip), 56 protocol cases and 32 reporting cases. The pinned
+upstream oracle and fresh pinned RustSec audit passed as well.
+
+Passing CI: [native/core](https://github.com/RIRRd/RIRRd/actions/runs/41891705220),
+[pinned oracle](https://github.com/RIRRd/RIRRd/actions/runs/41891704789),
+[deployment](https://github.com/RIRRd/RIRRd/actions/runs/41891704506),
+[router/browser](https://github.com/RIRRd/RIRRd/actions/runs/41891704737),
+[fuzz](https://github.com/RIRRd/RIRRd/actions/runs/41891704595) and
+[publication hygiene](https://github.com/RIRRd/RIRRd/actions/runs/41891704734).
+These are bounded transport regressions, not complete replication qualification.
+
 ## RPSL and storage
 
 | Capability | Reference and specification | Rust implementation and compatibility target | Security requirement | Required evidence | Status |
