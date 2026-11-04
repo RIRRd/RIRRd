@@ -89,6 +89,31 @@ OpenPGP or scoped-token authorization, notifications, NRTMv4 server scheduling,
 event streams, complete query parity or sustained-load release qualification.
 RPKI remains deliberately outside the current IRR-only scope.
 
+## Scheduled mirror peer admission — 4 November 2026
+
+Runtime `312be7ea2998df928db02e7b898f28877f99ce50` queues scheduled jobs
+asynchronously before acquiring a blocking worker and allows at most two
+simultaneous jobs per upstream endpoint. Multiple databases sharing a peer no
+longer create one concurrent connection per source. Queued jobs cancel on
+shutdown before connecting or changing a cursor.
+
+The normal-daemon regression
+`shared_mirror_peer_is_bounded_without_exhausting_query_workers` holds peer
+replies for seven sources sharing an endpoint. An HTTP query completes with
+only four blocking workers, then all seven feeds complete their idle polls.
+Local format, strict Clippy and locked checks passed: 181 Rust cases, one
+optional skip, 56 protocol cases and 32 report cases. The pinned oracle rerun
+passed, and the unchanged dependency set has no reported RustSec advisories.
+
+Passing CI for that commit: [native/core](https://github.com/RIRRd/RIRRd/actions/runs/41889077425),
+[pinned upstream oracle](https://github.com/RIRRd/RIRRd/actions/runs/41889078119),
+[deployment](https://github.com/RIRRd/RIRRd/actions/runs/41889077438),
+[router/browser](https://github.com/RIRRd/RIRRd/actions/runs/41889077218),
+[fuzz](https://github.com/RIRRd/RIRRd/actions/runs/41889077594) and
+[publication hygiene](https://github.com/RIRRd/RIRRd/actions/runs/41889077915).
+This establishes bounded peer admission and the exercised query/shutdown
+behavior; it does not establish complete replication or sustained-load parity.
+
 ## RPSL and storage
 
 | Capability | Reference and specification | Rust implementation and compatibility target | Security requirement | Required evidence | Status |
