@@ -1,1 +1,8 @@
-{"version":"0.1.0-beta.2","channel":"beta","repository_public":false,"github_release_published":false,"repository":"https://github.com/RIRRd/RIRRd","issue_tracker":"https://github.com/RIRRd/RIRRd/issues"}
+{
+  "version": "0.1.0-beta.2",
+  "channel": "beta",
+  "repository_public": true,
+  "github_release_published": false,
+  "repository": "https://github.com/RIRRd/RIRRd",
+  "issue_tracker": "https://github.com/RIRRd/RIRRd/issues"
+}

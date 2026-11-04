@@ -13,7 +13,8 @@ incomplete.** The baseline is official IRRd v4.5.4 at
 `8e8080dab744a348b7d0e6efcb53f403301dd075`. Check the
 [compatibility matrix](docs/compatibility/IRRD_FEATURE_MATRIX.md),
 [known gaps](docs/BETA_STATUS.md) and [progress record](AUTONOMOUS_PROGRESS.md).
-Source and issue tracking are hosted in the RIRRd GitHub organization.
+The MIT-licensed source and public issue tracker are hosted at
+[RIRRd/RIRRd](https://github.com/RIRRd/RIRRd).
 Release artifacts are published only after the release checks pass.
 
 ## Software and community network
