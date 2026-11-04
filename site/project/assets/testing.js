@@ -1,0 +1,20 @@
+'use strict';
+(async()=>{
+  const el=id=>document.getElementById(id);
+  const labels={format:'Rust formatting',clippy:'Strict Clippy',rust:'Rust unit & integration',protocols:'Protocol & recovery contracts','report-exporter':'Report integrity',gateway:'Public gateway isolation',community:'Private node submissions','web-build':'Website fixture build',web:'Browser workflows'};
+  try{
+    const response=await fetch('/testing/report.json',{cache:'no-cache'});if(!response.ok)throw Error('Results unavailable');const data=await response.json();
+    if(!data.reports?.length){el('verification-status').textContent='A verification snapshot has not been published yet.';return;}
+    const groups=data.reports.flatMap(r=>r.groups.map(g=>({...g,origin:r.origin,platform:r.platform}))),sum=key=>groups.reduce((total,g)=>total+g[key],0);
+    const passed=data.status==='passed';el('verification-status').textContent=passed?'Recorded checks passed.':'Recorded verification includes failures. Review the results before using this revision.';
+    el('verification-status').className='verification-state '+(passed?'passed':'failed');
+    for(const key of ['passed','failed','skipped'])el('verification-'+key).textContent=sum(key).toLocaleString();
+    const source=el('verification-source');source.textContent='Tested '+data.source_commit.slice(0,12)+' · recorded '+new Date(data.recorded_at).toLocaleString()+'. ';
+    const link=document.createElement('a');link.href='https://github.com/Peravix/Rirrd/commit/'+data.source_commit;link.textContent='Exact tested revision ↗';source.append(link);
+    const fragment=document.createDocumentFragment();
+    for(const g of groups){const row=document.createElement('tr');for(const [i,value]of [labels[g.id]||g.id,g.status,g.passed,g.failed,g.skipped].entries()){const cell=document.createElement(i?'td':'th');cell.textContent=String(value);if(!i){cell.scope='row';const note=document.createElement('small');note.textContent=g.origin.replaceAll('_',' ')+' · '+g.platform;cell.append(note);}row.append(cell);}fragment.append(row);}el('verification-groups').replaceChildren(fragment);
+    RIRRdCharts.bars(el('verification-chart'),groups.filter(g=>g.tests>0).map(g=>({label:labels[g.id]||g.id,value:g.passed})),'Passed cases by area');
+    if(data.coverage){const lines=data.coverage.lines;el('coverage-description').textContent=lines.percent.toFixed(2)+'% of measured source lines executed ('+lines.covered.toLocaleString()+' / '+lines.count.toLocaleString()+').';el('coverage-meter').value=lines.percent;el('coverage-meter').hidden=false;}
+    if(data.ci_status==='recorded_run'){el('ci-verification-note').textContent='These results were exported from the linked GitHub Actions runs. Open CI to inspect job logs and JUnit/coverage artifacts.';}
+  }catch{el('verification-status').textContent='Recorded test results are temporarily unavailable. The CI workflow and reproduction commands remain available.';}
+})();

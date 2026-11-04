@@ -17,8 +17,8 @@ from urllib.parse import urlsplit
 
 
 class Browser:
-    def __init__(self, executable, profile):
-        command=[executable,'--headless','--no-sandbox','--disable-gpu','--disable-background-networking','--no-first-run','--remote-debugging-pipe','--user-data-dir='+profile]
+    def __init__(self, executable, profile, extra_args=()):
+        command=[executable,'--headless','--no-sandbox','--disable-gpu','--disable-background-networking','--no-first-run','--remote-debugging-pipe','--user-data-dir='+profile, *extra_args]
         self.child=subprocess.Popen(['bash','-c','exec '+shlex.join(command)+' 3<&0 4>&1'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,start_new_session=True)
         self.sequence=0;self.buffer=b'';self.events=[]
         target=self.call('Target.createTarget',{'url':'about:blank'})['targetId']

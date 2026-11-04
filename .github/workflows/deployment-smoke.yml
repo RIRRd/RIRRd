@@ -2,17 +2,8 @@ name: Deployment smoke test
 
 on:
   workflow_dispatch:
+  push:
   pull_request:
-    paths:
-      - '.github/workflows/deployment-smoke.yml'
-      - '.dockerignore'
-      - 'Dockerfile'
-      - 'deploy/**'
-      - 'Cargo.*'
-      - 'src/**'
-      - 'web/**'
-      - 'LICENSE'
-      - 'examples/example.rpsl'
 
 permissions:
   contents: read

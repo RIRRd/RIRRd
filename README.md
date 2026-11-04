@@ -54,6 +54,23 @@ Start with [the small-host profile](examples/small-host/irrd.toml),
 [small-host operation](docs/operations/SMALL_HOSTS.md), and the
 [tested BIRD/FRR guide](docs/operations/ROUTER_INTEGRATION.md).
 
+## Automated verification
+
+Every push/PR runs the core matrix, independent protocol/recovery contracts,
+isolated website checks, source coverage and dependency audit. Reports include
+individual JSON/JUnit outcomes and retained failure logs. Short parser/RPKI fuzz
+runs and container smoke checks also run per push/PR. Read [the testing guide](docs/TESTING.md)
+or inspect [the recorded verification page](https://rirrd.co.uk/testing/).
+
+```sh
+python3 tools/testing/run.py --profile core --out /tmp/rirrd-core
+python3 tools/testing/run.py --profile web --out /tmp/rirrd-web
+```
+
+[Core CI](https://github.com/Peravix/Rirrd/actions/workflows/ci.yml) ·
+[Parser/RPKI fuzzing](https://github.com/Peravix/Rirrd/actions/workflows/fuzz.yml) ·
+[Pinned upstream oracle](https://github.com/Peravix/Rirrd/actions/workflows/upstream-oracle.yml)
+
 ## Local evaluation
 
 Install stable Rust with the platform's native linker and C compiler for the TLS dependency, then build and run:

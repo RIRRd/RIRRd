@@ -1,23 +1,38 @@
-name: RPSL and NRTMv3 fuzzing
+name: Parser and RPKI fuzzing
 on:
   workflow_dispatch:
+  push:
+  pull_request:
   schedule:
     - cron: '20 4 * * 1'
 
 permissions:
   contents: read
 
+concurrency:
+  group: fuzz-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   rpsl:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      FUZZ_SECONDS: ${{ github.event_name == 'schedule' && '120' || '15' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - run: rustup toolchain install nightly --profile minimal
       - run: cargo +stable install cargo-fuzz --locked --version 0.13.2
       - run: cp -r fuzz/seeds/rpsl "$RUNNER_TEMP/rpsl"
-      - run: cargo +nightly fuzz run rpsl "$RUNNER_TEMP/rpsl" -- -max_total_time=60 -max_len=65537
+      - run: cargo +nightly fuzz run rpsl "$RUNNER_TEMP/rpsl" -- -max_total_time="$FUZZ_SECONDS" -max_len=65537
       - run: cp -r fuzz/seeds/nrtm3 "$RUNNER_TEMP/nrtm3"
-      - run: cargo +nightly fuzz run nrtm3 "$RUNNER_TEMP/nrtm3" -- -max_total_time=60 -max_len=65537
+      - run: cargo +nightly fuzz run nrtm3 "$RUNNER_TEMP/nrtm3" -- -max_total_time="$FUZZ_SECONDS" -max_len=65537
       - run: cp -r fuzz/seeds/rpki "$RUNNER_TEMP/rpki"
-      - run: cargo +nightly fuzz run rpki "$RUNNER_TEMP/rpki" -- -max_total_time=60 -max_len=65537
+      - run: cargo +nightly fuzz run rpki "$RUNNER_TEMP/rpki" -- -max_total_time="$FUZZ_SECONDS" -max_len=65537
+      - name: Retain reproducing crashes without committing a generated corpus
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: fuzz-crash-reproducers
+          path: fuzz/artifacts/
+          if-no-files-found: ignore
+          retention-days: 14

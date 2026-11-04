@@ -1,26 +1,116 @@
 name: CI
-on: [push, pull_request]
-
+on: [push, pull_request, workflow_dispatch]
 permissions:
   contents: read
-
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   test:
+    name: Core · ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
-        os: [ubuntu-latest, ubuntu-24.04-arm, windows-latest]
+        os: [ubuntu-24.04, ubuntu-24.04-arm, windows-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - run: rustup update stable
       - run: rustup component add rustfmt clippy --toolchain stable
-      - run: cargo +stable fmt --all -- --check
-      - run: cargo +stable clippy --locked --all-targets -- -D warnings
-      - run: cargo +stable test --locked --all-targets
-
-  dependency-audit:
-    runs-on: ubuntu-latest
+      - name: Run locked Rust, protocol, recovery and reporting contracts
+        run: python3 tools/testing/run.py --out "${{ runner.temp }}/verification" --profile core
+      - name: Retain individual results, logs and JUnit even after failure
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: verification-${{ matrix.os }}
+          path: |
+            ${{ runner.temp }}/verification/report.json
+            ${{ runner.temp }}/verification/summary.md
+            ${{ runner.temp }}/verification/*.xml
+            ${{ runner.temp }}/verification/*.log
+          if-no-files-found: error
+          retention-days: 14
+  web:
+    name: Isolated websites and browser workflows
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - run: rustup update stable
+      - name: Install the distribution Markdown builder
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends python3-markdown
+      - name: Check both sites with a synthetic registry and private queue
+        run: /usr/bin/python3 tools/testing/run.py --profile web --out "${{ runner.temp }}/web-verification"
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: verification-web
+          path: |
+            ${{ runner.temp }}/web-verification/report.json
+            ${{ runner.temp }}/web-verification/summary.md
+            ${{ runner.temp }}/web-verification/*.xml
+            ${{ runner.temp }}/web-verification/*.log
+          if-no-files-found: error
+          retention-days: 14
+  dependency-audit:
+    name: Locked dependency security audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - run: cargo install --locked --version 0.22.2 cargo-audit
-      - run: cargo audit
+      - name: Audit the committed lockfile
+        run: cargo audit --json > "${{ runner.temp }}/dependency-audit.json"
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: verification-dependencies
+          path: ${{ runner.temp }}/dependency-audit.json
+          if-no-files-found: error
+          retention-days: 14
+  coverage:
+    name: Source coverage and external protocol contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - run: rustup update stable && rustup component add llvm-tools-preview
+      - run: cargo install --locked --version 0.9.1 cargo-llvm-cov
+      - name: Measure source lines exercised by native and external tests
+        run: bash tools/testing/coverage.sh "${{ runner.temp }}/coverage"
+      - name: Retain source coverage, HTML drilldown and external-case results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: verification-coverage
+          path: |
+            ${{ runner.temp }}/coverage/summary.json
+            ${{ runner.temp }}/coverage/coverage.json
+            ${{ runner.temp }}/coverage/coverage.lcov
+            ${{ runner.temp }}/coverage/html/
+            ${{ runner.temp }}/coverage/protocol-cases.xml
+          if-no-files-found: error
+          retention-days: 14
+  workflows:
+    name: Validate workflow syntax and expressions
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Check all workflows with pinned Actionlint 1.7.12
+        run: |
+          docker run --rm --network none \
+            --mount "type=bind,source=$PWD,target=/repo,readonly" --workdir /repo \
+            rhysd/actionlint@sha256:9d36088643581e728c969f35141f88139fec77280b2be23c1f66f8e40e1025e7 -shellcheck=
