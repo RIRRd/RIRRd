@@ -20,8 +20,6 @@ mod nrtm4_remote;
 mod nrtm4_state;
 mod nrtm_client;
 mod route_policy;
-mod rpki;
-mod rpki_service;
 mod rpsl;
 mod scope;
 mod sets;
@@ -78,10 +76,6 @@ enum Command {
         #[command(subcommand)]
         command: SourceCommand,
     },
-    Rpki {
-        #[command(subcommand)]
-        command: RpkiCommand,
-    },
     /// Apply an offline, maintainer-authenticated RPSL submission.
     Update {
         #[arg(long)]
@@ -91,20 +85,6 @@ enum Command {
         /// Treat every record in the file as a deletion.
         #[arg(long)]
         delete: bool,
-    },
-}
-
-#[derive(Subcommand)]
-enum RpkiCommand {
-    /// Classify one route using a validator-produced ROA JSON file.
-    Validate {
-        #[arg(long)]
-        roas: PathBuf,
-        #[arg(long)]
-        prefix: String,
-        /// Route origin as a decimal ASN.
-        #[arg(long)]
-        origin: u32,
     },
 }
 
@@ -607,25 +587,6 @@ fn main() -> Result<()> {
                 }
             }
         }
-        Command::Rpki {
-            command:
-                RpkiCommand::Validate {
-                    roas,
-                    prefix,
-                    origin,
-                },
-        } => {
-            let file = File::open(roas).context("opening validated ROA feed")?;
-            let table =
-                rpki::RoaTable::read(file, config.max_snapshot_bytes.min(256 * 1024 * 1024))?;
-            let state = table.validate(&prefix, origin)?;
-            println!(
-                "{}",
-                serde_json::json!({
-                    "prefix": prefix, "origin": origin, "state": state, "roas": table.len(),
-                })
-            );
-        }
         Command::Update {
             source,
             file,
@@ -743,17 +704,8 @@ async fn serve(config: Config, store: Arc<Store>) -> Result<()> {
         ),
         None => None,
     };
-    let rpki_shared = rpki_service::Shared::new(config.rpki.clone());
     let (stop, stopped) = watch::channel(false);
     let mut services = JoinSet::new();
-    if let Some(rpki_config) = config.rpki.clone() {
-        services.spawn(rpki_service::run(
-            rpki_config,
-            rpki_shared.clone(),
-            stopped.clone(),
-        ));
-    }
-
     for (source, mirror) in &config.nrtm3_sync {
         services.spawn(mirror_worker::run(
             store.clone(),
@@ -784,7 +736,6 @@ async fn serve(config: Config, store: Arc<Store>) -> Result<()> {
                 update_sources,
                 timeout,
                 whois_sources: config.http_whois_sources.clone(),
-                rpki: rpki_shared.clone(),
                 dashboard: dashboard::Metadata {
                     mode: "live",
                     version: env!("CARGO_PKG_VERSION"),

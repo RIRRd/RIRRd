@@ -17,8 +17,6 @@ import refresh
 
 class Backend(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
-        if self.path == '/v1/rpki/status':
-            self.send_response(200);self.end_headers();self.wfile.write(json.dumps({'enabled':True,'usable':True,'rtr_listen':'127.0.0.1:3323','rtr_exposure':'loopback only'}).encode());return
         self.send_response(200)
         self.end_headers()
         self.wfile.write(b'aut-num: AS64496\nsource: EXAMPLE\n')
@@ -72,13 +70,9 @@ class GatewayChecks(unittest.TestCase):
         self.assertGreaterEqual(json.loads(data)['http_queries'], 2)
         self.assertNotIn('generation', data.decode())
 
-    def test_public_rpki_status_does_not_publish_a_localhost_endpoint(self):
-        status, body = self.request('GET', '/v1/rpki/status')
-        self.assertEqual(status, 200)
-        value = json.loads(body)
-        self.assertNotIn('rtr_listen', value)
-        self.assertNotIn('127.0.0.1', body.decode())
-        self.assertIn('HTTPS', value['rtr_exposure'])
+    def test_retired_validator_endpoints_are_not_forwarded(self):
+        for method, path in [('GET', '/v1/rpki/status'), ('GET', '/v1/rpki/validate?prefix=192.0.2.0/24&origin=AS64496'), ('POST', '/v1/rpki/validate')]:
+            self.assertEqual(self.request(method, path, '{}' if method == 'POST' else None)[0], 404)
 
     def test_history_is_real_bounded_private_and_survives_restart(self):
         with tempfile.TemporaryDirectory() as root:
@@ -86,34 +80,55 @@ class GatewayChecks(unittest.TestCase):
             state=gateway.State(Path('/unused'),1,path)
             now=gateway.time.time()
             sample={'total_objects':100,'process_rss_bytes':123456,'cpu_percent_one_core':0.5}
-            state.sample(sample,200,now=now-120)
+            state.sample(sample,now=now-120)
             state.record(.01,False)
-            state.sample(sample,201,now=now-60)
-            state.sample(sample,202,now=now-59)
+            state.sample(sample,now=now-60)
+            state.sample(sample,now=now-59)
             self.assertEqual(len(state.samples()['samples']),2)
             self.assertEqual(state.samples()['samples'][1]['http_qps'],1/60)
             self.assertEqual(path.stat().st_mode & 0o777,0o600)
             restored=gateway.State(Path('/unused'),1,path)
             self.assertEqual(len(restored.samples()['samples']),2)
-            restored.sample(sample,203,now=now)
+            restored.sample(sample,now=now)
             self.assertIsNone(restored.samples()['samples'][-1]['http_qps'])
-            restored.sample(sample,204,now=now+86401)
+            restored.sample(sample,now=now+86401)
             self.assertEqual(len(restored.samples()['samples']),1)
             self.assertIsNone(restored.samples()['samples'][0]['http_p95_ms'])
             self.assertNotIn('prefix',path.read_text())
             self.assertNotIn('client',path.read_text())
 
+    def test_previous_telemetry_keeps_irr_samples_and_drops_retired_payload_counts(self):
+        with tempfile.TemporaryDirectory() as root:
+            path=Path(root)/'history.json'
+            state=gateway.State(Path('/unused'),1,path)
+            state.sample({'total_objects':100},now=gateway.time.time()-60)
+            previous=json.loads(path.read_text());previous[0]['vrps']=123
+            path.write_text(json.dumps(previous))
+            restored=gateway.State(Path('/unused'),1,path)
+            points=restored.samples()['samples']
+            self.assertEqual(len(points),1)
+            self.assertEqual(points[0]['objects'],100)
+            self.assertNotIn('vrps',points[0])
+
+    def test_retired_catalog_validator_is_rejected_before_download_or_build(self):
+        with tempfile.TemporaryDirectory() as root:
+            catalog=Path(root)/'catalog.json';catalog.write_text(json.dumps({'rpki':{}}))
+            with mock.patch.object(prepare,'download') as download:
+                with self.assertRaisesRegex(ValueError,'retired rpki'):
+                    prepare.run(SimpleNamespace(catalog=catalog))
+                download.assert_not_called()
+
     def test_history_export_is_shared_until_a_new_observation(self):
         state=gateway.State(Path('/unused'),1)
         now=gateway.time.time()
         sample={'total_objects':100,'process_rss_bytes':123456,'cpu_percent_one_core':0.5}
-        state.sample(sample,200,now=now)
+        state.sample(sample,now=now)
         first=state.history_json()
         self.assertEqual(json.loads(first),state.samples())
         self.assertIs(first,state.history_json())
         state.record(.01,False)
         self.assertIs(first,state.history_json())
-        state.sample(sample,201,now=now+60)
+        state.sample(sample,now=now+60)
         self.assertIsNot(first,state.history_json())
         self.assertEqual(len(json.loads(state.history_json())['samples']),2)
 

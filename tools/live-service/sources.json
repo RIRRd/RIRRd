@@ -303,12 +303,5 @@
       "permission": "https://irr.net/registry/",
       "transport_note": "Published anonymous FTP snapshot; transport is unauthenticated."
     }
-  ],
-  "rpki": {
-    "cache_dir": "/var/lib/rirrd-live/rpki",
-    "rtr_listen": "127.0.0.1:3323",
-    "refresh_seconds": 600,
-    "expire_seconds": 3600,
-    "validation_threads": 2
-  }
+  ]
 }

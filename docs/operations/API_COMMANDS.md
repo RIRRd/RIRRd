@@ -84,20 +84,17 @@ not a full database scan. Changes can occur between pages. Classes: `aut-num`,
 `as-set`, `route-set`, `route`, `route6`, `filter-set`, `peering-set`, `rtr-set`,
 `inet-rtr`.
 
-## Live origin validation and telemetry
+## Live source and resource telemetry
 
 ```sh
-curl --fail https://irrd.tools/v1/rpki/status
-curl --fail --get --data-urlencode 'prefix=193.0.0.0/21' \
-  --data-urlencode 'origin=AS3333' https://irrd.tools/v1/rpki/validate
 curl --fail https://irrd.tools/dashboard/live.json
+curl --fail https://irrd.tools/dashboard/history.json
 ```
 
-RPKI checks return `VALID`, `INVALID` or `NOT_FOUND` only with a usable locally
-validated dataset. An unavailable or expired dataset returns HTTP 503, not
-`NOT_FOUND`. The embedded validator uses Routinator's attributed Rust library
-and RRDP; rsync fallback and live IRR suppression remain open. RTR is bound to
-loopback; use the [router guide](/guides/routers/) for IRR filter generation.
+These endpoints expose aggregate source health, object counts and observed node
+resource usage, not query contents or client identities. Historical samples have
+explicit gaps when no measurement is available. RIRRd provides IRR queries only;
+there are no RPKI validation endpoints or RTR listener.
 
 Requests and results have bounded sizes, deadlines and shared rate limits.
 Do not treat an HTTP error, timeout or rate limit as an empty routing policy.

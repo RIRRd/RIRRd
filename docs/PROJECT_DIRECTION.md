@@ -3,14 +3,14 @@
 RIRRd is an MIT-licensed Rust implementation of an Internet Routing Registry
 daemon. The goal is the feature set of a self-hosted IRRd service with less
 operational and resource overhead. Full parity remains incomplete. The current
-source repository is private; publication is a separate owner action.
+source and public issues are at [RIRRd/RIRRd](https://github.com/RIRRd/RIRRd).
 
 ## Product priorities
 
 1. One daemon and embedded database, with explicit cache, thread, connection and
    input budgets. Keep the dashboard bundled and buildless, with local assets
    and no separate Node runtime or required external database/cache service.
-2. Full observable IRRd behavior: authoritative workflows, mirroring, queries,
+2. Observable IRRd behavior within the IRR-only scope: authoritative workflows, mirroring, queries,
    policy and recovery. Smaller budgets must not silently weaken authentication,
    durability, source isolation or validation.
 3. Straightforward BIRD/FRR integration through existing IRR tools. Document and
@@ -29,10 +29,10 @@ source repository is private; publication is a separate owner action.
 ## Keep the interfaces distinct
 
 The Rust service's dashboard is served on its existing loopback HTTP listener.
-The public website may host a labeled synthetic dashboard preview. That preview
-must not silently proxy the private API or pretend fixture data is a live IRR.
-The coming-soon domain remains a development-information site until a public
-registry deployment is separately authorized.
+The public community website and node directory are
+separate services at irrd.tools. rirrd.co.uk showcases the software and its
+measured development evidence. Public registry deployment is authorized for
+the experimental UK node, hosted by HYEHOST LLC.
 
 IRR-derived routing filters and cryptographic RPKI origin validation are
 complementary. RIRRd is not a replacement routing daemon or an RPKI validator.

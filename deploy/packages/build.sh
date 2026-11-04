@@ -79,7 +79,6 @@ install -D -m 0644 "$package_dir/rust-irrd.sysusers.conf" "$stage/usr/lib/sysuse
 install -D -m 0644 "$package_dir/rust-irrd.tmpfiles.conf" "$stage/usr/lib/tmpfiles.d/rust-irrd.conf"
 install -D -m 0644 "$package_dir/copyright" "$stage/usr/share/doc/rust-irrd/copyright"
 install -D -m 0644 "$package_dir/../../LICENSE" "$stage/usr/share/doc/rust-irrd/LICENSE"
-install -D -m 0644 "$package_dir/../../licenses/ROUTINATOR-BSD-3-CLAUSE.txt" "$stage/usr/share/doc/rust-irrd/licenses/ROUTINATOR-BSD-3-CLAUSE.txt"
 install -D -m 0644 "$package_dir/../../THIRD_PARTY_NOTICES.md" "$stage/usr/share/doc/rust-irrd/THIRD_PARTY_NOTICES.md"
 install -D -m 0644 "$work/THIRD_PARTY_LICENSES.txt" "$stage/usr/share/doc/rust-irrd/THIRD_PARTY_LICENSES.txt"
 for script in postinst prerm postrm; do
@@ -106,8 +105,8 @@ install -m 0755 "$binary" "$top/SOURCES/rust-irrd"
 install -m 0644 "$work/rust-irrd.service" "$work/irrd.toml" \
     "$package_dir/rust-irrd.sysusers.conf" "$package_dir/rust-irrd.tmpfiles.conf" \
     "$package_dir/copyright" "$package_dir/../../LICENSE" "$top/SOURCES/"
-install -m 0644 "$package_dir/../../licenses/ROUTINATOR-BSD-3-CLAUSE.txt" "$package_dir/../../THIRD_PARTY_NOTICES.md" "$top/SOURCES/"
 install -m 0644 "$work/THIRD_PARTY_LICENSES.txt" "$top/SOURCES/"
+install -m 0644 "$package_dir/../../THIRD_PARTY_NOTICES.md" "$top/SOURCES/"
 rpmbuild -bb --target "$rpm_arch" "${rpm_cross_args[@]}" \
     --define "_topdir $top" \
     --define "package_version $version" \

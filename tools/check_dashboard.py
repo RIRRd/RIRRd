@@ -115,7 +115,7 @@ def main():
             assert '!6AS64496' in browser.js('document.getElementById("command-examples").textContent')
             for width in [320,390,1440]:
                 browser.call('Emulation.setDeviceMetricsOverride',{'width':width,'height':1100,'deviceScaleFactor':1,'mobile':width<650},True)
-                for page in ['overview','query','sources','rpki','api','connect','system']:
+                for page in ['overview','query','sources','api','connect','system']:
                     browser.js('location.hash='+json.dumps(page));browser.wait('!document.getElementById("page-'+page+'").hidden')
                     assert browser.js('document.documentElement.scrollWidth<=innerWidth'),(width,page)
             assert not [event for event in browser.events if event.get('method')=='Runtime.exceptionThrown']

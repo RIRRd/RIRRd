@@ -42,8 +42,10 @@ class State:
                 if history_file.stat().st_size <= 2 * 1024 * 1024:
                     saved = json.loads(history_file.read_text())
                     now = time.time()
-                    fields = {'timestamp', 'objects', 'rss_bytes', 'cpu_percent', 'http_qps', 'http_p95_ms', 'vrps'}
+                    fields = {'timestamp', 'objects', 'rss_bytes', 'cpu_percent', 'http_qps', 'http_p95_ms'}
                     for point in saved[-1440:]:
+                        if isinstance(point, dict):
+                            point = {key: value for key, value in point.items() if key != 'vrps'}
                         if (isinstance(point, dict) and set(point) == fields and
                             all(value is None or (type(value) in (int, float) and math.isfinite(value) and value >= 0) for value in point.values()) and
                             isinstance(point['timestamp'], (int, float)) and now - 86400 <= point['timestamp'] <= now):
@@ -51,7 +53,7 @@ class State:
             except (OSError, ValueError, TypeError):
                 pass
 
-    def sample(self, snapshot, vrps=None, now=None):
+    def sample(self, snapshot, now=None):
         now = time.time() if now is None else now
         with self.lock:
             if self.history and now - self.history[-1]['timestamp'] < 60:
@@ -66,8 +68,7 @@ class State:
             self.interval_durations.clear()
             self.history.append({'timestamp': now, 'objects': snapshot.get('total_objects'),
                 'rss_bytes': snapshot.get('process_rss_bytes'), 'cpu_percent': snapshot.get('cpu_percent_one_core'),
-                'http_qps': qps, 'http_p95_ms': durations[max(0, math.ceil(len(durations) * .95) - 1)] if durations else None,
-                'vrps': vrps})
+                'http_qps': qps, 'http_p95_ms': durations[max(0, math.ceil(len(durations) * .95) - 1)] if durations else None})
             self.history_cache = None
             while self.history and self.history[0]['timestamp'] < now - 86400:
                 self.history.popleft()
@@ -203,19 +204,7 @@ class State:
                 snapshot['last_refresh'] = json.loads(refresh_state.read_text())
             with self.lock:
                 self.telemetry = snapshot
-            vrps = None
-            rpki = http.client.HTTPConnection('127.0.0.1', self.backend_port, timeout=2)
-            try:
-                rpki.request('GET', '/v1/rpki/status', headers={'Host': '127.0.0.1'})
-                response = rpki.getresponse()
-                status = json.loads(response.read(MAX_BODY))
-                if response.status == 200 and status.get('usable'):
-                    vrps = status.get('vrps')
-            except (OSError, ValueError, http.client.HTTPException):
-                pass
-            finally:
-                rpki.close()
-            self.sample(snapshot, vrps)
+            self.sample(snapshot)
         except (OSError, ValueError, KeyError, http.client.HTTPException, subprocess.SubprocessError):
             with self.lock:
                 self.telemetry = {**self.telemetry, 'service': 'unavailable',
@@ -312,8 +301,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 'http_sources': [s['source'] for s in stats.get('sources', []) if s['state'] == 'loaded' and s.get('http_access', True)],
                 'http_whois_sources': [s['source'] for s in stats.get('sources', []) if s['state'] == 'loaded'],
                 'max_connections': 128, 'database_cache_mib': 64}).encode())
-        permitted = (self.command == 'GET' and path.path in ('/v1/whois/', '/v1/rpki/status', '/v1/rpki/validate', '/v1/irr/objects')) or (
-            self.command == 'POST' and path.path in ('/graphql/', '/v1/rpki/validate') and not path.query)
+        permitted = (self.command == 'GET' and path.path in ('/v1/whois/', '/v1/irr/objects')) or (
+            self.command == 'POST' and path.path in ('/graphql/',) and not path.query)
         if not permitted:
             return self.respond(404)
         # Caddy overwrites this header from its immediate public connection.
@@ -347,18 +336,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             data = response.read(MAX_RESPONSE + 1)
             if len(data) > MAX_RESPONSE:
                 return self.respond(502, b'{"error":"Response exceeds public gateway limit"}')
-            if path.path == '/v1/rpki/status' and response.status == 200:
-                public_status = json.loads(data)
-                public_status.pop('rtr_listen', None)
-                public_status['rtr_exposure'] = 'node-local; public origin validation uses HTTPS'
-                data = json.dumps(public_status).encode()
             error = response.status >= 400
             self.respond(response.status, data, response.getheader('Content-Type', 'application/json'))
         except (OSError, http.client.HTTPException, ValueError):
             self.respond(503, b'{"error":"Registry temporarily unavailable"}')
         finally:
-            if path.path != '/v1/rpki/status':
-                state.record(time.monotonic() - started, error)
+            state.record(time.monotonic() - started, error)
             connection.close()
 
 

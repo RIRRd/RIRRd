@@ -37,7 +37,7 @@ def main():
     release=json.loads((ROOT/'release.json').read_text())
     if release['repository_public']:
         p=out/'index.html';p.write_text(p.read_text().replace('Source publication pending','Open-source project'))
-    for folder,title,source in [('getting-started','Self-host RIRRd beta',CORE/'docs/operations/GETTING_STARTED.md'),('api','API and query commands',CORE/'docs/operations/API_COMMANDS.md'),('routers','BIRD and FRR integration',CORE/'docs/operations/PUBLIC_ROUTER_QUERIES.md'),('rpki','Embedded RPKI validation',CORE/'docs/operations/INTEGRATED_RPKI.md'),('beta','Beta status and known gaps',CORE/'docs/BETA_STATUS.md')]:
+    for folder,title,source in [('getting-started','Self-host RIRRd beta',CORE/'docs/operations/GETTING_STARTED.md'),('api','API and query commands',CORE/'docs/operations/API_COMMANDS.md'),('routers','BIRD and FRR integration',CORE/'docs/operations/PUBLIC_ROUTER_QUERIES.md'),('beta','Beta status and known gaps',CORE/'docs/BETA_STATUS.md')]:
         destination=out/'docs'/folder/'index.html';destination.parent.mkdir(parents=True,exist_ok=True)
         body=markdown.markdown(source.read_text(),extensions=['fenced_code','tables'])
         body=body.replace('href="ROUTER_INTEGRATION.md"','href="/docs/routers/"')

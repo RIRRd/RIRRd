@@ -39,10 +39,9 @@ is no JavaScript package install or external font/script dependency.
 | Authoritative authentication and RPSL references | `tests/smoke.rs`, submission/storage/RPSL unit suites | CLI and loopback HTTP; mixed-batch rollback, source denial, maintainer rotation |
 | Exact, covering, recursive and inverse queries | Rust WHOIS/GraphQL tests plus `tools/testing/protocols.py` | TCP, HTTP WHOIS, GraphQL, both address families |
 | Wire behavior and isolation | Protocol contracts | Byte lengths including UTF-8, persistent pipelines, isolated source sessions, concurrent readers, malformed and oversized inputs |
-| Credential redaction and API errors | Core and protocol suites, gateway suite | WHOIS/GraphQL, invalid Host, disabled submission, unavailable RPKI, key pagination |
+| Credential redaction and API errors | Core and protocol suites, gateway suite | WHOIS/GraphQL, invalid Host, disabled submission, retired validator endpoints returning 404, key pagination |
 | Restart and recovery | Core and protocol suites | Real process restart, failed import preserving data, verified backup restore, corruption/overwrite rejection |
 | NRTMv3 and NRTMv4 | Rust unit/integration suites; pinned oracle workflow | CLI/TCP, scheduled retries, filtered replay, source serials, signed snapshot/delta verification |
-| RPKI and RTR | Rust RPKI/service suites; protocol unavailable-state contract | Independent full-scan verdicts, AS0, max lengths, bounded explanations, batch failures, RTR reset/delta/unavailable wire states |
 | Websites and standalone console | `tools/testing/web.py`; existing console/router workflow | Built project/community sites, real browser queries, mobile pages, metadata, schema workbench, private-only node submission |
 | Gateway and node review queue | `tools/live-service/test_gateway.py`, `site/community/test_service.py` | Read-only allowlists, framing, rate limits, history persistence, validation, private queue and retention |
 | Reporting integrity | `tools/testing/test_*.py` | Setup failure, subtest failure, expected failures/skips, deliberate build failure, dirty/inflated result rejection |
@@ -62,14 +61,11 @@ fixed-port races. Test databases and a fresh submission queue are private and
 removed in cleanup. Browser traffic uses a closed external proxy with loopback
 bypass; checks reject non-loopback HTTP requests. Websites query the real
 fixture daemon through the actual read-only gateway. No public registry update,
-production queue submission, live RPKI collection or production source import
+production queue submission, production source import
 is needed for these gates.
 
-Only the RPKI-disabled failure path runs in this external fixture. Validated,
-expired, AS0, covering and RTR behavior is exercised with private synthetic
-payloads inside the Rust service tests. Real global validation and bidirectional
-upstream mirroring need separate interoperability/release evidence; a disabled
-validator test is not evidence of complete validation coverage.
+Removed validator endpoints are checked for HTTP 404. Retired validator configuration
+is rejected before opening a database.
 
 ## CI cadence
 
@@ -77,7 +73,7 @@ validator test is not evidence of complete validation coverage.
 runs. It covers Linux x86-64, native Linux ARM64 and Windows core checks;
 independent browser and coverage jobs; and the locked dependency audit.
 `deployment-smoke.yml` also runs on every push/PR. `fuzz.yml` runs 15 seconds
-per RPSL, NRTMv3 and RPKI target per push/PR, with 120 seconds each in the weekly
+per RPSL and NRTMv3 target per push/PR, with 120 seconds each in the weekly
 run. Reproducing crash inputs are retained on failure, outside Git.
 
 The existing pinned upstream, real router tools, native DEB/RPM and source

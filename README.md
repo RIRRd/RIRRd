@@ -4,8 +4,7 @@
 · [Community tools](https://irrd.tools/) · [Beta status](docs/BETA_STATUS.md)
 
 A Rust Internet Routing Registry daemon with embedded storage, bounded WHOIS,
-HTTP and GraphQL queries, a self-hosted console and an optional in-process RPKI
-validator. PostgreSQL and Redis are not runtime dependencies. The project aims
+HTTP and GraphQL queries and a self-hosted console. PostgreSQL and Redis are not runtime dependencies. The project aims
 to make running an IRR service practical on smaller Linux hosts.
 
 **This is beta software. Full IRRd parity and production qualification remain
@@ -27,10 +26,9 @@ Release artifacts are published only after the release checks pass.
 
 Start with [self-hosting](docs/operations/GETTING_STARTED.md),
 [API commands](docs/operations/API_COMMANDS.md),
-[BIRD/FRR integration](docs/operations/ROUTER_INTEGRATION.md) and
-[embedded RPKI](docs/operations/INTEGRATED_RPKI.md). The validator integrates
-NLnet Labs Routinator/rpki-rs in the same process, with attribution; it is not
-an independently rewritten cryptographic validator.
+[BIRD/FRR integration](docs/operations/ROUTER_INTEGRATION.md).
+RIRRd focuses on IRR hosting; cryptographic RPKI validation belongs to a separate
+validator chosen by the operator.
 
 ## Contributions and AI disclosure
 
@@ -59,7 +57,7 @@ Start with [the small-host profile](examples/small-host/irrd.toml),
 
 Every push/PR runs the core matrix, independent protocol/recovery contracts,
 isolated website checks, source coverage and dependency audit. Reports include
-individual JSON/JUnit outcomes and retained failure logs. Short parser/RPKI fuzz
+individual JSON/JUnit outcomes and retained failure logs. Short RPSL/NRTMv3 fuzz
 runs and container smoke checks also run per push/PR. Read [the testing guide](docs/TESTING.md)
 or inspect [the recorded verification page](https://rirrd.co.uk/testing/).
 
@@ -69,7 +67,7 @@ python3 tools/testing/run.py --profile web --out /tmp/rirrd-web
 ```
 
 [Core CI](https://github.com/RIRRd/RIRRd/actions/workflows/ci.yml) ·
-[Parser/RPKI fuzzing](https://github.com/RIRRd/RIRRd/actions/workflows/fuzz.yml) ·
+[RPSL/NRTMv3 fuzzing](https://github.com/RIRRd/RIRRd/actions/workflows/fuzz.yml) ·
 [Pinned upstream oracle](https://github.com/RIRRd/RIRRd/actions/workflows/upstream-oracle.yml)
 
 ## Local evaluation
@@ -241,16 +239,6 @@ rust-irrd source sync-nrtm4 --source EXAMPLE --public-key peer.pem \
 ```
 
 Set the URL to a trusted peer. TLS uses the WebPKI root set. The client rejects redirects and fetches only signed relative references on the same HTTPS origin, after authenticating the notification. A sync processes up to 512 referenced files within the configured byte limits and a 600-second default download budget. Use `--timeout-seconds` to set that budget. Subsequent syncs use the persisted signing key. Online scheduling and NRTMv4 server publication remain open.
-
-## Offline route origin validation
-
-Supply JSON exported by a trusted RPKI validator with a top-level `roas` list. Each entry specifies `prefix`, `asn` and `maxLength`. The command returns `VALID`, `INVALID` or `NOT_FOUND`.
-
-```sh
-rust-irrd rpki validate --roas validated-roas.json --prefix 192.0.2.0/24 --origin 64496
-```
-
-This command evaluates validated payloads locally. It does not currently annotate or suppress live registry results.
 
 ## Authoritative submissions
 

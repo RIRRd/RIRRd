@@ -36,10 +36,3 @@ features = ["derive"]
 
 [dependencies.serde_json]
 version = "=1.0.154"
-
-[[bin]]
-name = "rpki"
-path = "fuzz_targets/rpki.rs"
-test = false
-doc = false
-bench = false

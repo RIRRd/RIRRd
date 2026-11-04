@@ -178,11 +178,11 @@ class Websites(unittest.TestCase):
         self.browser.wait('document.getElementById("live-objects").textContent==="14"')
         self.assertTrue(self.browser.js('!document.getElementById("page-overview").hidden'))
 
-    def test_disabled_rpki_cannot_be_submitted(self):
+    def test_retired_validator_view_falls_back_to_registry(self):
         self.console('/dashboard/#rpki')
-        self.browser.wait('document.getElementById("rpki-detail").textContent.includes("not enabled")')
-        self.assertTrue(self.browser.js('document.getElementById("rpki-submit").disabled && document.getElementById("rpki-batch-submit").disabled'))
-        self.assertNotIn('NOT_FOUND',self.browser.js('document.getElementById("rpki-verdict").textContent'))
+        self.browser.wait('!document.getElementById("page-overview").hidden')
+        self.assertFalse(self.browser.js('Boolean(document.querySelector("[data-page=rpki]"))'))
+        self.assertFalse(self.browser.js('Boolean(document.getElementById("page-rpki"))'))
 
     def test_graphql_workbench_introspection(self):
         self.console('/dashboard/#api')
@@ -197,7 +197,7 @@ class Websites(unittest.TestCase):
         self.browser.wait('document.getElementById("browse-results").children.length===2')
         for width in [320,390,1440]:
             self.browser.call('Emulation.setDeviceMetricsOverride',{'width':width,'height':1100,'deviceScaleFactor':1,'mobile':width<650},True)
-            for page in ['overview','query','sources','rpki','api','connect','system']:
+            for page in ['overview','query','sources','api','connect','system']:
                 self.browser.js('location.hash='+json.dumps(page));self.browser.wait('!document.getElementById("page-'+page+'").hidden')
                 self.assertTrue(self.browser.js('document.documentElement.scrollWidth<=innerWidth'),(width,page))
 

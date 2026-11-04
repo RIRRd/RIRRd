@@ -58,7 +58,7 @@ python3 - <<'PYDEPLOY'
 from pathlib import Path
 import datetime,hashlib,json,os,shutil
 stamp=datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
-project={'index.html','project.css','project.js','brand/rirrd.svg','charts.js','comparison.json','license.txt','testing/index.html','testing/report.json','testing.js',*[f'docs/{p}/index.html' for p in ['getting-started','api','routers','rpki','beta']]}
+project={'index.html','project.css','project.js','brand/rirrd.svg','charts.js','comparison.json','license.txt','testing/index.html','testing/report.json','testing.js',*[f'docs/{p}/index.html' for p in ['getting-started','api','routers','beta']]}
 community={'index.html','community.css','community.js','nodes.json','license.txt','brand/irrd-tools.svg',*[f'dashboard/{p}' for p in ['index.html','style.css','app.js','charts.js','mark.svg']],*[f'{p}/index.html' for p in ['guides/api','guides/routers','self-host','project']],'comparison.json'}
 prepared=[]
 for product,source,allowed in [('rirrd-project',Path('site/project/public'),project),('irrd-tools',Path('site/community/public'),community)]:

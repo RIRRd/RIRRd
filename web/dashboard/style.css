@@ -122,7 +122,6 @@ nav a[aria-current] { box-shadow:inset 3px 0 var(--accent); }
 .chart-bar.reference { fill:#7d8993; }
 .chart-readout,.chart-empty { color:#596774; font-size:12px; }
 .chart-slider { padding:0; height:18px; border:0; accent-color:#2855d6; }
-#rpki-covering { overflow:auto; }
 @media(max-width:720px){.chart-label{font-size:13px}.metrics article{padding:14px}.notice{font-size:12px}.brand{gap:10px}}
 .chart{overflow-x:auto}.chart svg{min-width:0}.chart-slider{min-width:0}.metrics strong{font-size:28px}
 

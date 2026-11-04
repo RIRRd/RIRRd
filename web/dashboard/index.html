@@ -18,7 +18,6 @@
     <a href="#overview" data-page="overview">Overview</a>
     <a href="#query" data-page="query">Registry explorer</a>
     <a href="#sources" data-page="sources">Sources</a>
-    <a href="#rpki" data-page="rpki">RPKI validation</a>
     <a href="#api" data-page="api">API &amp; commands</a>
     <a href="#connect" data-page="connect">BIRD &amp; FRR</a>
     <a href="#system" data-page="system">Resource usage</a>
@@ -30,14 +29,13 @@
   <main id="main" tabindex="-1">
     <p id="mode-notice" class="notice" role="status">Connecting to this instance…</p>
     <section id="page-overview" class="page">
-      <div class="page-heading"><div><p class="eyebrow">REGISTRY STATUS</p><h1 id="node-name">Routing registry</h1><p id="node-description" class="muted">IRR queries and optional RPKI validation in one application.</p></div><a class="button" href="#query">Open query tool →</a></div>
+      <div class="page-heading"><div><p class="eyebrow">REGISTRY STATUS</p><h1 id="node-name">Routing registry</h1><p id="node-description" class="muted">A lightweight Internet Routing Registry.</p></div><a class="button" href="#query">Open query tool →</a></div>
       <div class="metrics" id="overview-metrics">
         <article><span>RPSL objects</span><strong id="live-objects">—</strong><small>Committed registry records</small></article>
         <article><span>IPv4 routes</span><strong id="count-route">—</strong><small>route objects</small></article>
         <article><span>IPv6 routes</span><strong id="count-route6">—</strong><small>route6 objects</small></article>
         <article><span>AS-sets</span><strong id="count-as-set">—</strong><small>Browse and expand membership</small></article>
         <article><span>Sources</span><strong id="source-count">—</strong><small id="source-summary">Checking freshness</small></article>
-        <article><span>Validated RPKI payloads</span><strong id="vrp-count">—</strong><small id="rpki-summary">Checking validator</small></article>
       </div>
       <div class="two-column">
         <article class="panel"><div class="panel-heading"><h2>What would you like to find?</h2><a href="#query">All query options →</a></div><div class="task-list">
@@ -50,7 +48,7 @@
       </div>
       <article class="panel"><div class="panel-heading"><h2>Objects by source</h2><span class="fine">Current committed counts</span></div><div id="source-chart" class="chart"></div></article>
       <section id="overview-history" class="history-section" hidden><div class="panel-heading"><h2>Node activity</h2><label>Time range<select id="history-range"><option value="3600">Last hour</option><option value="21600">Last 6 hours</option><option value="86400" selected>Last 24 hours</option></select></label></div><p id="history-note" class="fine"></p><div class="two-column"><article class="panel"><h2>HTTP query rate</h2><div id="query-chart" class="chart"></div></article><article class="panel"><h2>HTTP response time · recent p95</h2><div id="latency-chart" class="chart"></div></article></div></section>
-      <p class="fine">IRR policy records and RPKI origin validation answer different questions. Availability here does not establish full IRRd parity or production qualification.</p>
+      <p class="fine">Explore registered routing policy and generate IRR filters. Availability here does not establish full IRRd parity or production qualification.</p>
     </section>
 
     <section id="page-query" class="page" hidden>
@@ -73,16 +71,6 @@
       <article class="panel"><div class="panel-heading"><h2>Browse object keys</h2><span class="muted">30 keys per page</span></div><form id="browse-form" class="form-grid"><div><label for="browse-source">Source</label><select id="browse-source"></select></div><div><label for="browse-class">Class</label><select id="browse-class"><option>as-set</option><option>aut-num</option><option>route</option><option>route6</option><option>route-set</option><option>filter-set</option><option>peering-set</option><option>rtr-set</option><option>inet-rtr</option></select></div><button id="browse-submit" type="submit">Browse →</button></form><p id="browse-status" class="fine" role="status"></p><div id="browse-results" class="key-list"></div><button id="browse-next" class="secondary" type="button" disabled>Next page →</button></article>
     </section>
 
-    <section id="page-rpki" class="page" hidden>
-      <div class="page-heading"><div><p class="eyebrow">ROUTE ORIGIN VALIDATION</p><h1>RPKI validation</h1><p class="muted">Check whether a prefix and origin ASN are authorised by the validated dataset.</p></div><span id="rpki-state" class="badge">Checking</span></div>
-      <article class="panel"><div id="rpki-metrics" class="mini-metrics"></div><p id="rpki-detail" class="muted"></p><p id="router-access" class="fine"></p><p class="fine">ROV index allocation estimates the lookup table and its owned capacity. It is part of process memory, not the entire RPKI validator cache or resident memory.</p></article>
-      <article class="panel"><div class="panel-heading"><h2>Validated payloads by trust anchor</h2></div><div id="anchor-chart" class="chart"></div><p class="fine">Origin payloads contributed after filtering and deduplication; rejected repositories can reduce coverage.</p></article>
-      <article class="panel"><form id="rpki-form" class="form-grid"><div><label for="rpki-prefix">Prefix</label><input id="rpki-prefix" value="193.0.0.0/21" maxlength="64" required></div><div><label for="rpki-origin">Origin ASN</label><input id="rpki-origin" value="AS3333" maxlength="12" required></div><button id="rpki-submit" type="submit" disabled>Validate origin →</button></form><p id="rpki-verdict" role="status" class="verdict">Enter a route to check.</p><div id="rpki-explanation" class="muted"></div><div id="rpki-covering"></div><details><summary>Raw API response</summary><pre id="rpki-result" class="result compact" tabindex="0">No origin check submitted.</pre></details></article>
-      <article class="panel" id="rpki-history" hidden><h2>Validated origin payloads over time</h2><div id="vrp-chart" class="chart"></div><p class="fine">Real validation snapshots. An unavailable validator creates a gap, rather than a zero-payload claim.</p></article>
-      <article class="panel"><h2>Check several routes</h2><p class="muted">One prefix and ASN per line, up to 100 routes. The whole batch uses one validation dataset.</p><form id="rpki-batch-form"><label for="rpki-batch-input">Prefix and origin pairs</label><textarea id="rpki-batch-input" rows="4" spellcheck="false">193.0.0.0/21 AS3333
-2001:67c:2e8::/48 AS3333</textarea><button type="submit" id="rpki-batch-submit" disabled>Validate batch</button></form><p id="rpki-batch-status" role="status"></p><div id="rpki-batch-results" class="table-scroll"></div></article>
-    </section>
-
     <section id="page-api" class="page" hidden>
       <div class="page-heading"><div><p class="eyebrow">REFERENCE & EXAMPLES</p><h1>API &amp; commands</h1><p class="muted">Working examples for IPv4, IPv6, AS-set membership and automation.</p></div></div>
       <div id="command-examples" class="command-grid"></div>
@@ -92,13 +80,12 @@
     <section id="page-connect" class="page" hidden>
       <div class="page-heading"><div><p class="eyebrow">ROUTER INTEGRATION</p><h1>Connect BIRD or FRR</h1><p class="muted">Generate IRR prefix filters, review them and validate your router configuration.</p></div></div>
       <article class="panel"><p id="connect-endpoint"></p><div id="router-commands" class="command-grid"></div><p class="fine">bgpq4 generates configuration text; it does not change a router. Review source choice and compare the candidate with your current policy before applying it.</p><a id="router-guide" href="https://github.com/RIRRd/RIRRd/blob/codex/linux-parity/docs/operations/ROUTER_INTEGRATION.md">Detailed router workflow →</a></article>
-      <article class="panel"><h2>IRR filters and RPKI have different roles</h2><p>IRR filters derive permitted routes from registry objects. RPKI validates route origins against signed resource data. Configure both policies deliberately; changing a WHOIS hostname alone does not enable RPKI on a router.</p><p id="router-rpki-note"></p></article>
     </section>
 
     <section id="page-system" class="page" hidden>
       <div class="page-heading"><div><p class="eyebrow">APPLICATION RESOURCES</p><h1>Resource usage</h1><p class="muted">Measurements for this RIRRd process, including its embedded validator when enabled.</p></div></div>
       <div id="resource-metrics" class="metrics"></div>
-      <article class="panel"><h2>Understand the numbers</h2><p>Process RSS is resident application memory. Cgroup memory also includes cache charged to the service. Linux filesystem cache is reclaimable and does not mean the VM is out of RAM. RPKI validation and snapshot preparation create periodic CPU and I/O peaks.</p><p>The smaller IRR-only profile can omit RPKI validation. Full-source imports and cold RPKI collection need more headroom than idle queries. Resource measurements here are observations, not minimum host specifications.</p><div id="resource-history" class="two-column" hidden><article class="panel"><h2>Process resident memory</h2><div id="memory-chart" class="chart"></div></article><article class="panel"><h2>CPU · one core = 100%</h2><div id="cpu-chart" class="chart"></div></article></div><p id="resource-note" class="fine"></p></article>
+      <article class="panel"><h2>Understand the numbers</h2><p>Process RSS is resident application memory. Cgroup memory also includes cache charged to the service. Linux filesystem cache is reclaimable and does not mean the VM is out of RAM. Snapshot preparation and imports create periodic CPU and I/O peaks.</p><p>Choose a source subset and a bounded database cache for smaller hosts. Full-source imports need more headroom than idle queries. Resource measurements here are observations, not minimum host specifications.</p><div id="resource-history" class="two-column" hidden><article class="panel"><h2>Process resident memory</h2><div id="memory-chart" class="chart"></div></article><article class="panel"><h2>CPU · one core = 100%</h2><div id="cpu-chart" class="chart"></div></article></div><p id="resource-note" class="fine"></p></article>
     </section>
   </main>
   <footer>RIRRd · Experimental software · <a href="https://github.com/RIRRd/RIRRd">Project repository</a><span>Built with AI assistance · Contributions welcome with review and tests</span></footer>

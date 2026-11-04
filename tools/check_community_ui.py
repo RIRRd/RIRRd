@@ -56,16 +56,9 @@ with tempfile.TemporaryDirectory(prefix='rirrd-community-browser-') as profile:
         browser.js('location.hash="api"');browser.wait('!document.getElementById("page-api").hidden')
         assert browser.js('document.getElementById("command-examples").children.length')==6
         assert '!6AS3333' in browser.js('document.getElementById("command-examples").textContent')
-        browser.js('location.hash="rpki"');browser.wait('!document.getElementById("rpki-submit").disabled')
-        browser.js('document.getElementById("rpki-form").requestSubmit()');browser.wait('document.getElementById("rpki-verdict").textContent==="VALID"')
-        assert not browser.js('document.body.innerText.includes("127.0.0.1")')
-        assert browser.js('document.getElementById("rpki-covering").textContent.includes("AS3333")')
-        browser.js('document.getElementById("rpki-batch-form").requestSubmit()')
-        browser.wait('document.getElementById("rpki-batch-results").querySelectorAll("tr").length===3')
-        assert browser.js('document.getElementById("rpki-batch-results").textContent.includes("VALID")')
         for width in [320,390,1440]:
             browser.call('Emulation.setDeviceMetricsOverride',{'width':width,'height':1100,'deviceScaleFactor':1,'mobile':width<650},True)
-            for page in ['overview','query','sources','rpki','api','connect','system']:
+            for page in ['overview','query','sources','api','connect','system']:
                 browser.js('location.hash='+json.dumps(page));browser.wait('!document.getElementById("page-'+page+'").hidden')
                 assert browser.js('document.documentElement.scrollWidth<=innerWidth'),(width,page)
                 if page=='overview':assert browser.js('Array.from(document.querySelectorAll("#overview-metrics strong")).every(e=>{const r=document.createRange();r.selectNodeContents(e);return r.getClientRects().length===1 && e.scrollWidth<=e.clientWidth})'),('counter wrapping',width)

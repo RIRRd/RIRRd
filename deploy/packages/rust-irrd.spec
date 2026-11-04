@@ -11,7 +11,6 @@ Source3:        rust-irrd.sysusers.conf
 Source4:        rust-irrd.tmpfiles.conf
 Source5:        copyright
 Source6:        LICENSE
-Source7:        ROUTINATOR-BSD-3-CLAUSE.txt
 Source8:        THIRD_PARTY_NOTICES.md
 Source9:        THIRD_PARTY_LICENSES.txt
 Requires:       systemd
@@ -37,7 +36,6 @@ install -D -m 0644 "%{SOURCE4}" "%{buildroot}/usr/lib/tmpfiles.d/rust-irrd.conf"
 install -D -m 0644 "%{SOURCE5}" "%{buildroot}%{_datadir}/licenses/%{name}/copyright"
 install -D -m 0644 "%{SOURCE6}" "%{buildroot}%{_datadir}/licenses/%{name}/LICENSE"
 
-install -D -m 0644 "%{SOURCE7}" "%{buildroot}%{_datadir}/licenses/%{name}/licenses/ROUTINATOR-BSD-3-CLAUSE.txt"
 install -D -m 0644 "%{SOURCE8}" "%{buildroot}%{_datadir}/licenses/%{name}/THIRD_PARTY_NOTICES.md"
 install -D -m 0644 "%{SOURCE9}" "%{buildroot}%{_datadir}/licenses/%{name}/THIRD_PARTY_LICENSES.txt"
 
@@ -72,7 +70,6 @@ fi
 %license %{_datadir}/licenses/%{name}/copyright
 %license %{_datadir}/licenses/%{name}/LICENSE
 
-%license %{_datadir}/licenses/%{name}/licenses/ROUTINATOR-BSD-3-CLAUSE.txt
 %license %{_datadir}/licenses/%{name}/THIRD_PARTY_NOTICES.md
 
 %license %{_datadir}/licenses/%{name}/THIRD_PARTY_LICENSES.txt

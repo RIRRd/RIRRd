@@ -230,14 +230,13 @@ name = "RIRRd UK 01"
 location = "United Kingdom"
 sponsor = "HYEHOST LLC"
 '''
-    if catalog.get('rpki'):
-        text += '\n[rpki]\n' + ''.join(key + ' = ' + json.dumps(value) + '\n'
-                                                   for key, value in catalog['rpki'].items())
     return text
 
 
 def run(args):
     catalog = json.loads(args.catalog.read_text())
+    if 'rpki' in catalog:
+        raise ValueError('Remove the retired rpki catalog section; RIRRd is IRR-only')
     names = [row['source'] for row in catalog['sources']]
     if len(names) != len(set(names)) or not all(re.fullmatch('[A-Z][A-Z0-9_-]{0,31}', name) for name in names):
         raise ValueError('Catalog source names must be safe, unique canonical identifiers')
@@ -261,8 +260,8 @@ def run(args):
         old_inputs = json.loads((args.output / 'build-inputs.json').read_text())
         if old_inputs != {**inputs, 'catalog_sha256': sha256(previous_catalog_path)}:
             raise ValueError('Original catalog or runtime fingerprint mismatch')
-        if previous_catalog['classes'] != catalog['classes'] or previous_catalog.get('rpki') != catalog.get('rpki'):
-            raise ValueError('Catalog extension cannot change retained classes or RPKI profile')
+        if previous_catalog['classes'] != catalog['classes']:
+            raise ValueError('Catalog extension cannot change retained classes')
         old_completed = json.loads((args.output / 'progress.json').read_text())['completed']
         old_entries = {row['source']: row for row in previous_catalog['sources']}
         new_entries = {row['source']: row for row in catalog['sources']}

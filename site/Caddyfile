@@ -13,7 +13,7 @@
 	}
 }
 (query_gateway) {
-	@queries path /graphql/ /v1/whois/ /v1/rpki/status /v1/rpki/validate /v1/irr/objects /dashboard/meta.json /dashboard/live.json /dashboard/history.json
+	@queries path /graphql/ /v1/whois/ /v1/irr/objects /dashboard/meta.json /dashboard/live.json /dashboard/history.json
 	handle @queries {
 		reverse_proxy 127.0.0.1:9281 {
 			header_up Host 127.0.0.1

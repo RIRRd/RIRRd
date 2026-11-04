@@ -4,7 +4,7 @@
   const menu=document.querySelector('.menu-toggle'),navigation=document.getElementById('site-navigation');
   if(menu&&navigation){const mobile=matchMedia('(max-width:720px)');const close=()=>{navigation.hidden=mobile.matches;menu.setAttribute('aria-expanded','false');};menu.addEventListener('click',()=>{navigation.hidden=!navigation.hidden;menu.setAttribute('aria-expanded',String(!navigation.hidden));});mobile.addEventListener('change',close);navigation.addEventListener('click',()=>{if(mobile.matches)close();});document.addEventListener('keydown',event=>{if(event.key==='Escape'&&mobile.matches&&!navigation.hidden){close();menu.focus();}});close();}
   if(!el('node-form'))return;
-  const legacy = {query:'/dashboard/#query',rpki:'/dashboard/#rpki',sources:'/dashboard/#sources',performance:'/project/',compatibility:'/self-host/',network:'/#nodes',community:'/#nodes'};
+  const legacy = {query:'/dashboard/#query',sources:'/dashboard/#sources',performance:'/project/',compatibility:'/self-host/',network:'/#nodes',community:'/#nodes'};
   if (legacy[location.hash.slice(1)]) location.replace(legacy[location.hash.slice(1)]);
   let directory = [], loading = false;
   const number = value => Number(value || 0).toLocaleString();

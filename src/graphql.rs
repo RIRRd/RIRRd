@@ -1042,7 +1042,6 @@ pub struct HttpServiceConfig {
     pub update_sources: Option<HashSet<String>>,
     pub timeout: Duration,
     pub dashboard: crate::dashboard::Metadata,
-    pub rpki: Arc<crate::rpki_service::Shared>,
     pub whois_sources: Option<Vec<String>>,
 }
 
@@ -1058,7 +1057,6 @@ pub async fn serve(
         update_sources,
         timeout,
         dashboard,
-        rpki,
         whois_sources,
     } = config;
     let schema = make_schema(store.clone(), sources.clone(), authoritative_sources)?;
@@ -1088,7 +1086,6 @@ pub async fn serve(
         ));
     }
     app = app.merge(crate::dashboard::router(dashboard, store.clone())?);
-    app = app.merge(crate::rpki_service::router(rpki));
     app = app.merge(crate::irr_api::router(store.clone(), sources, timeout));
     app = app.layer(middleware::from_fn_with_state(
         listener.local_addr()?.ip(),
@@ -1122,7 +1119,6 @@ mod tests {
             update_sources,
             timeout: Duration::from_secs(2),
             whois_sources: None,
-            rpki: crate::rpki_service::Shared::new(None),
             dashboard: crate::dashboard::Metadata {
                 mode: "live",
                 version: env!("CARGO_PKG_VERSION"),

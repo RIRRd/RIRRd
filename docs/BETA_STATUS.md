@@ -1,9 +1,9 @@
 # RIRRd 0.1.0-beta.2
 
 RIRRd is beta software. It aims to reduce the resources needed for a self-hosted
-Internet Routing Registry, with an optional in-process RPKI validator. This beta
+Internet Routing Registry. This beta
 is useful for isolated evaluation and read-only public tests; it is not a claim
-of full IRRd or Routinator parity, security qualification or production readiness.
+of full IRRd parity, security qualification or production readiness.
 
 ## Available for evaluation
 
@@ -12,9 +12,7 @@ of full IRRd or Routinator parity, security qualification or production readines
 - NRTMv3 mirroring with atomic updates and source serial tracking.
 - Snapshot import/export, verified backup/restore and bounded authoritative updates.
 - Independent self-hosted console and separate community website at irrd.tools.
-- Optional embedded Routinator/rpki-rs validation, private local RTR, HTTPS origin
-  checks, bounded batch validation and covering-ROA explanations.
-- Source, activity, resource and trust-anchor graphs from observed data.
+- Source, activity, resource graphs from observed data.
 
 The public UK node currently mirrors nineteen routing sources. Seven follow
 NRTMv3 every sixty seconds; twelve use daily snapshots. Contacts, accounts and
@@ -26,19 +24,22 @@ A source being loaded does not establish that its last check succeeded.
 Authentication/account workflows, remaining class/reference behavior, OpenPGP,
 mail submission and notification workflows need further parity work. NRTMv4
 publication, scheduling, rollover, retention, recovery and bidirectional upstream
-interoperability are incomplete. Broader WHOIS/GraphQL behavior, live RPKI/scope/
-route-preference suppression and journal transitions remain open.
-
-The embedded validator uses NLnet Labs Routinator 0.15.3 and rpki-rs, with their
-licenses and attribution. It is not a newly written cryptographic validator.
-Current collection is RRDP-only; rsync-only repositories are excluded. Rejected
-publication points are disclosed. ASPA/BGPsec policy, multi-router interoperability,
-long outages and sustained small-host qualification require more evidence.
+interoperability are incomplete. Broader WHOIS/GraphQL behavior, live scope/route-preference suppression and journal transitions remain open.
 
 The recorded 100,000-object benchmark uses historical tested commits, IRR-only
-profiles and synthetic data. It does not size combined global RPKI validation or
-establish current release capacity. Linux x86-64 and ARM64 checks must be assessed
+profiles and synthetic data. It does not establish current release capacity. Linux x86-64 and ARM64 checks must be assessed
 at the commits and environments documented in the source repository.
+
+## Deliberate IRR-only scope
+
+RIRRd does not bundle an RPKI validator, ROA-file checker, origin-validation API
+or RTR service. These experimental components were removed in beta.2 to focus
+on lightweight IRR hosting. Operators can use a separate established validator.
+Old `[rpki]`, `authoritative_roa_file` and `authoritative_roa_exempt_sources`
+settings are rejected; remove them before upgrading. Stored IRR objects and
+mirror serials are preserved. The compatibility field `rpkiRovFilter` is always
+false. Mirrored `rpki-ov-state` attributes are stripped from public object output
+and rejected in authoritative updates rather than trusted as validation results.
 
 ## Report a problem
 

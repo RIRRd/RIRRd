@@ -1,7 +1,7 @@
 # Your instance. Your infrastructure.
 
 RIRRd is the independently self-hostable Rust IRR daemon with a bundled console
-and an optional embedded RPKI validator. The community website is a separate
+for lightweight IRR hosting. The community website is a separate
 service for finding public nodes, crediting hosting partners and reviewing node
 submissions. Your own instance does not depend on that service or a community
 account. Listing your node is optional.
@@ -36,21 +36,6 @@ The public website is deployed independently from `site/community/`.
 
 Choose a limited source set for a smaller host. Keep development listeners
 private, use the configured source order and monitor import peaks separately
-from idle queries. RPKI is optional: omitting `[rpki]` keeps the IRR-only profile.
-Full-source imports and a cold global validator need more resources than a warm
-query service. No whole-VM minimum is promised by the synthetic benchmark.
-
-The validator uses the attributed NLnet Labs Routinator Rust library in the same
-process. It does not require a separate Routinator daemon. RRDP-only collection,
-rejected publication points and incomplete policy integration are reported in
-the running console. Full IRRd and validator production qualification remain open.
-
-[RIRRd source repository](https://github.com/RIRRd/RIRRd)
-
-## Contribute
-
-The project is built with AI assistance. AI tools and agents are welcome to
-contribute; changes still require human review, reproducible tests and clear
-license/provenance. Code can be used, modified and redistributed under the MIT
-license, with dependency licenses retained. Imported registry data keeps its own
-provenance.
+from idle queries. Use a bounded cache and only the sources you need. RIRRd does not bundle an
+RPKI validator or RTR service. See [the small-host guide](https://github.com/RIRRd/RIRRd/blob/main/docs/operations/SMALL_HOSTS.md)
+and [beta status](https://rirrd.co.uk/docs/beta/) for limits and open work.

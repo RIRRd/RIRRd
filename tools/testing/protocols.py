@@ -106,12 +106,10 @@ class Protocols(unittest.TestCase):
         self.assertIsNone(second['next_cursor'])
         self.assertEqual(set(first['keys']+second['keys']), {'AS64496:AS-DOCS','AS64496:AS-CHILD'})
 
-    def test_disabled_rpki_reports_unavailable_instead_of_not_found(self):
-        status, raw, _ = self.registry.request('/v1/rpki/status')
-        self.assertEqual(status, 200); data = json.loads(raw)
-        self.assertFalse(data['enabled']); self.assertFalse(data['usable'])
-        self.assertIsNone(data['rov_index_bytes'])
-        self.assertEqual(self.registry.request('/v1/rpki/validate?prefix=192.0.2.0/24&origin=AS64496')[0], 503)
+    def test_retired_validator_endpoints_are_absent(self):
+        for path in ['/v1/rpki/status', '/v1/rpki/validate?prefix=192.0.2.0/24&origin=AS64496']:
+            self.assertEqual(self.registry.request(path)[0], 404)
+        self.assertEqual(self.registry.request('/v1/rpki/validate', 'POST', '{}', {'Content-Type':'application/json'})[0], 404)
 
     def test_disabled_submission_has_no_write_endpoint(self):
         self.assertEqual(self.registry.request('/v1/submit/', 'POST', '{}', {'Content-Type':'application/json'})[0], 404)

@@ -1,5 +1,11 @@
 ## Continuous verification — 4 November 2026
 
+> Current scope (4 November 2026): RIRRd is an IRR-only daemon. Embedded RPKI,
+> RTR, origin-validation APIs and ROA-file admission were removed for beta.2.
+> Earlier RPKI sections are historical evidence, not current features or backlog.
+> See [beta status](docs/BETA_STATUS.md) for upgrade behavior and current gaps.
+
+
 The [testing checkpoint](docs/compatibility/CONTINUOUS_TESTING_CHECKPOINT.md)
 records 276 passing core/browser cases, one explicit helper skip, a 93.11%
 source-line measurement with a 92% floor, 56 new protocol/recovery contracts,

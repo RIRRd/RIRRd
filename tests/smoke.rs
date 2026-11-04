@@ -131,7 +131,6 @@ fn authoritative_cli_checks_maintainers_and_rolls_back_a_mixed_batch() {
         r#"database = "test.redb"
 sources = ["TEST", "MIRROR"]
 authoritative_sources = ["TEST"]
-authoritative_roa_file = "roas.json"
 listen = "127.0.0.1:0"
 http_listen = "127.0.0.1:0"
 http_authoritative_updates = true
@@ -142,11 +141,6 @@ max_snapshot_bytes = 4096
 [authoritative_scope]
 prefixes = ["198.51.100.128/25"]
 "#,
-    )
-    .unwrap();
-    fs::write(
-        workspace.path().join("roas.json"),
-        r#"{"roas":[{"prefix":"192.0.2.0/24","asn":"AS64496","maxLength":25}]}"#,
     )
     .unwrap();
     let snapshot = workspace.path().join("snapshot.rpsl");
@@ -381,15 +375,6 @@ prefixes = ["198.51.100.128/25"]
             "POST",
             "/v1/submit/",
             route_payload(&["new test secret"], route)
-        )["summary"]["failed"],
-        1
-    );
-    let too_specific = route.replace("/25", "/26");
-    assert_eq!(
-        request(
-            "POST",
-            "/v1/submit/",
-            route_payload(&["root test secret", "new test secret"], &too_specific)
         )["summary"]["failed"],
         1
     );
@@ -1191,45 +1176,29 @@ base_serial = 41
 }
 
 #[test]
-fn rpki_cli_reports_route_origin_validation_states() {
+fn removed_validator_cli_and_configuration_fail_without_creating_a_database() {
     let workspace = tempfile::tempdir().unwrap();
     let config = workspace.path().join("irrd.toml");
-    fs::write(
-        &config,
-        r#"database = "test.redb"
+    let base = r#"database = "test.redb"
 sources = ["TEST"]
 listen = "127.0.0.1:0"
 max_connections = 4
 io_timeout_seconds = 2
 max_snapshot_bytes = 4096
-"#,
-    )
-    .unwrap();
-    let roas = workspace.path().join("roas.json");
-    fs::write(
-        &roas,
-        r#"{"roas":[{"prefix":"192.0.2.0/24","asn":"AS64496","maxLength":25}]}"#,
-    )
-    .unwrap();
-    for (prefix, origin, state) in [
-        ("192.0.2.0/25", "64496", "VALID"),
-        ("192.0.2.0/26", "64496", "INVALID"),
-        ("192.0.2.0/24", "64497", "INVALID"),
-        ("198.51.100.0/24", "64496", "NOT_FOUND"),
+"#;
+    fs::write(&config, base).unwrap();
+    let output = cli(&config).args(["rpki", "validate"]).output().unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("unrecognized subcommand"));
+    for removed in [
+        r#"authoritative_roa_file = "roas.json""#,
+        r#"authoritative_roa_exempt_sources = ["TEST"]"#,
+        "[rpki]\ncache_dir = \"/tmp/unused\"\n",
     ] {
-        let output = successful(
-            cli(&config)
-                .args([
-                    "rpki", "validate", "--prefix", prefix, "--origin", origin, "--roas",
-                ])
-                .arg(&roas)
-                .output()
-                .unwrap(),
-        );
-        assert_eq!(
-            serde_json::from_slice::<Value>(&output).unwrap()["state"],
-            state
-        );
+        fs::write(&config, format!("{base}{removed}")).unwrap();
+        let output = cli(&config).args(["config", "check"]).output().unwrap();
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("unknown field"));
     }
     assert!(!workspace.path().join("test.redb").exists());
 }
@@ -2216,11 +2185,12 @@ fn raw_http_whois_scope_is_independent_of_structured_queries_and_browse() {
     let second = json_get("/v1/irr/objects?source=TEST&class=as-set&limit=1&after=AS-A");
     assert_eq!(second["keys"], serde_json::json!(["AS-B"]));
     assert!(second["next_cursor"].is_null());
-    let status = json_get("/v1/rpki/status");
-    assert_eq!(status["enabled"], false);
-    assert!(
-        get("/v1/rpki/validate?prefix=192.0.2.0%2F24&origin=AS64496").starts_with("HTTP/1.1 503 ")
-    );
+    for path in [
+        "/v1/rpki/status",
+        "/v1/rpki/validate?prefix=192.0.2.0%2F24&origin=AS64496",
+    ] {
+        assert!(get(path).starts_with("HTTP/1.1 404 "));
+    }
     let counts = json_get("/ui/mirrors.json");
     assert_eq!(counts["class_counts"]["TEST"]["as-set"], 2);
     let body =

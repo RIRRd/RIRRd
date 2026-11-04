@@ -50,21 +50,11 @@ versioned candidate name, inspect additions and removals and validate against
 your installed FRR version before changing an active policy. These commands
 produce text; they do not modify the router.
 
-## IRR and RPKI are complementary
+## Keep router policy under your control
 
-IRR describes registered routing policy. RPKI validates whether a resource
-holder authorises a route origin. Enabling one does not automatically enable the
-other on a router. The public node provides HTTPS origin checks:
-
-```sh
-curl --fail --get --data-urlencode 'prefix=193.0.0.0/21' \
-  --data-urlencode 'origin=AS3333' https://irrd.tools/v1/rpki/validate
-```
-
-The node's direct RTR listener is private. For your own router cache, run the
-self-hosted RIRRd software with its optional validator and configure a local or
-authorised management connection. [Self-hosted software](/self-host/) is separate
-from the community directory; no community account is required.
+IRR filters use registered routing policy. Cryptographic origin validation is a
+separate job for a dedicated RPKI validator; RIRRd does not provide RTR or ROA
+validation. No community account is needed to run your own IRR instance.
 
 Check [source health](/dashboard/#sources) before depending on a public node.
 The service is experimental, with seven incremental feeds and twelve scheduled
