@@ -99,7 +99,7 @@ rustup component add llvm-tools-preview
 bash tools/testing/coverage.sh /tmp/rirrd-coverage
 ```
 
-The script follows the tool's [external-test recipe](https://github.com/taiki-e/cargo-llvm-cov/tree/v0.9.1#external-tests).
+The script follows the tool's [external-test recipe](https://github.com/taiki-e/cargo-llvm-cov/tree/v0.9.1#get-coverage-of-external-tests).
 It instruments Rust builds, runs the locked Rust suite and the independent
 protocol corpus, then exports JSON, LCOV and an HTML source drilldown. Only
 project `src/*.rs` files enter the summary; dependency, external fixture and

@@ -1,1 +1,396 @@
-{"schema_version":1,"status":"not_recorded","source_commit":null,"reports":[],"coverage":null,"ci_status":"not_verified","ci_url":"https://github.com/Peravix/Rirrd/actions/workflows/ci.yml"}
+{
+  "schema_version": 1,
+  "recorded_at": "2026-11-04T09:20:19.392286+00:00",
+  "source_commit": "3627e1073bf690e268eb198ef337dbf67c9399b8",
+  "status": "passed",
+  "reports": [
+    {
+      "schema_version": 1,
+      "profile": "core",
+      "source_commit": "3627e1073bf690e268eb198ef337dbf67c9399b8",
+      "source_dirty": false,
+      "started_at": "2026-11-04T09:17:09.384621+00:00",
+      "platform": "Linux x86_64",
+      "origin": "local",
+      "run_url": null,
+      "groups": [
+        {
+          "id": "format",
+          "status": "passed",
+          "seconds": 0.769,
+          "exit_code": 0,
+          "tests": 0,
+          "passed": 0,
+          "failed": 0,
+          "skipped": 0
+        },
+        {
+          "id": "clippy",
+          "status": "passed",
+          "seconds": 1.171,
+          "exit_code": 0,
+          "tests": 0,
+          "passed": 0,
+          "failed": 0,
+          "skipped": 0
+        },
+        {
+          "id": "rust",
+          "status": "passed",
+          "seconds": 32.823,
+          "exit_code": 0,
+          "tests": 173,
+          "passed": 172,
+          "failed": 0,
+          "skipped": 1
+        },
+        {
+          "id": "protocols",
+          "status": "passed",
+          "seconds": 8.72,
+          "exit_code": 0,
+          "tests": 56,
+          "passed": 56,
+          "failed": 0,
+          "skipped": 0
+        },
+        {
+          "id": "report-exporter",
+          "status": "passed",
+          "seconds": 0.873,
+          "exit_code": 0,
+          "tests": 15,
+          "passed": 15,
+          "failed": 0,
+          "skipped": 0
+        },
+        {
+          "id": "gateway",
+          "status": "passed",
+          "seconds": 6.622,
+          "exit_code": 0,
+          "tests": 15,
+          "passed": 15,
+          "failed": 0,
+          "skipped": 0
+        },
+        {
+          "id": "community",
+          "status": "passed",
+          "seconds": 12.284,
+          "exit_code": 0,
+          "tests": 4,
+          "passed": 4,
+          "failed": 0,
+          "skipped": 0
+        }
+      ],
+      "completed_at": "2026-11-04T09:18:12.702937+00:00",
+      "status": "passed",
+      "counts": {
+        "tests": 263,
+        "passed": 262,
+        "failed": 0,
+        "skipped": 1
+      }
+    },
+    {
+      "schema_version": 1,
+      "profile": "web",
+      "source_commit": "3627e1073bf690e268eb198ef337dbf67c9399b8",
+      "source_dirty": false,
+      "started_at": "2026-11-04T09:17:09.422845+00:00",
+      "platform": "Linux x86_64",
+      "origin": "local",
+      "run_url": null,
+      "groups": [
+        {
+          "id": "web-build",
+          "status": "passed",
+          "seconds": 1.522,
+          "exit_code": 0,
+          "tests": 0,
+          "passed": 0,
+          "failed": 0,
+          "skipped": 0
+        },
+        {
+          "id": "web",
+          "status": "passed",
+          "seconds": 11.238,
+          "exit_code": 0,
+          "tests": 14,
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0
+        }
+      ],
+      "completed_at": "2026-11-04T09:17:22.245548+00:00",
+      "status": "passed",
+      "counts": {
+        "tests": 14,
+        "passed": 14,
+        "failed": 0,
+        "skipped": 0
+      }
+    }
+  ],
+  "coverage": {
+    "schema_version": 1,
+    "source_commit": "3627e1073bf690e268eb198ef337dbf67c9399b8",
+    "source_dirty": false,
+    "origin": "local",
+    "recorded_at": "2026-11-04T09:18:23.442250+00:00",
+    "scope": "LLVM line coverage of src/*.rs from Rust tests and isolated protocol contracts; test modules inside src are included; dependency, test harness and fixture files are excluded",
+    "lines": {
+      "covered": 13032,
+      "count": 13996,
+      "percent": 93.11231780508717
+    },
+    "minimum": 92.0,
+    "files": [
+      {
+        "file": "src/authoritative.rs",
+        "lines": {
+          "count": 146,
+          "covered": 142,
+          "percent": 97.26027397260275
+        }
+      },
+      {
+        "file": "src/authoritative_validation.rs",
+        "lines": {
+          "count": 873,
+          "covered": 858,
+          "percent": 98.28178694158075
+        }
+      },
+      {
+        "file": "src/backup.rs",
+        "lines": {
+          "count": 265,
+          "covered": 260,
+          "percent": 98.11320754716981
+        }
+      },
+      {
+        "file": "src/config.rs",
+        "lines": {
+          "count": 166,
+          "covered": 151,
+          "percent": 90.96385542168676
+        }
+      },
+      {
+        "file": "src/dashboard.rs",
+        "lines": {
+          "count": 81,
+          "covered": 48,
+          "percent": 59.259259259259245
+        }
+      },
+      {
+        "file": "src/graphql.rs",
+        "lines": {
+          "count": 1435,
+          "covered": 1400,
+          "percent": 97.5609756097561
+        }
+      },
+      {
+        "file": "src/import.rs",
+        "lines": {
+          "count": 102,
+          "covered": 99,
+          "percent": 97.05882352941178
+        }
+      },
+      {
+        "file": "src/irr_api.rs",
+        "lines": {
+          "count": 62,
+          "covered": 56,
+          "percent": 90.32258064516128
+        }
+      },
+      {
+        "file": "src/legacy_md5.rs",
+        "lines": {
+          "count": 127,
+          "covered": 126,
+          "percent": 99.21259842519686
+        }
+      },
+      {
+        "file": "src/main.rs",
+        "lines": {
+          "count": 429,
+          "covered": 351,
+          "percent": 81.81818181818183
+        }
+      },
+      {
+        "file": "src/maintainer_auth.rs",
+        "lines": {
+          "count": 340,
+          "covered": 325,
+          "percent": 95.58823529411765
+        }
+      },
+      {
+        "file": "src/mirror_worker.rs",
+        "lines": {
+          "count": 412,
+          "covered": 405,
+          "percent": 98.30097087378641
+        }
+      },
+      {
+        "file": "src/nrtm3.rs",
+        "lines": {
+          "count": 416,
+          "covered": 398,
+          "percent": 95.67307692307693
+        }
+      },
+      {
+        "file": "src/nrtm4.rs",
+        "lines": {
+          "count": 322,
+          "covered": 320,
+          "percent": 99.37888198757764
+        }
+      },
+      {
+        "file": "src/nrtm4_apply.rs",
+        "lines": {
+          "count": 220,
+          "covered": 215,
+          "percent": 97.72727272727273
+        }
+      },
+      {
+        "file": "src/nrtm4_local.rs",
+        "lines": {
+          "count": 144,
+          "covered": 126,
+          "percent": 87.5
+        }
+      },
+      {
+        "file": "src/nrtm4_records.rs",
+        "lines": {
+          "count": 306,
+          "covered": 302,
+          "percent": 98.69281045751636
+        }
+      },
+      {
+        "file": "src/nrtm4_remote.rs",
+        "lines": {
+          "count": 250,
+          "covered": 192,
+          "percent": 76.8
+        }
+      },
+      {
+        "file": "src/nrtm4_state.rs",
+        "lines": {
+          "count": 338,
+          "covered": 334,
+          "percent": 98.81656804733728
+        }
+      },
+      {
+        "file": "src/nrtm_client.rs",
+        "lines": {
+          "count": 238,
+          "covered": 231,
+          "percent": 97.05882352941178
+        }
+      },
+      {
+        "file": "src/route_policy.rs",
+        "lines": {
+          "count": 37,
+          "covered": 24,
+          "percent": 64.86486486486487
+        }
+      },
+      {
+        "file": "src/rpki.rs",
+        "lines": {
+          "count": 517,
+          "covered": 506,
+          "percent": 97.87234042553192
+        }
+      },
+      {
+        "file": "src/rpki_service.rs",
+        "lines": {
+          "count": 626,
+          "covered": 408,
+          "percent": 65.17571884984025
+        }
+      },
+      {
+        "file": "src/rpsl.rs",
+        "lines": {
+          "count": 458,
+          "covered": 452,
+          "percent": 98.68995633187772
+        }
+      },
+      {
+        "file": "src/rpsl/lookup.rs",
+        "lines": {
+          "count": 299,
+          "covered": 289,
+          "percent": 96.65551839464884
+        }
+      },
+      {
+        "file": "src/scope.rs",
+        "lines": {
+          "count": 193,
+          "covered": 192,
+          "percent": 99.48186528497409
+        }
+      },
+      {
+        "file": "src/sets.rs",
+        "lines": {
+          "count": 293,
+          "covered": 280,
+          "percent": 95.56313993174061
+        }
+      },
+      {
+        "file": "src/storage.rs",
+        "lines": {
+          "count": 3488,
+          "covered": 3364,
+          "percent": 96.44495412844036
+        }
+      },
+      {
+        "file": "src/submission_http.rs",
+        "lines": {
+          "count": 393,
+          "covered": 344,
+          "percent": 87.53180661577609
+        }
+      },
+      {
+        "file": "src/whois.rs",
+        "lines": {
+          "count": 1020,
+          "covered": 834,
+          "percent": 81.76470588235294
+        }
+      }
+    ]
+  },
+  "ci_status": "not_verified",
+  "ci_url": "https://github.com/Peravix/Rirrd/actions/workflows/ci.yml"
+}

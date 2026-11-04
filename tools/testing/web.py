@@ -134,6 +134,15 @@ class Websites(unittest.TestCase):
             self.browser.call('Emulation.setDeviceMetricsOverride',{'width':width,'height':1100,'deviceScaleFactor':1,'mobile':width<650},True)
             self.assertTrue(self.browser.js('document.documentElement.scrollWidth<=innerWidth'),width)
         self.assertTrue(self.browser.js('Array.from(document.links).some(a=>a.getAttribute("href")==="report.json")'))
+        snapshot=json.loads((self.work/'project/testing/report.json').read_text())
+        if snapshot.get('reports'):
+            groups=[g for r in snapshot['reports']for g in r['groups']]
+            self.assertEqual(int(self.browser.js('document.getElementById("verification-passed").textContent').replace(',','')),sum(g['passed']for g in groups))
+            self.assertEqual(self.browser.js('document.querySelectorAll("#verification-groups tr").length'),len(groups))
+            self.assertEqual(self.browser.js('document.querySelectorAll("#verification-chart svg").length'),1)
+            if snapshot.get('coverage'):
+                self.assertAlmostEqual(self.browser.js('document.getElementById("coverage-meter").value'),snapshot['coverage']['lines']['percent'],places=4)
+
 
     def test_snapshot_does_not_claim_unverified_github_success(self):
         self.open('project','/testing/','document.getElementById("verification-status") && !document.getElementById("verification-status").textContent.includes("Loading")')

@@ -34,6 +34,14 @@ These additions do not establish live filtering, full mirroring/authentication
 parity or release qualification. Public GitHub release/CI evidence remains
 pending authenticated repository access.
 
+## Continuous build verification
+
+The [continuous-testing checkpoint](CONTINUOUS_TESTING_CHECKPOINT.md) records
+native protocol/recovery contracts, isolated browsers, report integrity, Linux
+and ARM evidence, measured source coverage and per-push/PR automation. The public
+testing page reports the tested revision and execution origin. These gates
+exercise the implemented beta; they do not close the remaining parity rows.
+
 ## Compact ROV index and search efficiency
 
 The [resource/search checkpoint](../benchmarks/COMPACT_ROV_AND_SEARCH.md) records

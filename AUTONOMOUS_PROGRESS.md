@@ -1,3 +1,14 @@
+## Continuous verification — 4 November 2026
+
+The [testing checkpoint](docs/compatibility/CONTINUOUS_TESTING_CHECKPOINT.md)
+records 276 passing core/browser cases, one explicit helper skip, a 93.11%
+source-line measurement with a 92% floor, 56 new protocol/recovery contracts,
+report-integrity checks, per-build JSON/JUnit artifacts and isolated website
+fixtures. The pinned 45+45 WHOIS / 71 authorization corpus, ARM contracts,
+container smoke, fresh dependency audit and three-target fuzz smoke also pass.
+The project testing page shows exact local provenance; private Actions execution
+cannot be confirmed without GitHub API authentication. Full parity remains open.
+
 ## Compact ROV indexes and direct search — 3 November 2026
 
 The [checkpoint](docs/benchmarks/COMPACT_ROV_AND_SEARCH.md) records 54.17% less
