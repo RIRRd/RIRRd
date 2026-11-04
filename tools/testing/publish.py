@@ -11,6 +11,9 @@ from harness import ROOT
 
 def checked(report):
     if report.get('source_dirty') is not False:raise ValueError('Do not publish verification from a dirty checkout')
+    if report.get('origin') not in ['local','github_actions']:raise ValueError('Unknown execution origin')
+    if report['origin']=='github_actions' and not re.fullmatch(r'https://github\.com/[^/]+/[^/]+/actions/runs/[0-9]+',report.get('run_url')or''):
+        raise ValueError('GitHub-origin results need an actual workflow run URL')
     commit=report.get('source_commit','')
     if not re.fullmatch(r'[0-9a-f]{40}',commit):raise ValueError('Missing exact source revision')
     subprocess.run(['git','merge-base','--is-ancestor',commit,'HEAD'],cwd=ROOT,check=True,capture_output=True)

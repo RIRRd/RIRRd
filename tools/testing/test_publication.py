@@ -9,10 +9,14 @@ from publish import checked
 class PublicationChecks(unittest.TestCase):
     def report(self):
         commit=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip()
-        return {'source_dirty':False,'source_commit':commit,'status':'passed','groups':[{'id':'contracts','status':'passed','exit_code':0,'tests':2,'passed':2,'failed':0,'skipped':0}],'counts':{'tests':2,'passed':2,'failed':0,'skipped':0}}
+        return {'origin':'local','source_dirty':False,'source_commit':commit,'status':'passed','groups':[{'id':'contracts','status':'passed','exit_code':0,'tests':2,'passed':2,'failed':0,'skipped':0}],'counts':{'tests':2,'passed':2,'failed':0,'skipped':0}}
 
     def test_failing_gate_cannot_claim_pass(self):
         report=self.report();report['groups'][0]['exit_code']=1
+        with self.assertRaises(ValueError):checked(report)
+
+    def test_github_origin_requires_a_real_workflow_url(self):
+        report=self.report();report['origin']='github_actions';report['run_url']='https://example.net/not-evidence'
         with self.assertRaises(ValueError):checked(report)
 
     def test_dirty_result_cannot_be_published(self):

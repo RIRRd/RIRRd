@@ -137,7 +137,9 @@ class Websites(unittest.TestCase):
 
     def test_snapshot_does_not_claim_unverified_github_success(self):
         self.open('project','/testing/','document.getElementById("verification-status") && !document.getElementById("verification-status").textContent.includes("Loading")')
-        self.assertIn('has not been verified',self.browser.js('document.getElementById("ci-verification-note").textContent'))
+        snapshot=json.loads((self.work/'project/testing/report.json').read_text())
+        expected='exported from the linked GitHub Actions' if snapshot.get('ci_status')=='recorded_run' else 'has not been verified'
+        self.assertIn(expected,self.browser.js('document.getElementById("ci-verification-note").textContent'))
 
     def test_community_counters_come_from_the_isolated_database(self):
         self.open('community',condition='document.getElementById("network-objects")?.textContent==="14"')
