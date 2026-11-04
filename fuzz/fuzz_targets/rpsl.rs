@@ -13,7 +13,9 @@ fuzz_target!(|bytes: &[u8]| {
     if input.len() > rpsl::MAX_OBJECT_BYTES {
         assert!(rpsl::parse(input).is_err());
     }
-    let Ok(object) = rpsl::parse_snapshot(input) else {
+    let parsed = rpsl::parse_snapshot(input);
+    assert_eq!(rpsl::parse_snapshot_owned(input.to_owned()), parsed);
+    let Ok(object) = parsed else {
         return;
     };
     assert_eq!(object.text, input);

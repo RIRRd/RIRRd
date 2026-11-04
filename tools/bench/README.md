@@ -47,6 +47,31 @@ Record the previous binary's source revision separately; its SHA is automatic.
 
 ## Scope
 
+### Constrained before/after checks
+
+`run_small_host.py` compares a saved binary with the candidate at 64 MiB and
+16 MiB cache budgets. Supply the actual `--before-commit` and
+`--before-cache-mib 64` to compare the previous and candidate 64 MiB profiles
+with identical one-worker/four-blocking-worker settings. Without this option,
+the historical baseline retains its original default runtime/cache settings.
+The 16 MiB candidate is a separate resource-budget comparison.
+
+Use unused loopback ports, particularly on a host with a live registry:
+
+```sh
+python3 tools/bench/run_small_host.py --state /private/optimization-run \
+  --fixture /private/synthetic-100k.rpsl \
+  --before /private/previous-rust-irrd --before-commit ACTUAL_BASELINE_COMMIT \
+  --before-cache-mib 64 --candidate "$PWD/target/release/rust-irrd" \
+  --commit "$(git rev-parse HEAD)" --whois-port 9843 --http-port 9880 --seconds 10
+```
+
+The controller refuses occupied ports, verifies every imported database through
+the normal CLI and checks the query process identity. Every measured query is
+validated by `registry_load`. The per-file cold-start checker reads the recorded
+ports, including results from the original default-port runs. Do not run builds,
+fuzzers or upstream benchmark services during the timed comparison.
+
 - Three fresh imports, alternating order; warm host file cache is possible.
   CLI wall time, CPU and peak CLI RSS are recorded. PostgreSQL schema migration
   and service startup are outside import timing. Both imports must accept exactly

@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     collections::{HashMap, HashSet},
     fmt::Write as _,
     net::{IpAddr, Ipv4Addr},
@@ -421,8 +422,8 @@ async fn handle(
                 persistent = true;
                 continue;
             }
-            Some(SessionCommand::ListSources) => frame_irrd(selected.join(",")),
-            Some(SessionCommand::ListExclusions) => frame_irrd(excluded.join(",")),
+            Some(SessionCommand::ListSources) => frame_irrd(&selected.join(",")),
+            Some(SessionCommand::ListExclusions) => frame_irrd(&excluded.join(",")),
             Some(SessionCommand::Exclude(requested)) => match parse_exclusions(requested) {
                 Some(names) => {
                     excluded = names.into();
@@ -659,7 +660,7 @@ fn execute(
     client: &Client,
 ) -> Result<String> {
     match query {
-        Query::Version => Ok(frame_irrd(format!(
+        Query::Version => Ok(frame_irrd(&format!(
             "rust-irrd {}",
             env!("CARGO_PKG_VERSION")
         ))),
@@ -667,8 +668,7 @@ fn execute(
             let Some(object) = store.first(&class, &key, sources)? else {
                 return Ok("D\n".to_owned());
             };
-            let body = object.public_text().lines().collect::<Vec<_>>().join("\n");
-            Ok(frame_irrd(body))
+            Ok(frame_irrd(&normalized_public_text(&object)))
         }
         Query::Origin { class, origin } => {
             let prefixes = store.origin_prefixes(class, &origin, sources, 4097)?;
@@ -678,7 +678,7 @@ fn execute(
             if prefixes.len() > 4096 {
                 return Ok("F Too many results\n".to_owned());
             }
-            Ok(frame_irrd(prefixes.join(" ")))
+            Ok(frame_irrd(&prefixes.join(" ")))
         }
         Query::Route {
             class,
@@ -701,7 +701,7 @@ fn execute(
                         .context("invalid route key in storage")
                 })
                 .collect::<Result<Vec<_>>>()?;
-            Ok(frame_irrd(origins.join(" ")))
+            Ok(frame_irrd(&origins.join(" ")))
         }
         Query::Inverse { field, value, irrd } => {
             let matches = store.inverse(&field, &value, sources, MAX_RESULTS + 1)?;
@@ -781,7 +781,7 @@ fn nrtm3_sources(store: &Store, client: &Client) -> Result<String> {
     Ok(response)
 }
 
-fn frame_irrd(body: String) -> String {
+fn frame_irrd(body: &str) -> String {
     if body.is_empty() {
         return "C\n".to_owned();
     }
@@ -792,8 +792,33 @@ fn frame_values(values: Vec<String>) -> String {
     if values.is_empty() {
         "D\n".to_owned()
     } else {
-        frame_irrd(values.join(" "))
+        frame_irrd(&values.join(" "))
     }
+}
+
+/// Match `str::lines().join("\n")` without a line vector or copying ordinary
+/// LF-terminated public records. Keep the shared credential filter on every path.
+fn normalized_public_text(object: &crate::rpsl::Object) -> Cow<'_, str> {
+    let text = object.public_text();
+    if !text.contains('\r') {
+        return match text {
+            Cow::Borrowed(text) => Cow::Borrowed(text.strip_suffix('\n').unwrap_or(text)),
+            Cow::Owned(mut text) => {
+                if text.ends_with('\n') {
+                    text.pop();
+                }
+                Cow::Owned(text)
+            }
+        };
+    }
+    let mut normalized = String::with_capacity(text.len());
+    for (index, line) in text.lines().enumerate() {
+        if index != 0 {
+            normalized.push('\n');
+        }
+        normalized.push_str(line);
+    }
+    Cow::Owned(normalized)
 }
 
 fn frame_objects(objects: &[crate::rpsl::Object], irrd: bool) -> String {
@@ -806,15 +831,26 @@ fn frame_objects(objects: &[crate::rpsl::Object], irrd: bool) -> String {
         }
         _ => {}
     }
-    let body = objects
-        .iter()
-        .map(|object| object.public_text().lines().collect::<Vec<_>>().join("\n"))
-        .collect::<Vec<_>>()
-        .join("\n\n");
+    if let [object] = objects {
+        let body = normalized_public_text(object);
+        return if irrd {
+            frame_irrd(&body)
+        } else {
+            format!("{body}\n\n\n")
+        };
+    }
+    let mut body = String::new();
+    for (index, object) in objects.iter().enumerate() {
+        if index != 0 {
+            body.push_str("\n\n");
+        }
+        body.push_str(&normalized_public_text(object));
+    }
     if irrd {
-        frame_irrd(body)
+        frame_irrd(&body)
     } else {
-        format!("{body}\n\n\n")
+        body.push_str("\n\n\n");
+        body
     }
 }
 
@@ -1023,6 +1059,42 @@ mod tests {
     use super::*;
 
     #[test]
+    fn public_record_framing_preserves_line_endings_bytes_and_redaction() {
+        for ending in ["", "\n", "\n\n", "\r\n", "\r\n\r\n"] {
+            let object = crate::rpsl::Object {
+                source: "TEST".into(),
+                class: "mntner".into(),
+                key: "TEST-MNT".into(),
+                text: format!(
+                    "mntner: TEST-MNT\nremarks: café\rinside\nauth: BCRYPT-PW private\n+ private fold\nremarks: public\nsource: TEST{ending}"
+                ),
+            };
+            let body = "mntner: TEST-MNT\nremarks: café\rinside\nremarks: public\nsource: TEST";
+            // `lines()` removes one final newline, retaining additional blank lines.
+            let suffix = if matches!(ending, "\n\n" | "\r\n\r\n") {
+                "\n"
+            } else {
+                ""
+            };
+            let expected = format!("{body}{suffix}");
+            assert_eq!(normalized_public_text(&object), expected);
+            for objects in [vec![object.clone()], vec![object.clone(), object]] {
+                let expected = vec![expected.as_str(); objects.len()].join("\n\n");
+                assert_eq!(
+                    frame_objects(&objects, true),
+                    format!("A{}\n{expected}\nC\n", expected.len() + 1)
+                );
+                assert_eq!(frame_objects(&objects, false), format!("{expected}\n\n\n"));
+            }
+        }
+        let object = crate::rpsl::parse("aut-num: AS64496\nsource: TEST\n").unwrap();
+        assert_eq!(
+            frame_objects(&[object], true),
+            "A30\naut-num: AS64496\nsource: TEST\nC\n"
+        );
+    }
+
+    #[test]
     fn peer_limit_counts_mapped_addresses_and_releases_after_lookup() {
         let slots = Arc::new(Semaphore::new(2));
         let mut peers = HashMap::new();
@@ -1068,7 +1140,7 @@ mod tests {
                 origin: "AS65536".into(),
             })
         );
-        assert_eq!(frame_irrd("é".into()), "A3\né\nC\n");
+        assert_eq!(frame_irrd("é"), "A3\né\nC\n");
         for invalid in [
             b"-i origin\r\n".as_slice(),
             b"as1",

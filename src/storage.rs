@@ -1384,6 +1384,15 @@ impl Store {
         }
         let read = self.db.begin_read()?;
         let origins = read.open_multimap_table(ORIGINS)?;
+        // Values are already unique and ordered inside one source. A common
+        // single-source query needs neither a hash set nor duplicate strings.
+        if let [source] = sources {
+            return origins
+                .get((source.as_str(), class, origin))?
+                .take(limit)
+                .map(|prefix| Ok(prefix?.value().to_ascii_lowercase()))
+                .collect();
+        }
         let mut seen = HashSet::new();
         let mut prefixes = Vec::new();
         for source in sources {
@@ -1391,7 +1400,7 @@ impl Store {
             // results can repeat. Inspecting `limit` entries suffices to fill the cap.
             for prefix in origins.get((source.as_str(), class, origin))?.take(limit) {
                 let prefix = prefix?;
-                if seen.insert(prefix.value().to_owned()) {
+                if !seen.contains(prefix.value()) && seen.insert(prefix.value().to_owned()) {
                     prefixes.push(prefix.value().to_ascii_lowercase());
                     if prefixes.len() == limit {
                         return Ok(prefixes);

@@ -123,14 +123,19 @@ struct Identity {
 
 /// Parse one UTF-8 object, keeping the input text and canonicalising its key.
 pub fn parse(text: &str) -> Result<Object, String> {
-    parse_with_limit(text, MAX_OBJECT_BYTES)
+    parse_with_limit(Cow::Borrowed(text), MAX_OBJECT_BYTES)
 }
 
 pub fn parse_snapshot(text: &str) -> Result<Object, String> {
-    parse_with_limit(text, MAX_SNAPSHOT_OBJECT_BYTES)
+    parse_with_limit(Cow::Borrowed(text), MAX_SNAPSHOT_OBJECT_BYTES)
 }
 
-fn parse_with_limit(text: &str, max_bytes: usize) -> Result<Object, String> {
+/// Validate an imported record without copying its already-owned text buffer.
+pub fn parse_snapshot_owned(text: String) -> Result<Object, String> {
+    parse_with_limit(Cow::Owned(text), MAX_SNAPSHOT_OBJECT_BYTES)
+}
+
+fn parse_with_limit(text: Cow<'_, str>, max_bytes: usize) -> Result<Object, String> {
     if text.len() > max_bytes {
         return Err(format!("RPSL object exceeds {max_bytes} bytes"));
     }
@@ -178,8 +183,12 @@ fn parse_with_limit(text: &str, max_bytes: usize) -> Result<Object, String> {
         {
             return Err(format!("line {line_no}: invalid attribute name"));
         }
-        let name = name.to_ascii_lowercase();
-        if matches!(name.as_str(), "password" | "override" | "api-key") {
+        let name = if name.bytes().any(|byte| byte.is_ascii_uppercase()) {
+            Cow::Owned(name.to_ascii_lowercase())
+        } else {
+            Cow::Borrowed(name)
+        };
+        if matches!(name.as_ref(), "password" | "override" | "api-key") {
             return Err(format!(
                 "line {line_no}: submission credentials in snapshot object"
             ));
@@ -189,7 +198,7 @@ fn parse_with_limit(text: &str, max_bytes: usize) -> Result<Object, String> {
             if !supported_class(&name) {
                 return Err(format!("line {line_no}: unsupported object class"));
             }
-            identity.class = name.clone();
+            identity.class = name.to_string();
             has_attribute = true;
         }
 
@@ -198,7 +207,7 @@ fn parse_with_limit(text: &str, max_bytes: usize) -> Result<Object, String> {
             "person" | "role" => "nic-hdl",
             _ => "",
         };
-        current = match name.as_str() {
+        current = match name.as_ref() {
             "source" => Some(&mut identity.source),
             _ if name == identity.class => Some(&mut identity.first),
             _ if name == secondary_name => Some(&mut identity.second),
@@ -247,7 +256,7 @@ fn parse_with_limit(text: &str, max_bytes: usize) -> Result<Object, String> {
         source: source.to_ascii_uppercase(),
         class: identity.class,
         key,
-        text: text.to_owned(),
+        text: text.into_owned(),
     })
 }
 
@@ -480,6 +489,25 @@ mod tests {
                 parse(&format!("{text}\nsource: TEST")).unwrap().key,
                 expected
             );
+        }
+    }
+
+    #[test]
+    fn owned_snapshot_records_use_the_same_identity_and_credential_checks() {
+        for text in [
+            "Aut-Num: AS064496\r\nAS-Name: TEST\r\nSource: test\r\n",
+            "person: Café Operator\nnic-hdl: EX1-TEST\nsource: TEST\n",
+            "route6: 2001:db8::/32\norigin: AS64496\nsource: TEST\n",
+            "mntner: TEST-MNT\nauth: BCRYPT-PW DummyValue\nsource: TEST\n",
+            "aut-num: AS64496\nsource: TEST\nPassword: secret\n",
+            "aut-num: AS64496\nsource: TEST\nOVERRIDE: secret\n",
+            "aut-num: AS64496\nsource: TEST\nAPI-KEY: secret\n",
+            "aut-num: AS64496\nsource: TEST\nSOURCE: OTHER\n",
+            "aut-num: AS64496\nsource: TEST\n\naut-num: AS64497\nsource: TEST\n",
+            "aut-num: AS64496\nsource: TEST\0\n",
+            "aut-num: AS64496\n",
+        ] {
+            assert_eq!(parse_snapshot_owned(text.to_owned()), parse_snapshot(text));
         }
     }
 

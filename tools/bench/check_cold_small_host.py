@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Recheck the 16 MiB profile after evicting only its own clean redb file pages."""
-import argparse,ctypes,hashlib,json,mmap,os,subprocess,time
+import argparse,ctypes,hashlib,json,mmap,os,socket,subprocess,time
 from pathlib import Path
 from urllib.request import Request,urlopen
 
@@ -11,6 +11,9 @@ parser.add_argument('--output',type=Path,required=True)
 args=parser.parse_args()
 assert not args.output.exists() and os.geteuid()==0
 base=json.loads((args.run/'results.json').read_text());assert base.get('completed_at')
+ports=base.get('ports',{'whois':9243,'http':9280})
+for port in ports.values():
+ with socket.socket() as probe:probe.bind(('127.0.0.1',port))
 assert hashlib.sha256(args.binary.read_bytes()).hexdigest()==base['binary_sha256']['small16']
 file=args.run/'small16-3.redb';cfg=args.run/'small16-3.toml'
 assert file.is_file() and cfg.is_file()
@@ -40,13 +43,13 @@ try:
  deadline=time.monotonic()+30
  while True:
   try:
-   req=Request('http://127.0.0.1:9280/graphql/',data=json.dumps({'query':'{ databaseStatus { source } }'}).encode(),headers={'Content-Type':'application/json'})
+   req=Request(f'http://127.0.0.1:{ports["http"]}/graphql/',data=json.dumps({'query':'{ databaseStatus { source } }'}).encode(),headers={'Content-Type':'application/json'})
    with urlopen(req,timeout=2) as response:assert json.load(response)['data']['databaseStatus']==[{'source':'PERF'}]
    break
   except (OSError,AssertionError,KeyError):
    assert time.monotonic()<deadline;time.sleep(.05)
  load=Path(__file__).resolve().parents[2]/'target/release/examples/registry_load'
- for mode,port in [('whois',9243),('graphql',9280)]:
+ for mode,port in [('whois',ports['whois']),('graphql',ports['http'])]:
   output=subprocess.check_output(['taskset','-c','16-19',str(load),'--endpoint',f'127.0.0.1:{port}','--mode',mode,'--seconds','10','--warmup','3','--clients','4','--keys','50000'],text=True,timeout=45)
   profile=json.loads(output);assert not profile['errors'];result['profiles'].append(profile)
  values=dict(line.split('=',1) for line in subprocess.check_output(['systemctl','show',unit,'-p','MemoryCurrent','-p','MemoryPeak','-p','MainPID','-p','ControlGroup'],text=True).splitlines())

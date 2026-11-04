@@ -32,3 +32,10 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 ureq = { version = "=3.5.1", default-features = false, features = ["rustls"] }
 zeroize = "1"
+
+[profile.release]
+# Keep the portable target CPU and unwind semantics; optimize the linked program
+# and omit debug sections from the executable shipped to small hosts.
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"

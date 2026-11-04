@@ -7,7 +7,7 @@ use std::{
 use anyhow::{Context, Result, anyhow, ensure};
 use flate2::bufread::MultiGzDecoder;
 
-use crate::rpsl::{MAX_SNAPSHOT_OBJECT_BYTES as MAX_OBJECT_BYTES, Object, parse_snapshot};
+use crate::rpsl::{MAX_SNAPSHOT_OBJECT_BYTES as MAX_OBJECT_BYTES, Object, parse_snapshot_owned};
 
 pub fn snapshot(path: &Path, max_bytes: u64) -> Result<impl Iterator<Item = Result<Object>>> {
     let file = File::open(path).context("opening snapshot")?;
@@ -32,7 +32,7 @@ pub fn snapshot(path: &Path, max_bytes: u64) -> Result<impl Iterator<Item = Resu
                 return Ok(None);
             };
             record += 1;
-            let object = parse_snapshot(&raw)
+            let object = parse_snapshot_owned(raw)
                 .map_err(|error| anyhow!("snapshot record {record}: {error}"))?;
             Ok(Some(object))
         });
@@ -43,8 +43,9 @@ pub fn snapshot(path: &Path, max_bytes: u64) -> Result<impl Iterator<Item = Resu
 
 fn next_record(input: &mut impl BufRead, remaining: &mut u64) -> Result<Option<String>> {
     let mut raw = String::new();
+    let mut line = String::new();
     loop {
-        let mut line = String::new();
+        line.clear();
         let read = input
             .take((MAX_OBJECT_BYTES + 1) as u64)
             .read_line(&mut line)
