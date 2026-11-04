@@ -16,7 +16,10 @@ of full IRRd parity, security qualification or production readiness.
 
 The public UK node currently mirrors nineteen routing sources. Seven follow
 NRTMv3 every sixty seconds; twelve use daily snapshots. Contacts, accounts and
-other non-routing classes are deliberately outside this public mirror profile.
+other non-routing classes are outside this production mirror profile.
+The development full-data profile retains all 19 standard IRRd classes and has
+its own storage and source cursors. See live telemetry for the serving profile;
+an offline import is not evidence that a generation is already serving.
 A source being loaded does not establish that its last check succeeded.
 
 ## Known gaps

@@ -163,7 +163,7 @@
         for (const [label,value]of [['HTTP attempts',count(latest.native_http.requests)],['Successful HTTP replies',count(latest.native_http.successful)],['Rate limited · 429',count(latest.native_http.rate_limited)],['Admission busy',count(latest.native_http.admission_busy)],['Server errors',count(latest.native_http.server_errors)],['Successful p95',latest.native_http.successful_p95_ms==null?'No samples':latest.native_http.successful_p95_ms.toFixed(3)+' ms']]) {const box=document.createElement('div'),name=document.createElement('span'),number=document.createElement('strong');name.textContent=label;number.textContent=value;box.append(name,number);metrics.append(box);}
       }
       renderSources();
-      RIRRdCharts.bars(el('source-chart'), sourceRows().map(row => ({label:row.source,value:Object.values(classes(row)).reduce((n,v)=>n+v,0)})).sort((a,b)=>b.value-a.value), 'Committed routing objects by source');
+      RIRRdCharts.bars(el('source-chart'), sourceRows().map(row => ({label:row.source,value:Object.values(classes(row)).reduce((n,v)=>n+v,0)})).sort((a,b)=>b.value-a.value), 'Committed IRR objects by source');
       if (['overview','system'].includes(selected) || force) await refreshHistory(force);
       el('resource-metrics').replaceChildren();
       for (const [label, value, detail] of [['Process memory', bytes(latest.process_rss_bytes), 'Resident memory (RSS)'], ['Service memory', bytes(latest.cgroup_memory_bytes), 'Includes charged filesystem cache'], ['CPU, one-core scale', latest.cpu_percent_one_core == null ? 'Not reported' : latest.cpu_percent_one_core.toFixed(2) + '%', 'Sampled, not lifetime CPU'], ['Database file', latest.database_bytes == null ? 'Not reported' : (latest.database_bytes / 1073741824).toFixed(2) + ' GiB', 'Current database generation']]) {
@@ -178,8 +178,8 @@
     if (kind === 'object' && value.startsWith('!m')) {
       const match = /^!m([a-z0-9-]+),([^\u0000-\u001f\u007f]+)$/i.exec(value);
       const classes = Array.from(el('browse-class').options, option => option.value);
-      if (!match || value.length > 256 || !classes.includes(match[1].toLowerCase())) throw new Error('Choose a supported object class and key.');
-      return value;
+      if (!match || new TextEncoder().encode(value).length > 512 || !classes.includes(match[1].toLowerCase())) throw new Error('Choose a supported object class and key.');
+      return '!m' + match[1].toLowerCase() + ',' + match[2];
     }
     if (!value || value.length > 256 || !/^[a-z0-9][a-z0-9:._/ -]*$/i.test(value)) throw new Error('Enter an ASN, AS-set, IP address, prefix or object key.');
     if (kind === 'origin') { if (!/^AS\d+$/i.test(value) || Number(value.slice(2)) > 4294967295) throw new Error('Enter an ASN such as ' + sampleASN() + '.'); return (family === '6' ? '!6' : '!g') + value; }

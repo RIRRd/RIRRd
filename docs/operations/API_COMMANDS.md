@@ -71,7 +71,7 @@ curl --fail https://irrd.tools/graphql/ -H 'Content-Type: application/json' \
 Check both the HTTP status and GraphQL `errors` field. The
 [API workbench](https://irrd.tools/dashboard/#api) introspects the actual schema.
 
-## Browse AS-sets and routing classes
+## Browse object classes
 
 ```sh
 curl --fail --get --data-urlencode 'source=RIPE' --data-urlencode 'class=as-set' \
@@ -80,9 +80,25 @@ curl --fail --get --data-urlencode 'source=RIPE' --data-urlencode 'class=as-set'
 
 The response contains `keys` and `next_cursor`. Send that cursor as the `after`
 parameter for the next page. Limits are 1–100 keys; pages use an index seek,
-not a full database scan. Changes can occur between pages. Classes: `aut-num`,
-`as-set`, `route-set`, `route`, `route6`, `filter-set`, `peering-set`, `rtr-set`,
-`inet-rtr`.
+not a full database scan. Changes can occur between pages. Current development
+builds accept all 19 [supported object classes](SOURCE_PROFILES.md), including
+contacts, allocation records, maintainers and public key certificates. A node's
+import profile determines which records it actually retains; the older hosted
+production profile contains routing classes only.
+
+On a full-profile development node, browse maintainer keys and inspect a selected
+object using a typed lookup. Authentication fields are redacted:
+
+```sh
+curl --fail --get --data-urlencode 'source=RIPE' --data-urlencode 'class=mntner' \
+  --data-urlencode 'limit=30' https://dev.rirrd.co.uk/v1/irr/objects
+# Replace EXAMPLE-MNT with a returned key.
+curl --fail --get --data-urlencode 'sources=RIPE' \
+  --data-urlencode 'q=!mmntner,EXAMPLE-MNT' https://dev.rirrd.co.uk/v1/whois/
+```
+
+The same `!mCLASS,KEY` lookup selects person/role records by nic-hdl and keeps
+route origins in composite keys. Browse is read-only and source-scoped.
 
 ## Live source and resource telemetry
 
