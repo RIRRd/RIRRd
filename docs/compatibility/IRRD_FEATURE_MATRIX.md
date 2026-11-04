@@ -35,6 +35,13 @@ open until the stated behaviour and safety checks are demonstrated.
 
 ## Current development
 
+Offline table accounting and a schema-preserving new-file repack are described
+in the [storage checkpoint](../benchmarks/STORAGE_2026_11_04.md). All application
+rows, serials, journals, signed-client state and authoritative metadata are
+preserved and hashed; unknown tables/savepoints are refused. The 19-class normal
+CLI/TCP/HTTP/GraphQL test now reopens a repacked database. Synthetic space gains
+do not establish full-catalog savings or expand remaining feature-parity claims.
+
 The [4 November allocation/release checkpoint](../benchmarks/OPTIMIZATION_2026_11_04.md)
 records smaller executables, bounded import/query allocation changes, complete
 before/after repetitions and the snapshot-import timing trade-off. Runtime

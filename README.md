@@ -211,6 +211,11 @@ Stop the daemon before purging a source. Use `source purge --source EXAMPLE --ye
 
 Run `database compact --yes` with the daemon stopped to reclaim free storage where the database engine can do so. The command verifies application indexes and journal history before and after compaction and prints the before and after file lengths.
 
+Use `database stats` to inspect offline table costs and `database repack --file NEW_PATH`
+to build a separately verified, denser database while retaining the original.
+See [storage maintenance](docs/operations/STORAGE_MAINTENANCE.md) for disk accounting,
+metadata preservation, limits and measured results.
+
 ## Offline NRTMv3 mirroring
 
 Import the source's full snapshot first and record its published serial. Stop the daemon before applying a transcript or syncing with a peer. For a snapshot whose serial was 41, use one of the following:
