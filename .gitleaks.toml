@@ -31,3 +31,14 @@ regexTarget = "match"
 regexes = [
   '''^key\-cert: PGPKEY\-01234567\\n$''',
 ]
+
+[[allowlists]]
+targetRules = ["generic-api-key"]
+description = "Exact synthetic public certificate ID in the full-class smoke fixture"
+condition = "AND"
+paths = ['''(^|/)tests/smoke\.rs$''']
+regexTarget = "match"
+regexes = [
+  '''^key-cert", "PGPKEY-A1B2C3D4"$''',
+  '''^key-cert: PGPKEY-A1B2C3D4"$''',
+]

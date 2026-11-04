@@ -22,14 +22,15 @@ jobs:
             --entrypoint /bin/sh "$image" -c 'git config --global --add safe.directory /repo; exec gitleaks git /repo --log-opts=--all --redact --config /repo/.gitleaks.toml'
           docker run --rm --network none --mount "type=bind,source=$RUNNER_TEMP/public-tree,target=/tree,readonly" \
             "$image" dir /tree --redact --config /tree/.gitleaks.toml
-          # A new key block in the same Rust file must still be detected.
-          mkdir -p "$RUNNER_TEMP/secret-canary/src" "$RUNNER_TEMP/secret-canary-report"
-          python3 - "$RUNNER_TEMP/secret-canary/src/rpsl.rs" <<'PYTHON'
+          # New secrets in the files with exact fixture exceptions must still fail.
+          mkdir -p "$RUNNER_TEMP/secret-canary/src" "$RUNNER_TEMP/secret-canary/tests" "$RUNNER_TEMP/secret-canary-report"
+          python3 - "$RUNNER_TEMP/secret-canary/src/rpsl.rs" "$RUNNER_TEMP/secret-canary/tests/smoke.rs" <<'PYTHON'
           import base64, os, sys
           from pathlib import Path
           label = "PGP " + "PRIVATE KEY BLOCK"
           body = base64.b64encode(os.urandom(48)).decode()
           Path(sys.argv[1]).write_text("-----BEGIN " + label + "-----\n" + body + "\n-----END " + label + "-----\n")
+          Path(sys.argv[2]).write_text('const API_KEY = "' + os.urandom(32).hex() + '";\n')
           PYTHON
           set +e
           docker run --rm --network none --mount "type=bind,source=$RUNNER_TEMP/secret-canary,target=/canary,readonly" \
@@ -41,5 +42,7 @@ jobs:
           test "$scan_status" -eq 1
           python3 - "$RUNNER_TEMP/secret-canary-report/result.json" <<'PYTHON'
           import json, sys
-          assert any(row["RuleID"] == "private-key" for row in json.load(open(sys.argv[1])))
+          rows = json.load(open(sys.argv[1]))
+          assert any(row["RuleID"] == "private-key" and row["File"].endswith("src/rpsl.rs") for row in rows)
+          assert any(row["RuleID"] == "generic-api-key" and row["File"].endswith("tests/smoke.rs") for row in rows)
           PYTHON
