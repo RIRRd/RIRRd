@@ -13,7 +13,9 @@ assert not args.output.exists() and os.geteuid()==0
 base=json.loads((args.run/'results.json').read_text());assert base.get('completed_at')
 ports=base.get('ports',{'whois':9243,'http':9280})
 for port in ports.values():
- with socket.socket() as probe:probe.bind(('127.0.0.1',port))
+ with socket.socket() as probe:
+  probe.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
+  probe.bind(('127.0.0.1',port))
 assert hashlib.sha256(args.binary.read_bytes()).hexdigest()==base['binary_sha256']['small16']
 file=args.run/'small16-3.redb';cfg=args.run/'small16-3.toml'
 assert file.is_file() and cfg.is_file()

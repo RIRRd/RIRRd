@@ -34,7 +34,9 @@ assert 1<=args.seconds<=120
 assert 1<=args.whois_port<=65535 and 1<=args.http_port<=65535 and args.whois_port!=args.http_port
 # Never run a benchmark against an already serving registry by accident.
 for port in [args.whois_port,args.http_port]:
- with socket.socket() as probe:probe.bind(('127.0.0.1',port))
+ with socket.socket() as probe:
+  probe.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
+  probe.bind(('127.0.0.1',port))
 fixture=args.fixture.resolve();state=args.state.resolve();state.mkdir(mode=0o700,exist_ok=True)
 assert hashlib.sha256(fixture.read_bytes()).hexdigest()=='9fe1bf623acb0499df78537f4d097582c0fd1bba0fa4c99ae4b21a38dee3a0f2'
 run=Path(tempfile.mkdtemp(prefix='measured-',dir=state))
