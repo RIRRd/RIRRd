@@ -86,8 +86,9 @@ mod tests {
         let path = dir.path().join("policy.rpsl");
         let text = format!(
             "filter-set: FLTR-EXAMPLE\nfilter: {}\nsource: TEST\n",
-            "AS64496 OR ".repeat(200_000) + "AS64497"
+            "AS64496 OR ".repeat(450_000) + "AS64497"
         );
+        assert!(text.len() > 4 * 1024 * 1024);
         assert!(text.len() > crate::rpsl::MAX_OBJECT_BYTES);
         assert!(crate::rpsl::parse(&text).is_err());
         std::fs::write(&path, &text)?;

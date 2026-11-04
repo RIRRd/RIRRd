@@ -52,3 +52,8 @@ checksums. A full standard-IRRd profile can still encounter publisher-specific
 classes such as RIPE poems; record those unsupported classes explicitly.
 NRTMv3 transport is unauthenticated. Full object coverage and a green test run
 are not a production-readiness claim.
+
+Published snapshot objects may be up to 8 MiB; the full RIPE export includes an
+inet6num record slightly above 4 MiB. Authoritative submissions retain their
+64 KiB object limit. Query and response limits remain bounded independently; an
+over-limit answer fails instead of silently truncating the stored object.

@@ -15,7 +15,7 @@ pub(crate) use lookup::{is_inverse_field, lookup_attributes};
 pub const MAX_OBJECT_BYTES: usize = 64 * 1024;
 /// Large published routing policies are valid snapshot inputs. Submission and
 /// NRTM paths retain their independent, smaller admission limits.
-pub const MAX_SNAPSHOT_OBJECT_BYTES: usize = 4 * 1024 * 1024;
+pub const MAX_SNAPSHOT_OBJECT_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct Object {
