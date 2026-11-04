@@ -2342,6 +2342,172 @@ fn snapshot_policies_survive_restart_and_http_source_subset_is_enforced() {
 }
 
 #[test]
+fn full_standard_class_profile_is_queryable_after_restart() {
+    let workspace = tempfile::tempdir().unwrap();
+    let config = workspace.path().join("irrd.toml");
+    fs::write(&config, "database = \"registry.redb\"\nsources = [\"TEST\"]\nlisten = \"127.0.0.1:0\"\nhttp_listen = \"127.0.0.1:0\"\nmax_connections = 8\ndatabase_cache_mib = 8\nio_timeout_seconds = 2\nmax_snapshot_bytes = 65536\n").unwrap();
+    // Synthetic identities cover the full pinned IRRd class inventory, including
+    // classes absent from a routing-only snapshot. This tests mirror/query
+    // coverage; these deliberately minimal objects are not update-validation fixtures.
+    let cases = [
+        (
+            "as-block",
+            "AS64496 - AS64511",
+            "as-block: AS64496 - AS64511",
+        ),
+        (
+            "as-set",
+            "AS64496:AS-EXAMPLE",
+            "as-set: AS64496:AS-EXAMPLE\nmembers: AS64497",
+        ),
+        ("aut-num", "AS64496", "aut-num: AS64496"),
+        (
+            "domain",
+            "2.0.192.IN-ADDR.ARPA",
+            "domain: 2.0.192.in-addr.arpa",
+        ),
+        (
+            "filter-set",
+            "FLTR-EXAMPLE",
+            "filter-set: FLTR-EXAMPLE\nfilter: AS64496",
+        ),
+        (
+            "inet-rtr",
+            "R1.EXAMPLE.INVALID",
+            "inet-rtr: r1.example.invalid",
+        ),
+        ("inet6num", "2001:DB8::/32", "inet6num: 2001:db8::/32"),
+        (
+            "inetnum",
+            "192.0.2.0 - 192.0.2.255",
+            "inetnum: 192.0.2.0 - 192.0.2.255",
+        ),
+        ("irt", "IRT-EXAMPLE", "irt: IRT-EXAMPLE"),
+        ("key-cert", "PGPKEY-A1B2C3D4", "key-cert: PGPKEY-A1B2C3D4"),
+        (
+            "mntner",
+            "EXAMPLE-MNT",
+            "mntner: EXAMPLE-MNT\nauth: BCRYPT-PW synthetic-full-profile-proof",
+        ),
+        ("organisation", "ORG-EX1-TEST", "organisation: ORG-EX1-TEST"),
+        (
+            "peering-set",
+            "PRNG-EXAMPLE",
+            "peering-set: PRNG-EXAMPLE\npeering: AS64496",
+        ),
+        (
+            "person",
+            "EX1-TEST",
+            "person: Example Operator\nnic-hdl: EX1-TEST",
+        ),
+        ("role", "NOC1-TEST", "role: Example NOC\nnic-hdl: NOC1-TEST"),
+        (
+            "route",
+            "192.0.2.0/24AS64496",
+            "route: 192.0.2.0/24\norigin: AS64496",
+        ),
+        (
+            "route-set",
+            "RS-EXAMPLE",
+            "route-set: RS-EXAMPLE\nmembers: 192.0.2.0/24",
+        ),
+        (
+            "route6",
+            "2001:DB8::/32AS64496",
+            "route6: 2001:db8::/32\norigin: AS64496",
+        ),
+        (
+            "rtr-set",
+            "RTRS-EXAMPLE",
+            "rtr-set: RTRS-EXAMPLE\nmembers: r1.example.invalid",
+        ),
+    ];
+    let fixture = workspace.path().join("full.rpsl");
+    fs::write(
+        &fixture,
+        cases
+            .iter()
+            .map(|(_, _, text)| format!("{text}\nsource: TEST\n\n"))
+            .collect::<String>(),
+    )
+    .unwrap();
+    successful(
+        cli(&config)
+            .args(["import", "snapshot", "--source", "TEST", "--file"])
+            .arg(&fixture)
+            .output()
+            .unwrap(),
+    );
+    for _ in 0..2 {
+        let (server, tcp) = Server::start_listener(&config, "WHOIS listening");
+        for (class, key, text) in cases {
+            let answer = whois(tcp, format!("!m{class},{key}\n").as_bytes());
+            assert!(
+                answer.contains(text.lines().next().unwrap()),
+                "{class}: {answer}"
+            );
+            assert!(!answer.contains("synthetic-full-profile-proof"));
+        }
+        drop(server);
+        let (server, http) = Server::start_listener(&config, "GraphQL listening");
+        for (class, key, _) in cases {
+            let response = whois(http, format!("GET /v1/irr/objects?source=TEST&class={class} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").as_bytes());
+            assert!(response.starts_with("HTTP/1.1 200 "), "{response}");
+            let value: Value =
+                serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap();
+            assert_eq!(value["keys"], serde_json::json!([key]), "{class}");
+        }
+        for batch in cases.chunks(8) {
+            let body = serde_json::json!({
+            "query": "query($keys:[String!]) { rpslObjects(sources:[\"TEST\"],rpslPk:$keys) { objectClass rpslPk objectText } }",
+            "variables": {"keys": batch.iter().map(|(_, key, _)| key).collect::<Vec<_>>()}
+        }).to_string();
+            let response = whois(http, format!("POST /graphql/ HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes());
+            let value: Value =
+                serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap();
+            assert!(value.get("errors").is_none(), "{value}");
+            let rows = value["data"]["rpslObjects"].as_array().unwrap();
+            assert_eq!(rows.len(), batch.len());
+            for (class, key, text) in batch {
+                let row = rows
+                    .iter()
+                    .find(|row| row["objectClass"] == *class)
+                    .unwrap();
+                assert_eq!(row["rpslPk"], *key);
+                assert!(
+                    row["objectText"]
+                        .as_str()
+                        .unwrap()
+                        .contains(text.lines().next().unwrap())
+                );
+            }
+            assert!(!response.contains("synthetic-full-profile-proof"));
+        }
+        drop(server);
+    }
+    let checked: Value = serde_json::from_slice(&successful(
+        cli(&config).args(["database", "verify"]).output().unwrap(),
+    ))
+    .unwrap();
+    assert_eq!(checked["objects"], 19);
+    let exported = workspace.path().join("public.rpsl");
+    successful(
+        cli(&config)
+            .args([
+                "export", "snapshot", "--source", "TEST", "--public", "--file",
+            ])
+            .arg(&exported)
+            .output()
+            .unwrap(),
+    );
+    let public = fs::read_to_string(exported).unwrap();
+    assert!(!public.contains("synthetic-full-profile-proof"));
+    for (_, _, text) in cases {
+        assert!(public.contains(text.lines().next().unwrap()));
+    }
+}
+
+#[test]
 fn raw_http_whois_scope_is_independent_of_structured_queries_and_browse() {
     let workspace = tempfile::tempdir().unwrap();
     let config = workspace.path().join("irrd.toml");

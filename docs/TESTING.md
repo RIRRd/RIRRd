@@ -23,6 +23,12 @@ jobs run separately. The pinned upstream oracle and real BIRD/FRR parsers have
 dedicated workflows. RPSL/NRTMv3 fuzzing and deployment smoke checks run on pushes.
 Development branches do not publish packages or releases.
 
+The full-class smoke test imports synthetic objects from all 19 standard IRRd
+classes, performs typed TCP lookups and HTTP key browsing after daemon restarts,
+and reads every class through bounded exact-key GraphQL batches. It also checks
+public export redaction and native database integrity. These minimal mirror
+fixtures exercise storage/query coverage, not authoritative validation parity.
+
 ## Source coverage
 
 ```sh
