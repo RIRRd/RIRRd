@@ -6,7 +6,7 @@
     const response=await fetch('/testing/report.json',{cache:'no-cache'});if(!response.ok)throw Error('Results unavailable');const data=await response.json();
     if(!data.reports?.length){el('verification-status').textContent='A verification snapshot has not been published yet.';return;}
     const groups=data.reports.flatMap(r=>r.groups.map(g=>({...g,origin:r.origin,platform:r.platform}))),sum=key=>groups.reduce((total,g)=>total+g[key],0);
-    const passed=data.status==='passed';el('verification-status').textContent=passed?'Recorded checks passed.':'Recorded verification includes failures. Review the results before using this revision.';
+    const passed=data.status==='passed',local=data.reports.every(r=>r.origin==='local');el('verification-status').textContent=passed?(local?'Local verification passed.':'Recorded checks passed.'):'Recorded verification includes failures. Review the results before using this revision.';
     el('verification-status').className='verification-state '+(passed?'passed':'failed');
     for(const key of ['passed','failed','skipped'])el('verification-'+key).textContent=sum(key).toLocaleString();
     const source=el('verification-source');source.textContent='Tested '+data.source_commit.slice(0,12)+' · recorded '+new Date(data.recorded_at).toLocaleString()+'. ';

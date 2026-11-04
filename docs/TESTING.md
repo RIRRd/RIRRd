@@ -82,7 +82,9 @@ run. Reproducing crash inputs are retained on failure, outside Git.
 
 The existing pinned upstream, real router tools, native DEB/RPM and source
 publication workflows retain their dedicated triggers. Beta publication remains
-an explicit tag workflow. Tests do not push to main, merge a PR, change the
+an explicit tag workflow and calls the same complete CI suite before package
+verification and publication. The CI concurrency key includes its caller so
+tag-triggered and reusable verification cannot cancel each other. Tests do not push to main, merge a PR, change the
 repository's visibility or deploy a public registry.
 
 All third-party Actions are pinned to reviewed commit hashes. Runtime/build

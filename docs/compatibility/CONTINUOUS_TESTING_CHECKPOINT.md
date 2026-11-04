@@ -76,7 +76,9 @@ the default network path failed; the freshly updated checkout was then audited.
 Core CI now exports JSON, individual JUnit outcomes, gate logs and a step summary
 on each push/PR/manual run for Linux x86-64, Linux ARM64 and Windows. Independent
 browser and source coverage jobs, the dependency audit and workflow validation
-run as separate gates. Short three-target fuzz runs and container smoke checks
+run as separate gates. Beta release verification now calls that same reusable
+suite before package/release publication; caller-specific concurrency prevents
+the separate tag CI run from cancelling it. Short three-target fuzz runs and container smoke checks
 also run on every push/PR. Dedicated upstream/router/native-package workflows
 retain their existing triggers, and longer fuzzing stays scheduled.
 
@@ -98,3 +100,14 @@ Only static site files are deployed for this continuation. The public native
 registry binary, source generation, mirror workers and listeners are unchanged.
 All test registry/queue/browser/Compose processes are cleaned up. Full parity
 and production qualification remain open in the compatibility matrix.
+
+## Published-site verification
+
+The live testing page renders **276 passed / 0 failed / 1 skipped**, 93.11%
+coverage, the exact clean source revision and explicit **local** execution
+provenance. Real Chromium checks pass at 320/390/1440 px, including the result
+table, chart, coverage meter and source/CI confidence labels. Both IPv4 and IPv6
+HTTPS return 200 with trusted certificate verification. Existing project/network
+navigation and live RPKI covering/batch/error checks also pass. Site deployment
+preserved the Caddy, native registry, gateway and submission-service PIDs.
+Publication source-tree and complete reachable-history secret scans pass.

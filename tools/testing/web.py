@@ -137,6 +137,8 @@ class Websites(unittest.TestCase):
         snapshot=json.loads((self.work/'project/testing/report.json').read_text())
         if snapshot.get('reports'):
             groups=[g for r in snapshot['reports']for g in r['groups']]
+            if snapshot['status']=='passed' and all(r['origin']=='local' for r in snapshot['reports']):
+                self.assertEqual(self.browser.js('document.getElementById("verification-status").textContent'),'Local verification passed.')
             self.assertEqual(int(self.browser.js('document.getElementById("verification-passed").textContent').replace(',','')),sum(g['passed']for g in groups))
             self.assertEqual(self.browser.js('document.querySelectorAll("#verification-groups tr").length'),len(groups))
             self.assertEqual(self.browser.js('document.querySelectorAll("#verification-chart svg").length'),1)
