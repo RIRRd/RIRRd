@@ -421,9 +421,10 @@ impl Store {
             );
             rebuilt.db.compact()?;
         }
-        // Reopen the fully closed artifact, not just its in-memory transaction.
+        // Reopen the closed database through the private staging handle. Windows
+        // deliberately denies a second path-based read handle before publication.
         {
-            let rebuilt = Store::open_existing_with_cache(stage.path(), cache_bytes)?;
+            let rebuilt = crate::backup::lock_existing_file(stage.as_file(), cache_bytes)?;
             ensure!(
                 rebuilt.verify()? == objects,
                 "repacked database failed reopen verification"

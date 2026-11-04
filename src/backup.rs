@@ -178,7 +178,7 @@ pub(crate) fn stage_for(path: &Path) -> Result<NamedTempFile> {
     NamedTempFile::new_in(directory_for(path)).context("creating private backup staging file")
 }
 
-fn lock_existing_file(file: &File, cache_bytes: usize) -> Result<Store> {
+pub(crate) fn lock_existing_file(file: &File, cache_bytes: usize) -> Result<Store> {
     ensure!(file.metadata()?.len() > 0, "empty database file");
     let db = redb::Database::builder()
         .set_cache_size(cache_bytes)
