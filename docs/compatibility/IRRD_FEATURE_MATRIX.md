@@ -38,6 +38,14 @@ open until the stated behaviour and safety checks are demonstrated.
 See [development status](../STATUS.md) and the per-commit CI reports. Historical
 host/operator checkpoints are maintained separately from the public daemon.
 
+Full-class ingestion/query coverage is exercised for all 19 standard classes by
+the restart smoke test, including bounded HTTP browsing, exact-key GraphQL and
+public exports. Contacts with an empty display name retain their non-empty
+`nic-hdl` identity and original text. The
+[synthetic pinned parser check](../../tools/oracle/check_contact_names.py)
+compares eight accepted/rejected cases in strict and mirror modes; it does not
+establish complete contact/account or authentication parity.
+
 ## RPSL and storage
 
 | Capability | Reference and specification | Rust implementation and compatibility target | Security requirement | Required evidence | Status |

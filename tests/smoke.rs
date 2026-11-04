@@ -2395,12 +2395,8 @@ fn full_standard_class_profile_is_queryable_after_restart() {
             "PRNG-EXAMPLE",
             "peering-set: PRNG-EXAMPLE\npeering: AS64496",
         ),
-        (
-            "person",
-            "EX1-TEST",
-            "person: Example Operator\nnic-hdl: EX1-TEST",
-        ),
-        ("role", "NOC1-TEST", "role: Example NOC\nnic-hdl: NOC1-TEST"),
+        ("person", "EX1-TEST", "person:\nnic-hdl: EX1-TEST"),
+        ("role", "NOC1-TEST", "role:\nnic-hdl: NOC1-TEST"),
         (
             "route",
             "192.0.2.0/24AS64496",
@@ -2459,7 +2455,7 @@ fn full_standard_class_profile_is_queryable_after_restart() {
         }
         for batch in cases.chunks(8) {
             let body = serde_json::json!({
-            "query": "query($keys:[String!]) { rpslObjects(sources:[\"TEST\"],rpslPk:$keys) { objectClass rpslPk objectText } }",
+            "query": "query($keys:[String!]) { rpslObjects(sources:[\"TEST\"],rpslPk:$keys) { objectClass rpslPk objectText ... on RPSLPerson { person } ... on RPSLRole { role } } }",
             "variables": {"keys": batch.iter().map(|(_, key, _)| key).collect::<Vec<_>>()}
         }).to_string();
             let response = whois(http, format!("POST /graphql/ HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes());
@@ -2474,6 +2470,9 @@ fn full_standard_class_profile_is_queryable_after_restart() {
                     .find(|row| row["objectClass"] == *class)
                     .unwrap();
                 assert_eq!(row["rpslPk"], *key);
+                if matches!(*class, "person" | "role") {
+                    assert_eq!(row[*class], "");
+                }
                 assert!(
                     row["objectText"]
                         .as_str()

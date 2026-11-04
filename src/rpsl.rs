@@ -212,7 +212,13 @@ fn parse_with_limit(text: &str, max_bytes: usize) -> Result<Object, String> {
         }
     }
 
-    let first = required(identity.first.as_deref(), "class identity")?;
+    // Contact names are display/lookup text; nic-hdl is their primary key.
+    // IRRd 4.5.4 accepts an empty person/role value, including in strict mode.
+    let first = if matches!(identity.class.as_str(), "person" | "role") {
+        normalise_attribute(identity.first.as_deref().unwrap_or_default())
+    } else {
+        required(identity.first.as_deref(), "class identity")?
+    };
     let source = required(identity.source.as_deref(), "source")?;
     if !generic_name(&source) {
         return Err("invalid source name".into());
@@ -475,6 +481,25 @@ mod tests {
                 expected
             );
         }
+    }
+
+    #[test]
+    fn empty_contact_display_names_keep_their_nic_handle_identity() {
+        for class in ["person", "role"] {
+            for display in ["", "  # publisher omitted the display name"] {
+                let text = format!("{class}:{display}\nnic-hdl: EX1-TEST\nsource: TEST\n");
+                for object in [parse(&text).unwrap(), parse_snapshot(&text).unwrap()] {
+                    assert_eq!(object.key, "EX1-TEST");
+                    assert_eq!(object.text, text);
+                    let attributes = object.lookup_attributes().unwrap();
+                    assert!(attributes.person.is_empty() && attributes.role.is_empty());
+                }
+            }
+            assert!(parse_snapshot(&format!("{class}:\nsource: TEST\n")).is_err());
+            assert!(parse_snapshot(&format!("{class}:\nnic-hdl:\nsource: TEST\n")).is_err());
+        }
+        assert!(parse_snapshot("mntner:\nsource: TEST\n").is_err());
+        assert!(parse_snapshot("aut-num:\nsource: TEST\n").is_err());
     }
 
     #[test]

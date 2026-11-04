@@ -34,6 +34,8 @@ jobs:
           curl --silent --show-error --fail --max-time 3 --retry 10 --retry-max-time 25 --retry-all-errors --retry-delay 1 'http://127.0.0.1:8000/v1/whois/?q=%21gAS64496' | grep -Fx '192.0.2.0/24'
       - name: Check pinned organisation schema
         run: docker compose -p irrd-454-oracle -f tools/oracle/compose.yaml exec -T reference python < tools/oracle/check_organisation_schema.py
+      - name: Check pinned contact display-name behavior
+        run: docker compose -p irrd-454-oracle -f tools/oracle/compose.yaml exec -T reference python < tools/oracle/check_contact_names.py
       - name: Compare WHOIS transcripts
         shell: bash
         run: |

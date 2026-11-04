@@ -78,3 +78,9 @@ The console displays supplied source provenance and refresh notes. Public object
 rendering removes Registro.BR owner-identifier remarks and their continuations;
 prefixes, origins and conversion provenance remain available. Raw, explicitly
 restricted operator exports retain the original records.
+
+Contacts use `nic-hdl` as their primary key. A published `person:` or `role:`
+display value may be empty; pinned IRRd 4.5.4 accepts this in strict and mirror
+parsing. RIRRd preserves these records and their empty display text. A missing
+or empty handle remains rejected, and an empty display name is not added to the
+inverse name index. Synthetic oracle and restart/query tests cover this case.
