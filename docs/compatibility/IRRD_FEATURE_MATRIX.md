@@ -35,6 +35,15 @@ open until the stated behaviour and safety checks are demonstrated.
 
 ## Current development
 
+The [4 November allocation/release checkpoint](../benchmarks/OPTIMIZATION_2026_11_04.md)
+records smaller executables, bounded import/query allocation changes, complete
+before/after repetitions and the snapshot-import timing trade-off. Runtime
+`d1d91ca` passes the linked native, oracle, deployment, fuzz and router CI suites.
+The final binary matches 45 TCP and 45 HTTP oracle cases; 274 local checks pass
+with one optional skip. Protocol limits, credential redaction, data retention and
+database format are preserved. This is evidence for those changes and exercised
+behaviors, without extending the parity status of the remaining features.
+
 See [development status](../STATUS.md) and the per-commit CI reports. Historical
 host/operator checkpoints are maintained separately from the public daemon.
 

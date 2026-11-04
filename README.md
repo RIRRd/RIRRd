@@ -90,6 +90,8 @@ isolated website checks, source coverage and dependency audit. Reports include
 individual JSON/JUnit outcomes and retained failure logs. Short RPSL/NRTMv3 fuzz
 runs and container smoke checks also run per push/PR. Read [the testing guide](docs/TESTING.md)
 or inspect [the recorded verification page](https://rirrd.net/testing/).
+The [latest optimization checkpoint](docs/benchmarks/OPTIMIZATION_2026_11_04.md)
+records exact artifacts, constrained-host measurements and observed trade-offs.
 
 ```sh
 python3 tools/testing/run.py --profile core --out /tmp/rirrd-core
