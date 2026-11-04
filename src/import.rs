@@ -43,12 +43,13 @@ pub fn snapshot(path: &Path, max_bytes: u64) -> Result<impl Iterator<Item = Resu
 
 fn next_record(input: &mut impl BufRead, remaining: &mut u64) -> Result<Option<String>> {
     let mut raw = String::new();
-    let mut line = String::new();
     loop {
-        line.clear();
+        // Append directly to the record. Large policy lines otherwise require
+        // a second full-sized temporary buffer before the owned parser sees them.
+        let start = raw.len();
         let read = input
             .take((MAX_OBJECT_BYTES + 1) as u64)
-            .read_line(&mut line)
+            .read_line(&mut raw)
             .context("reading UTF-8 snapshot")?;
         ensure!(
             read as u64 <= *remaining,
@@ -62,16 +63,19 @@ fn next_record(input: &mut impl BufRead, remaining: &mut u64) -> Result<Option<S
         if read == 0 {
             return Ok((!raw.is_empty()).then_some(raw));
         }
-        if matches!(line.as_str(), "\n" | "\r\n") {
-            if !raw.is_empty() {
+        let line = &raw[start..];
+        if matches!(line, "\n" | "\r\n") {
+            raw.truncate(start);
+            if start != 0 {
                 return Ok(Some(raw));
             }
-        } else if !raw.is_empty() || !line.starts_with(['%', '#']) {
+        } else if start == 0 && line.starts_with(['%', '#']) {
+            raw.clear();
+        } else {
             ensure!(
-                raw.len() + line.len() <= MAX_OBJECT_BYTES,
+                raw.len() <= MAX_OBJECT_BYTES,
                 "snapshot object exceeds byte limit"
             );
-            raw.push_str(&line);
         }
     }
 }
@@ -80,6 +84,30 @@ fn next_record(input: &mut impl BufRead, remaining: &mut u64) -> Result<Option<S
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn record_buffer_preserves_bytes_and_budgets_across_comments_and_crlf() -> Result<()> {
+        let first =
+            "aut-num: AS64496\r\nremarks: café\r\n# retained inside record\r\nsource: TEST\r\n";
+        let second = "aut-num: AS64497\nsource: TEST\n";
+        let text = format!("% header\r\n\r\n{first}\r\n# skipped header\n\n{second}");
+        let mut input = BufReader::with_capacity(1, text.as_bytes());
+        let mut remaining = text.len() as u64;
+        assert_eq!(next_record(&mut input, &mut remaining)?, Some(first.into()));
+        assert_eq!(
+            next_record(&mut input, &mut remaining)?,
+            Some(second.into())
+        );
+        assert_eq!(next_record(&mut input, &mut remaining)?, None);
+        assert_eq!(remaining, 0);
+        let mut limited = text.len() as u64 - 1;
+        let mut input = BufReader::with_capacity(1, text.as_bytes());
+        next_record(&mut input, &mut limited)?;
+        assert!(next_record(&mut input, &mut limited).is_err());
+        let mut invalid = &b"aut-num: AS64496\nremarks: \xff\nsource: TEST\n"[..];
+        assert!(next_record(&mut invalid, &mut 1000).is_err());
+        Ok(())
+    }
 
     #[test]
     fn snapshot_accepts_large_policy_without_relaxing_submission_limit() -> Result<()> {
