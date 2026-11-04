@@ -262,7 +262,7 @@
       text('instance-label', publicMode() ? 'Public read-only node' : 'Independent self-hosted instance'); el('community-link').hidden = !publicMode();
       text('mode-notice', publicMode() ? 'Public beta · Read-only queries. Source update times are listed individually.' : 'Self-hosted RIRRd console · Independent of the public community network. No community account or node listing is required.');
       if (metadata.node?.environment === 'development') {
-        text('mode-notice','Development · '+metadata.version+' · Isolated snapshot, not a production endpoint. Changes are untagged and not release packages.');
+        text('mode-notice','Development · '+metadata.version+' · Independent mirror data; source freshness is listed individually. Not a production endpoint. Changes are untagged and not release packages.');
         text('instance-label','Development · separate database');text('brand-caption','DEV BRANCH');el('community-link').href='https://irrd.tools/';
       }
       fillSelect('query-source' , metadata.http_sources || metadata.sources, true); commands(); el('query-value').value = sampleASN(); updateCommand(); el('query-submit').disabled = false;
