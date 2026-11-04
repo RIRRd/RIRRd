@@ -15,6 +15,29 @@ container smoke, fresh dependency audit and three-target fuzz smoke also pass.
 The project testing page shows exact local provenance; private Actions execution
 cannot be confirmed without GitHub API authentication. Full parity remains open.
 
+## IRR-only beta and public organization — 4 November 2026
+
+At the project owner's request, beta.2 removes the embedded validator, RTR,
+origin-check APIs, ROA-file admission and Routinator dependency. IRR storage,
+queries, source mirroring and scope admission remain. The lockfile drops 111
+packages without updating retained versions. Retired endpoints return 404 and
+removed TOML settings fail before a database is opened. Existing IRR telemetry
+history survives removal of validator counters.
+
+Clean local verification at `9dc614a` passed 161 Rust cases (one scheduled soak
+case ignored), 56 external protocol/recovery contracts, 23 reporting/installer
+checks, 17 gateway checks, four private queue checks and 14 browser cases.
+LLVM source-line coverage was 94.44% (12,077 / 12,788); the 92% floor remains.
+The locked audit with the RustSec revision recorded in the
+[IRR-only checkpoint](docs/compatibility/IRR_ONLY_BETA2_CHECKPOINT.md)
+reported no vulnerable dependencies. Linux x86-64 DEB and RPM archives built with
+generated dependency license inventories. These are local results, not remote CI.
+
+The canonical public source is https://github.com/RIRRd/RIRRd. New commits use
+the owner's requested Lostepic identity. Historical authors and evidence links
+retain their original provenance. Current release status and public verification
+remain separate from repository visibility.
+
 ## Compact ROV indexes and direct search — 3 November 2026
 
 The [checkpoint](docs/benchmarks/COMPACT_ROV_AND_SEARCH.md) records 54.17% less

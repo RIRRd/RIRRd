@@ -50,6 +50,12 @@ with tempfile.TemporaryDirectory(prefix='rirrd-router-check-') as state:
     bird=(root/'examples/routers/bird.conf').read_text().replace('/etc/bird/rirrd/filters.bird','/work/filters.bird')
     (output/'bird.conf').write_text(bird)
     (output/'frr.conf').write_text((output/'filters.frr').read_text()+(root/'examples/routers/frr.conf').read_text())
+    # These are synthetic, read-only parser fixtures. Container root has no
+    # DAC override capability and is not the GitHub runner's host UID. Keep the
+    # generator's private production defaults; make only this test bundle readable.
+    output.chmod(0o755)
+    for file in output.iterdir():
+        file.chmod(0o644)
     docker=['docker','run','--rm','--network','none','--cap-drop','ALL','--security-opt','no-new-privileges','--ulimit','nofile=1024:1024','--memory','256m','--cpus','1','-v',str(output)+':/work:ro',args.router_image]
     for command in [['bird','-p','-u','root','-g','root','-c','/work/bird.conf'],['/usr/lib/frr/bgpd','-C','-S','--limit-fds','1024','-f','/work/frr.conf']]:
         result=subprocess.run(docker+command,capture_output=True,text=True,timeout=30)

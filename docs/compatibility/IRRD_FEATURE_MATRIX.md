@@ -1,5 +1,7 @@
 # IRRd 4 compatibility inventory
 
+Current removal, migration and test evidence: [IRR-only beta.2 checkpoint](IRR_ONLY_BETA2_CHECKPOINT.md).
+
 > Current scope (4 November 2026): RIRRd is an IRR-only daemon. Embedded RPKI,
 > RTR, origin-validation APIs and ROA-file admission were removed for beta.2.
 > Earlier RPKI sections are historical evidence, not current features or backlog.

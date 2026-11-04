@@ -1,15 +1,15 @@
 {
   "schema_version": 1,
-  "recorded_at": "2026-11-04T09:20:19.392286+00:00",
-  "source_commit": "3627e1073bf690e268eb198ef337dbf67c9399b8",
+  "recorded_at": "2026-11-04T10:19:12.801504+00:00",
+  "source_commit": "9dc614a58a8aafb54cc1d8b9252e58d42173d4a3",
   "status": "passed",
   "reports": [
     {
       "schema_version": 1,
       "profile": "core",
-      "source_commit": "3627e1073bf690e268eb198ef337dbf67c9399b8",
+      "source_commit": "9dc614a58a8aafb54cc1d8b9252e58d42173d4a3",
       "source_dirty": false,
-      "started_at": "2026-11-04T09:17:09.384621+00:00",
+      "started_at": "2026-11-04T10:17:45.992111+00:00",
       "platform": "Linux x86_64",
       "origin": "local",
       "run_url": null,
@@ -17,7 +17,7 @@
         {
           "id": "format",
           "status": "passed",
-          "seconds": 0.769,
+          "seconds": 0.872,
           "exit_code": 0,
           "tests": 0,
           "passed": 0,
@@ -27,7 +27,7 @@
         {
           "id": "clippy",
           "status": "passed",
-          "seconds": 1.171,
+          "seconds": 0.669,
           "exit_code": 0,
           "tests": 0,
           "passed": 0,
@@ -37,17 +37,17 @@
         {
           "id": "rust",
           "status": "passed",
-          "seconds": 32.823,
+          "seconds": 48.839,
           "exit_code": 0,
-          "tests": 173,
-          "passed": 172,
+          "tests": 162,
+          "passed": 161,
           "failed": 0,
           "skipped": 1
         },
         {
           "id": "protocols",
           "status": "passed",
-          "seconds": 8.72,
+          "seconds": 8.002,
           "exit_code": 0,
           "tests": 56,
           "passed": 56,
@@ -57,27 +57,27 @@
         {
           "id": "report-exporter",
           "status": "passed",
-          "seconds": 0.873,
+          "seconds": 3.581,
           "exit_code": 0,
-          "tests": 15,
-          "passed": 15,
+          "tests": 23,
+          "passed": 23,
           "failed": 0,
           "skipped": 0
         },
         {
           "id": "gateway",
           "status": "passed",
-          "seconds": 6.622,
+          "seconds": 3.984,
           "exit_code": 0,
-          "tests": 15,
-          "passed": 15,
+          "tests": 17,
+          "passed": 17,
           "failed": 0,
           "skipped": 0
         },
         {
           "id": "community",
           "status": "passed",
-          "seconds": 12.284,
+          "seconds": 1.371,
           "exit_code": 0,
           "tests": 4,
           "passed": 4,
@@ -85,11 +85,11 @@
           "skipped": 0
         }
       ],
-      "completed_at": "2026-11-04T09:18:12.702937+00:00",
+      "completed_at": "2026-11-04T10:18:53.372169+00:00",
       "status": "passed",
       "counts": {
-        "tests": 263,
-        "passed": 262,
+        "tests": 262,
+        "passed": 261,
         "failed": 0,
         "skipped": 1
       }
@@ -97,9 +97,9 @@
     {
       "schema_version": 1,
       "profile": "web",
-      "source_commit": "3627e1073bf690e268eb198ef337dbf67c9399b8",
+      "source_commit": "9dc614a58a8aafb54cc1d8b9252e58d42173d4a3",
       "source_dirty": false,
-      "started_at": "2026-11-04T09:17:09.422845+00:00",
+      "started_at": "2026-11-04T10:17:46.048944+00:00",
       "platform": "Linux x86_64",
       "origin": "local",
       "run_url": null,
@@ -107,7 +107,7 @@
         {
           "id": "web-build",
           "status": "passed",
-          "seconds": 1.522,
+          "seconds": 0.969,
           "exit_code": 0,
           "tests": 0,
           "passed": 0,
@@ -117,7 +117,7 @@
         {
           "id": "web",
           "status": "passed",
-          "seconds": 11.238,
+          "seconds": 15.549,
           "exit_code": 0,
           "tests": 14,
           "passed": 14,
@@ -125,7 +125,7 @@
           "skipped": 0
         }
       ],
-      "completed_at": "2026-11-04T09:17:22.245548+00:00",
+      "completed_at": "2026-11-04T10:18:02.630897+00:00",
       "status": "passed",
       "counts": {
         "tests": 14,
@@ -137,15 +137,15 @@
   ],
   "coverage": {
     "schema_version": 1,
-    "source_commit": "3627e1073bf690e268eb198ef337dbf67c9399b8",
+    "source_commit": "9dc614a58a8aafb54cc1d8b9252e58d42173d4a3",
     "source_dirty": false,
     "origin": "local",
-    "recorded_at": "2026-11-04T09:18:23.442250+00:00",
+    "recorded_at": "2026-11-04T10:18:49.419861+00:00",
     "scope": "LLVM line coverage of src/*.rs from Rust tests and isolated protocol contracts; test modules inside src are included; dependency, test harness and fixture files are excluded",
     "lines": {
-      "covered": 13032,
-      "count": 13996,
-      "percent": 93.11231780508717
+      "covered": 12077,
+      "count": 12788,
+      "percent": 94.44010009383797
     },
     "minimum": 92.0,
     "files": [
@@ -176,9 +176,9 @@
       {
         "file": "src/config.rs",
         "lines": {
-          "count": 166,
-          "covered": 151,
-          "percent": 90.96385542168676
+          "count": 141,
+          "covered": 139,
+          "percent": 98.58156028368793
         }
       },
       {
@@ -192,9 +192,9 @@
       {
         "file": "src/graphql.rs",
         "lines": {
-          "count": 1435,
-          "covered": 1400,
-          "percent": 97.5609756097561
+          "count": 1432,
+          "covered": 1397,
+          "percent": 97.55586592178771
         }
       },
       {
@@ -224,9 +224,9 @@
       {
         "file": "src/main.rs",
         "lines": {
-          "count": 429,
-          "covered": 351,
-          "percent": 81.81818181818183
+          "count": 410,
+          "covered": 337,
+          "percent": 82.1951219512195
         }
       },
       {
@@ -312,25 +312,9 @@
       {
         "file": "src/route_policy.rs",
         "lines": {
-          "count": 37,
-          "covered": 24,
-          "percent": 64.86486486486487
-        }
-      },
-      {
-        "file": "src/rpki.rs",
-        "lines": {
-          "count": 517,
-          "covered": 506,
-          "percent": 97.87234042553192
-        }
-      },
-      {
-        "file": "src/rpki_service.rs",
-        "lines": {
-          "count": 626,
-          "covered": 408,
-          "percent": 65.17571884984025
+          "count": 19,
+          "covered": 11,
+          "percent": 57.89473684210527
         }
       },
       {
@@ -369,8 +353,8 @@
         "file": "src/storage.rs",
         "lines": {
           "count": 3488,
-          "covered": 3364,
-          "percent": 96.44495412844036
+          "covered": 3365,
+          "percent": 96.47362385321101
         }
       },
       {
