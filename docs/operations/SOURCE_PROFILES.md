@@ -62,3 +62,13 @@ Public rendering also withholds private-key armor from certificate data, includi
 folded payload lines. Explanatory header mentions in remarks remain visible.
 This is a disclosure guard; cryptographic OpenPGP/key-cert authentication
 workflows remain part of the authoritative parity backlog.
+
+A mirror may set `encoding = "iso-8859-1"` in its `[nrtm3_sync.SOURCE]`
+section. The default is strict `utf-8`. The CLI uses the configured encoding
+only when its endpoint matches that source's configured peer; the scheduler
+uses the same reader. Wire bytes and decoded object sizes have separate bounds.
+Malformed default UTF-8 rolls back the complete update and its cursor.
+RIPE documents Latin-1 for its NRTMv3 interface even when the selected baseline
+is a UTF-8 export: [interface encoding](https://docs.db.ripe.net/RIPE-Database-Structure/Character-Encoding/).
+Known idle replies are matched exactly, including the older PANIX wording;
+arbitrary warnings or appended error/data lines do not count as successful polls.

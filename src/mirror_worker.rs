@@ -172,11 +172,13 @@ fn sync_once(
         return Ok(None);
     }
     stage.seek(SeekFrom::Start(0))?;
-    let transcript = if config.object_class_filter.is_empty() {
-        Reader::new(BufReader::new(stage), source, max_bytes)
-    } else {
-        Reader::filtered(BufReader::new(stage), source, max_bytes)
-    }
+    let transcript = Reader::with_encoding(
+        BufReader::new(stage),
+        source,
+        max_bytes,
+        config.encoding,
+        !config.object_class_filter.is_empty(),
+    )
     .map_err(anyhow::Error::msg)?;
     let range = transcript.range();
     ensure!(
@@ -274,6 +276,7 @@ mod tests {
             store.clone(),
             String::from("TEST"),
             MirrorConfig {
+                encoding: Default::default(),
                 endpoint,
                 interval_seconds: 1,
                 base_serial: Some(9),
@@ -324,6 +327,7 @@ mod tests {
                 Ok(())
             });
         let config = MirrorConfig {
+            encoding: Default::default(),
             endpoint,
             interval_seconds: 1,
             base_serial: Some(9),
@@ -406,6 +410,7 @@ mod tests {
             &store,
             "TEST",
             &MirrorConfig {
+                encoding: Default::default(),
                 endpoint,
                 base_serial: Some(9),
                 interval_seconds: 1,
@@ -438,6 +443,7 @@ mod tests {
         });
         let (_stop, shutdown) = watch::channel(false);
         let mut config = MirrorConfig {
+            encoding: Default::default(),
             endpoint,
             base_serial: Some(9),
             interval_seconds: 60,
@@ -492,6 +498,7 @@ mod tests {
             store.clone(),
             String::from("TEST"),
             MirrorConfig {
+                encoding: Default::default(),
                 endpoint,
                 interval_seconds: 1,
                 base_serial: Some(9),

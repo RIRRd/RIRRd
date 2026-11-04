@@ -906,6 +906,132 @@ max_snapshot_bytes = 4096
 }
 
 #[test]
+fn nrtm3_cli_decodes_only_the_configured_peer_and_rolls_back_bad_utf8() {
+    let work = tempfile::tempdir().unwrap();
+    let config = work.path().join("irrd.toml");
+    let basic = "database = \"registry.redb\"
+sources = [\"TEST\"]
+listen = \"127.0.0.1:0\"
+max_connections = 4
+io_timeout_seconds = 2
+max_snapshot_bytes = 8192
+";
+    fs::write(&config, basic).unwrap();
+    let snapshot = work.path().join("base.rpsl");
+    fs::write(
+        &snapshot,
+        "aut-num: AS64496
+source: TEST
+",
+    )
+    .unwrap();
+    successful(
+        cli(&config)
+            .args(["import", "snapshot", "--source", "TEST", "--file"])
+            .arg(&snapshot)
+            .output()
+            .unwrap(),
+    );
+    for encoding in [None, Some("iso-8859-1")] {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = listener.local_addr().unwrap().to_string();
+        fs::write(
+            &config,
+            format!(
+                "{basic}
+[nrtm3_sync.TEST]
+endpoint = {endpoint:?}
+interval_seconds = 60
+object_class_filter = [\"aut-num\"]
+{}",
+                encoding
+                    .map(|value| format!(
+                        "encoding = {value:?}
+"
+                    ))
+                    .unwrap_or_default()
+            ),
+        )
+        .unwrap();
+        let peer = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket.set_read_timeout(Some(IO_DEADLINE)).unwrap();
+            let mut query = String::new();
+            BufReader::new(&mut socket).read_line(&mut query).unwrap();
+            assert_eq!(
+                query,
+                "-g TEST:3:10-LAST
+"
+            );
+            socket
+                .write_all(
+                    b"%START Version: 3 TEST 10-11
+
+ADD 10
+
+aut-num: AS64497
+source: TEST
+
+ADD 11
+
+aut-num: AS64498
+descr: Andr\xe9
+source: TEST
+
+%END TEST
+",
+                )
+                .unwrap();
+        });
+        let result = cli(&config)
+            .args([
+                "source",
+                "sync-nrtm3",
+                "--source",
+                "TEST",
+                "--endpoint",
+                &endpoint,
+                "--base-serial",
+                "9",
+            ])
+            .output()
+            .unwrap();
+        assert_eq!(result.status.success(), encoding.is_some());
+        peer.join().unwrap();
+        let status: Value = serde_json::from_slice(&successful(
+            cli(&config)
+                .args(["source", "status", "--source", "TEST"])
+                .output()
+                .unwrap(),
+        ))
+        .unwrap();
+        let count: Value = serde_json::from_slice(&successful(
+            cli(&config).args(["database", "count"]).output().unwrap(),
+        ))
+        .unwrap();
+        if encoding.is_some() {
+            assert_eq!(status["serial"], 11);
+            assert_eq!(count["objects"], 3);
+            let export = work.path().join("public.rpsl");
+            successful(
+                cli(&config)
+                    .args([
+                        "export", "snapshot", "--source", "TEST", "--public", "--file",
+                    ])
+                    .arg(&export)
+                    .output()
+                    .unwrap(),
+            );
+            assert!(fs::read_to_string(export).unwrap().contains("André"));
+        } else {
+            assert!(status["serial"].is_null());
+            assert_eq!(count["objects"], 1);
+            assert!(String::from_utf8_lossy(&result.stderr).contains("UTF-8"));
+        }
+    }
+}
+
+#[test]
 fn bounded_nrtm3_cli_rejects_a_peer_that_exceeds_the_requested_range() {
     let workspace = tempfile::tempdir().unwrap();
     let config = workspace.path().join("irrd.toml");

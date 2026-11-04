@@ -10,6 +10,7 @@ use anyhow::{Context, Result, ensure};
 
 const MAX_PREAMBLE_BYTES: u64 = 8 * 1024;
 const NO_UPDATES: &[u8] = b"% Warning: there are no newer updates available";
+const NO_UPDATES_LEGACY: &[u8] = b"% Warning: there are no updates available";
 const NO_UPDATES_NUMBERED: &[u8] = b"% Warning (1): there are no newer updates available";
 
 /// Finish the bounded network transfer before taking a database write lock.
@@ -109,7 +110,8 @@ fn fetch_until(
             Some(b"") => continue,
             Some(line)
                 if line.eq_ignore_ascii_case(NO_UPDATES)
-                    || line.eq_ignore_ascii_case(NO_UPDATES_NUMBERED) =>
+                    || line.eq_ignore_ascii_case(NO_UPDATES_NUMBERED)
+                    || line.eq_ignore_ascii_case(NO_UPDATES_LEGACY) =>
             {
                 break true;
             }
@@ -308,6 +310,21 @@ mod tests {
     #[test]
     fn recognizes_only_complete_bounded_no_update_replies() -> Result<()> {
         for (response, max_bytes, no_updates) in [
+            (
+                &b"% Warning: there are no updates available\n\n\n"[..],
+                4096,
+                true,
+            ),
+            (
+                &b"% Copyright banner\n% WARNING: there are no updates available\r\n"[..],
+                4096,
+                true,
+            ),
+            (
+                &b"% Warning: there are no updates available\n% ERROR\n"[..],
+                4096,
+                false,
+            ),
             (
                 &b"\n% Warning: there are no newer updates available\n\n"[..],
                 4096,

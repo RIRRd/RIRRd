@@ -541,12 +541,13 @@ fn main() -> Result<()> {
             let start = base
                 .checked_add(1)
                 .context("source serial cannot advance")?;
-            let filter = config
+            let mirror = config
                 .nrtm3_sync
                 .get(&source)
-                .filter(|mirror| {
-                    mirror.endpoint == endpoint && !mirror.object_class_filter.is_empty()
-                })
+                .filter(|mirror| mirror.endpoint == endpoint);
+            let encoding = mirror.map(|mirror| mirror.encoding).unwrap_or_default();
+            let filter = mirror
+                .filter(|mirror| !mirror.object_class_filter.is_empty())
                 .map(|mirror| &mirror.object_class_filter);
             let timeout = Duration::from_secs(timeout_seconds.unwrap_or(config.io_timeout_seconds));
             let response = match end_serial {
@@ -568,11 +569,13 @@ fn main() -> Result<()> {
             }?;
             match response {
                 Some(input) => {
-                    let transcript = if filter.is_some() {
-                        nrtm3::Reader::filtered(input, &source, config.max_snapshot_bytes)
-                    } else {
-                        nrtm3::Reader::new(input, &source, config.max_snapshot_bytes)
-                    }
+                    let transcript = nrtm3::Reader::with_encoding(
+                        input,
+                        &source,
+                        config.max_snapshot_bytes,
+                        encoding,
+                        filter.is_some(),
+                    )
                     .map_err(anyhow::Error::msg)?;
                     ensure!(
                         end_serial.is_none_or(|end| transcript.range().1 <= end),

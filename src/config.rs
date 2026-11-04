@@ -80,6 +80,9 @@ pub struct MirrorConfig {
     pub endpoint: SocketAddr,
     pub interval_seconds: u64,
     pub base_serial: Option<u64>,
+    /// Character set of this specific upstream peer; UTF-8 remains strict by default.
+    #[serde(default)]
+    pub encoding: crate::nrtm3::Encoding,
     /// Retain these classes while consuming every upstream serial.
     #[serde(default)]
     pub object_class_filter: HashSet<String>,
