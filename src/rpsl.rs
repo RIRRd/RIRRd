@@ -42,8 +42,15 @@ impl Object {
         let sensitive = |name: &str| {
             name.eq_ignore_ascii_case("auth") || name.eq_ignore_ascii_case("rpki-ov-state")
         };
+        let private_marker = self.text.contains("-----BEGIN PGP PRIVATE KEY BLOCK-----");
+        let private_end = private_marker
+            && self
+                .text
+                .lines()
+                .any(|line| armor_value(line) == "-----END PGP PRIVATE KEY BLOCK-----");
         let needs_filtering = self.text.lines().any(|line| {
             line.starts_with(['#', '%'])
+                || (private_marker && private_key_start(line, private_end))
                 || line
                     .split_once(':')
                     .is_some_and(|(name, _)| sensitive(name))
@@ -54,8 +61,19 @@ impl Object {
 
         let mut result = String::with_capacity(self.text.len());
         let mut suppress_continuations = false;
+        let mut private_block = false;
         for segment in self.text.split_inclusive('\n') {
             let line = segment.trim_end_matches(['\r', '\n']);
+            if private_block {
+                if armor_value(line) == "-----END PGP PRIVATE KEY BLOCK-----" {
+                    private_block = false;
+                }
+                continue;
+            }
+            if private_marker && private_key_start(line, private_end) {
+                private_block = true;
+                continue;
+            }
             if line.starts_with(['#', '%']) {
                 continue;
             }
@@ -70,6 +88,22 @@ impl Object {
         }
         Cow::Owned(result)
     }
+}
+
+fn armor_value(line: &str) -> &str {
+    if is_continuation(line) {
+        line[1..].trim()
+    } else {
+        line.split_once(':').map_or(line, |(_, value)| value).trim()
+    }
+}
+
+fn private_key_start(line: &str, private_end: bool) -> bool {
+    let begin = "-----BEGIN PGP PRIVATE KEY BLOCK-----";
+    (private_end && armor_value(line) == begin)
+        || line.split_once(':').is_some_and(|(name, value)| {
+            name.eq_ignore_ascii_case("certif") && value.contains(begin)
+        })
 }
 
 #[derive(Default)]
@@ -560,5 +594,29 @@ mod tests {
                 }
             }
         }
+    }
+    #[test]
+    fn public_text_withholds_private_armor_and_preserves_public_certificates() {
+        let text = "key-cert: PGPKEY-01234567\ncertif: -----BEGIN PGP PRIVATE KEY BLOCK-----\ncertif: synthetic-private-payload\ncertif: -----END PGP PRIVATE KEY BLOCK-----\ncertif: public-certificate-fixture\nremarks: safe metadata\nsource: TEST\n";
+        let object = parse_snapshot(text).unwrap();
+        let public = object.public_text();
+        assert!(!public.contains("PRIVATE KEY"));
+        assert!(!public.contains("synthetic-private-payload"));
+        assert!(public.contains("public-certificate-fixture"));
+        assert!(public.contains("source: TEST"));
+        let mention = "key-cert: PGPKEY-01234567\nremarks: Never publish -----BEGIN PGP PRIVATE KEY BLOCK----- here.\nsource: TEST\n";
+        assert_eq!(parse_snapshot(mention).unwrap().public_text(), mention);
+        let header_mention = "key-cert: PGPKEY-01234567\nremarks: -----BEGIN PGP PRIVATE KEY BLOCK-----\nsource: TEST\n";
+        assert_eq!(
+            parse_snapshot(header_mention).unwrap().public_text(),
+            header_mention
+        );
+        let partial = "key-cert: PGPKEY-01234567\ncertif: -----BEGIN PGP PRIVATE KEY BLOCK-----\n+ synthetic-private-payload\n";
+        assert!(
+            !parse_snapshot(&(partial.to_owned() + "source: TEST\n"))
+                .unwrap()
+                .public_text()
+                .contains("synthetic-private-payload")
+        );
     }
 }

@@ -57,3 +57,8 @@ Published snapshot objects may be up to 8 MiB; the full RIPE export includes an
 inet6num record slightly above 4 MiB. Authoritative submissions retain their
 64 KiB object limit. Query and response limits remain bounded independently; an
 over-limit answer fails instead of silently truncating the stored object.
+
+Public rendering also withholds private-key armor from certificate data, including
+folded payload lines. Explanatory header mentions in remarks remain visible.
+This is a disclosure guard; cryptographic OpenPGP/key-cert authentication
+workflows remain part of the authoritative parity backlog.
