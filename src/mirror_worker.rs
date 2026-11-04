@@ -7,7 +7,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, ensure};
-use tokio::sync::watch;
+use tokio::sync::{Semaphore, watch};
 
 use crate::{config::MirrorConfig, nrtm_client, nrtm3::Reader, storage::Store};
 
@@ -38,6 +38,7 @@ pub async fn run(
     config: MirrorConfig,
     max_bytes: u64,
     timeout: Duration,
+    peer_slots: Arc<Semaphore>,
     mut shutdown: watch::Receiver<bool>,
 ) -> Result<()> {
     ensure!(
@@ -64,12 +65,20 @@ pub async fn run(
     status.object_class_filter.sort_unstable();
     store.set_mirror_status(source.clone(), status.clone());
     while !stopped(&shutdown) {
+        // Several sources can share one upstream server. Queue before taking
+        // a blocking worker so peer connection limits do not starve queries.
+        let permit = tokio::select! {
+            biased;
+            _ = shutdown.wait_for(|stopped| *stopped) => break,
+            permit = peer_slots.clone().acquire_owned() => permit.context("NRTMv3 peer admission closed")?,
+        };
         let attempt = {
             let store = store.clone();
             let source = source.clone();
             let shutdown = shutdown.clone();
             let config = config.clone();
             tokio::task::spawn_blocking(move || {
+                let _permit = permit;
                 sync_once(&store, &source, &config, max_bytes, timeout, &shutdown)
             })
         };
@@ -257,6 +266,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn shutdown_cancels_peer_admission_without_connecting_or_changing_state() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = registry(dir.path())?;
+        let listener = listener()?;
+        let (stop, shutdown) = watch::channel(false);
+        let worker = tokio::spawn(run(
+            store.clone(),
+            "TEST".into(),
+            MirrorConfig {
+                encoding: Default::default(),
+                endpoint: listener.local_addr()?,
+                interval_seconds: 1,
+                base_serial: Some(9),
+                object_class_filter: Default::default(),
+            },
+            4096,
+            Duration::from_secs(3),
+            Arc::new(Semaphore::new(0)),
+            shutdown,
+        ));
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !store.mirror_status().contains_key("TEST") {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await?;
+        stop.send(true)?;
+        tokio::time::timeout(Duration::from_secs(2), worker).await???;
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            io::ErrorKind::WouldBlock
+        );
+        assert_eq!(store.source_serial("TEST")?, None);
+        assert_eq!(store.verify()?, 1);
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn worker_retries_failed_batch_and_uses_the_committed_cursor() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let store = registry(dir.path())?;
@@ -284,6 +331,7 @@ mod tests {
             },
             4096,
             Duration::from_secs(3),
+            Arc::new(Semaphore::new(2)),
             shutdown,
         ));
         tokio::time::timeout(Duration::from_secs(8), completed).await??;
@@ -340,6 +388,7 @@ mod tests {
             config.clone(),
             4096,
             Duration::from_secs(3),
+            Arc::new(Semaphore::new(2)),
             shutdown,
         ));
         tokio::time::timeout(Duration::from_secs(8), completed).await??;
@@ -506,6 +555,7 @@ mod tests {
             },
             4096,
             Duration::from_secs(3),
+            Arc::new(Semaphore::new(2)),
             shutdown,
         ));
         tokio::time::timeout(Duration::from_secs(5), async {

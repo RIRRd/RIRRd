@@ -29,6 +29,7 @@ mod submission_http;
 mod whois;
 
 use std::{
+    collections::HashMap,
     fs::{self, File},
     io::{self, BufRead, BufReader, BufWriter, IsTerminal, Read, Write},
     net::SocketAddr,
@@ -39,7 +40,11 @@ use std::{
 
 use anyhow::{Context, Result, ensure};
 use clap::{Parser, Subcommand};
-use tokio::{net::TcpListener, sync::watch, task::JoinSet};
+use tokio::{
+    net::TcpListener,
+    sync::{Semaphore, watch},
+    task::JoinSet,
+};
 use tracing_subscriber::EnvFilter;
 use zeroize::Zeroizing;
 
@@ -727,13 +732,19 @@ async fn serve(config: Config, store: Arc<Store>) -> Result<()> {
     };
     let (stop, stopped) = watch::channel(false);
     let mut services = JoinSet::new();
+    let mut peer_slots = HashMap::new();
     for (source, mirror) in &config.nrtm3_sync {
+        let slots = peer_slots
+            .entry(mirror.endpoint)
+            .or_insert_with(|| Arc::new(Semaphore::new(2)))
+            .clone();
         services.spawn(mirror_worker::run(
             store.clone(),
             source.clone(),
             mirror.clone(),
             config.max_snapshot_bytes,
             Duration::from_secs(config.io_timeout_seconds),
+            slots,
             stopped.clone(),
         ));
     }

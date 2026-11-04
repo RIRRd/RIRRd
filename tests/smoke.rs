@@ -1294,6 +1294,113 @@ TEST = ["127.0.0.1"]
 }
 
 #[test]
+fn shared_mirror_peer_is_bounded_without_exhausting_query_workers() {
+    let workspace = tempfile::tempdir().unwrap();
+    let upstream = TcpListener::bind("127.0.0.1:0").unwrap();
+    upstream.set_nonblocking(true).unwrap();
+    let endpoint = upstream.local_addr().unwrap();
+    let sources = (0..7).map(|i| format!("TEST{i}")).collect::<Vec<_>>();
+    let config = workspace.path().join("irrd.toml");
+    let mut text = format!(
+        "database = \"registry.redb\"\nsources = {}\nlisten = \"127.0.0.1:0\"\nhttp_listen = \"127.0.0.1:0\"\nworker_threads = 2\nmax_blocking_threads = 4\ndatabase_cache_mib = 8\nmax_connections = 8\nio_timeout_seconds = 15\nmax_snapshot_bytes = 4096\n",
+        serde_json::to_string(&sources).unwrap()
+    );
+    for source in &sources {
+        text.push_str(&format!("\n[nrtm3_sync.{source}]\nendpoint = \"{endpoint}\"\ninterval_seconds = 60\nbase_serial = 0\nobject_class_filter = [\"aut-num\"]\n"));
+    }
+    fs::write(&config, text).unwrap();
+    let snapshot = workspace.path().join("synthetic.rpsl");
+    for source in &sources {
+        fs::write(&snapshot, format!("aut-num: AS64496\nsource: {source}\n")).unwrap();
+        successful(
+            cli(&config)
+                .args(["import", "snapshot", "--source", source, "--file"])
+                .arg(&snapshot)
+                .output()
+                .unwrap(),
+        );
+    }
+    let (observed, ready) = mpsc::channel();
+    let (release, released) = mpsc::channel();
+    let peer = thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let accept = || loop {
+            match upstream.accept() {
+                Ok((mut stream, _)) => {
+                    stream.set_nonblocking(false).unwrap();
+                    stream.set_read_timeout(Some(IO_DEADLINE)).unwrap();
+                    let mut line = String::new();
+                    BufReader::new(&mut stream).read_line(&mut line).unwrap();
+                    assert!(line.starts_with("-g TEST") && line.ends_with(":3:1-LAST\n"));
+                    break stream;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(Instant::now() < deadline, "mirror was not contacted");
+                    thread::sleep(Duration::from_millis(5));
+                }
+                Err(error) => panic!("accepting test mirror: {error}"),
+            }
+        };
+        let first = accept();
+        let second = accept();
+        observed.send(()).unwrap();
+        // Keep both network reads blocked while the real HTTP query completes.
+        released.recv_timeout(IO_DEADLINE).unwrap();
+        assert_eq!(
+            upstream.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+        for mut stream in [first, second] {
+            stream
+                .write_all(b"% Warning: there are no newer updates available\n")
+                .unwrap();
+        }
+        for _ in 2..7 {
+            accept()
+                .write_all(b"% Warning: there are no newer updates available\n")
+                .unwrap();
+        }
+    });
+    let (server, http) = Server::start_listener(&config, "GraphQL listening");
+    ready.recv_timeout(IO_DEADLINE).unwrap();
+    let reply = whois(
+        http,
+        b"GET /v1/whois/?q=AS64496 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+    );
+    assert!(
+        reply.starts_with("HTTP/1.1 200 ") && reply.contains("aut-num: AS64496"),
+        "{reply}"
+    );
+    release.send(()).unwrap();
+    peer.join().unwrap();
+    let deadline = Instant::now() + IO_DEADLINE;
+    loop {
+        let reply = whois(
+            http,
+            b"GET /ui/mirrors.json HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+        );
+        let value: Value = serde_json::from_str(reply.split_once("\r\n\r\n").unwrap().1).unwrap();
+        if value["sources"]
+            .as_object()
+            .unwrap()
+            .values()
+            .all(|row| row["state"] == "following")
+        {
+            assert_eq!(value["sources"].as_object().unwrap().len(), 7);
+            assert_eq!(value["total_objects"], 7);
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "queued mirrors failed to complete"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+    drop(server);
+    successful(cli(&config).args(["database", "verify"]).output().unwrap());
+}
+
+#[test]
 fn scheduled_mirror_retries_a_bad_transcript_and_publishes_a_valid_update() {
     let workspace = tempfile::tempdir().unwrap();
     let upstream = TcpListener::bind("127.0.0.1:0").unwrap();
