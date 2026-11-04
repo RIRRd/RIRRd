@@ -98,12 +98,11 @@ allowlist diagnosis was verified directly: the same GraphQL POST returned 400
 with `Host: localhost` and 200 with the configured endpoint Host. The corrected
 client passed a live request preflight before restarting the query suite.
 
-## ROV and monitoring delivery
+## Monitoring delivery and historical validator measurements
 
-`compare_rpki_index.py` compares a pinned RIRRd source revision with the current
-ROV kernel using synthetic prevalidated payloads; CPU and wall time are recorded.
 `compare_history_gateway.py` exercises the normal history HTTP handler in isolated
-processes. Both require an explicit work/output location outside Git. See
-[the efficiency checkpoint](../../docs/benchmarks/UI_EFFICIENCY.md) for fixture,
-measurement scope, exact revisions and raw results. These do not run a public
-load test or replace the separate official IRRd oracle comparison.
+processes. Use an explicit work/output location outside Git. The former ROV
+kernel benchmark is historical: the validator and its measurement tools were
+removed in beta.2. Check out the exact historical revision recorded in
+[the efficiency checkpoint](../../docs/benchmarks/UI_EFFICIENCY.md) to reproduce
+those older results. They do not describe the current IRR-only daemon.

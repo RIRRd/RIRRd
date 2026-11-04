@@ -1,5 +1,10 @@
 # UI and lookup efficiency — 3 November 2026
 
+> Historical checkpoint: embedded RPKI and RTR were removed in beta.2 on
+> 4 November 2026. Validator measurements and commands below apply only to the
+> recorded historical source revisions. They are not current features. See
+> [the IRR-only checkpoint](../compatibility/IRR_ONLY_BETA2_CHECKPOINT.md).
+
 Branch: `feature/ui-efficiency`. Baseline: RIRRd `v0.1.0-beta.1`,
 `a47609825e3db2f1428f8604e420a7605fd55949`. Measured candidate:
 `20960d1649c44febeb925af2ea4df674df46c2c2`, from a clean checkout.

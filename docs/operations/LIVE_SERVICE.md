@@ -1,5 +1,9 @@
 # Experimental public read-only service
 
+The current daemon is IRR-only. Embedded validator, RTR and origin-check routes
+were removed in beta.2. The nineteen-source IRR generation is retained. See
+[the migration checkpoint](../compatibility/IRR_ONLY_BETA2_CHECKPOINT.md).
+
 The user authorized the public test registry on 3 November 2026. This supersedes
 the earlier static-only deployment restriction for **read-only queries**. No public
 authoritative submission, account administration, journal or mirroring endpoint
@@ -76,7 +80,7 @@ loopback gateway on 9281; all other registry routes remain 404.
 The Rust HTTP service stays on loopback port 9280 and validates Host. The gateway
 uses a literal loopback backend, never an arbitrary user-supplied URL.
 
-The gateway permits read-only WHOIS, RPKI status/validation and bounded object
+The gateway permits read-only WHOIS and bounded object
 browsing GET requests, plus GraphQL POST. Community node submissions go to a
 separate loopback service on port 9282; they cannot submit registry updates. It limits request bodies to
 16 KiB, responses to 2 MiB, concurrent worker threads to 16 and query rate to two
@@ -126,7 +130,7 @@ verified snapshot object counts. HTTP attempts/errors reset on gateway restart;
 recent p95 uses the latest 512 gateway attempts, including proxy overhead. TCP
 query counts are not measured and are explicitly excluded. Failed telemetry is
 marked unavailable rather than replaced with example numbers. Displayed snapshot
-times are not proof of upstream completeness or live RPKI/scope filtering.
+times are not proof of upstream completeness or live scope/route-preference filtering.
 
 ## Build, refresh and rollback
 

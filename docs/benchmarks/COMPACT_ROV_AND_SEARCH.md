@@ -1,5 +1,10 @@
 # Compact ROV index and direct search — 3 November 2026
 
+> Historical checkpoint: embedded RPKI and RTR were removed in beta.2 on
+> 4 November 2026. Validator measurements and commands below apply only to the
+> recorded historical source revisions. They are not current features. See
+> [the IRR-only checkpoint](../compatibility/IRR_ONLY_BETA2_CHECKPOINT.md).
+
 Deployed source: `eed64b8a762a98a3dade72bd5dcb21eaa78c5eae` on
 `feature/compact-rov-search`. Previous optimized baseline:
 `fc7bef86aed6e3c97451dc0abed567d482638788`. This continues the
