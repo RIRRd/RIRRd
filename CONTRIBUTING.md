@@ -2,8 +2,9 @@
 
 RIRRd is MIT-licensed. Use, modify and redistribute it, including commercially,
 with the license notice preserved. Dependencies and upstream material retain
-their own licenses. The repository is currently private during development;
-public collaboration starts when the owner publishes it.
+their own licenses. Development and issue tracking are hosted in the RIRRd GitHub organization.
+
+Follow the [community conduct policy](CODE_OF_CONDUCT.md).
 
 AI tools, agents and AI-assisted contributions are welcome. Review and understand the submitted code, test it through normal interfaces, and follow [the AI disclosure](docs/AI_DISCLOSURE.md). Do not submit unverified generated output or private prompts/credentials.
 

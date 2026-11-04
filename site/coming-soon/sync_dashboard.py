@@ -70,7 +70,7 @@ shutil.copyfile(core/'LICENSE',root/'public/license.txt')
 import markdown
 from html import escape
 md=(core/'docs/operations/ROUTER_INTEGRATION.md').read_text()
-for old,new in [('../../examples/routers/bird.conf','bird.conf'),('../../examples/routers/frr.conf','frr.conf'),('../../tools/router-integration/README.md','https://github.com/Peravix/Rirrd/tree/codex/linux-parity/tools/router-integration')]:md=md.replace(old,new)
+for old,new in [('../../examples/routers/bird.conf','bird.conf'),('../../examples/routers/frr.conf','frr.conf'),('../../tools/router-integration/README.md','https://github.com/RIRRd/RIRRd/tree/codex/linux-parity/tools/router-integration')]:md=md.replace(old,new)
 body=markdown.markdown(md,extensions=['fenced_code','tables'])
 guide=root/'public/guides/routers';guide.mkdir(parents=True,exist_ok=True)
 html='''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>RIRRd · BIRD and FRR integration</title><link rel="stylesheet" href="style.css"></head><body><a class="skip" href="#guide">Skip to guide</a><header><a href="/">RIRRd</a><nav><a href="/dashboard/">Live dashboard</a><a href="/#performance">Measurements</a></nav></header><main id="guide"><p class="notice">Development guide · MIT-licensed · Built with AI assistance · AI contributions welcome; review and testing required.</p>'''+body+'''</main><footer><a href="/license.txt">MIT license</a><span>Repository currently private · Experimental read-only test registry</span><a href="/">Project site ↗</a></footer></body></html>'''

@@ -4,10 +4,10 @@ RIRRd is a Rust Internet Routing Registry daemon with embedded storage, a bundle
 console and an optional embedded RPKI validator. It runs independently of the
 community service at [irrd.tools](https://irrd.tools/).
 
-Version **0.1.0-beta.1** is for evaluation. Full IRRd parity and production
+Version **0.1.0-beta.2** is for evaluation. Full IRRd parity and production
 qualification are incomplete. Read [beta status](/docs/beta/) before deployment.
-The project is MIT licensed; the GitHub repository is being prepared for public
-release. Clone/build commands require access until publication completes.
+The project is MIT licensed. The canonical repository is RIRRd/RIRRd on GitHub.
+Use a tagged beta release for a reproducible evaluation.
 
 ## Build and try a local fixture
 
@@ -15,8 +15,8 @@ On Linux, install stable Rust, a C compiler/linker, pkg-config and CA certificat
 Build from the source checkout:
 
 ```sh
-git clone https://github.com/Peravix/Rirrd.git
-cd Rirrd
+git clone https://github.com/RIRRd/RIRRd.git
+cd RIRRd
 cargo build --locked --release
 ./target/release/rust-irrd --config examples/irrd.toml config check
 ./target/release/rust-irrd --config examples/irrd.toml import snapshot \

@@ -3,7 +3,7 @@ Version:        %{package_version}
 Release:        %{?package_release}%{!?package_release:1}
 Summary:        Rust Internet Routing Registry daemon
 License:        MIT
-URL:            https://github.com/Peravix/Rirrd
+URL:            https://github.com/RIRRd/RIRRd
 Source0:        rust-irrd
 Source1:        rust-irrd.service
 Source2:        irrd.toml

@@ -16,14 +16,13 @@ account. Listing your node is optional.
 
 ## Source availability
 
-Project code is MIT licensed. The repository is currently private during
-  development; a public open-source release is planned. The build instructions
-below require repository access until that release. There is no public package
-or container download implied by these commands.
+Project code is MIT licensed, with source and issue tracking in the RIRRd GitHub
+organization. The daemon is independent of the public community service. These
+commands build from source; tagged release archives are listed separately.
 
 ```sh
-git clone git@github.com:Peravix/Rirrd.git
-cd Rirrd
+git clone https://github.com/RIRRd/RIRRd.git
+cd RIRRd
 cargo build --locked --release
 ./target/release/rust-irrd --config irrd.toml config check
 ```
@@ -46,7 +45,7 @@ process. It does not require a separate Routinator daemon. RRDP-only collection,
 rejected publication points and incomplete policy integration are reported in
 the running console. Full IRRd and validator production qualification remain open.
 
-[Development repository (currently private)](https://github.com/Peravix/Rirrd)
+[RIRRd source repository](https://github.com/RIRRd/RIRRd)
 
 ## Contribute
 

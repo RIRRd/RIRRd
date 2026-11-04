@@ -91,7 +91,7 @@
 
     <section id="page-connect" class="page" hidden>
       <div class="page-heading"><div><p class="eyebrow">ROUTER INTEGRATION</p><h1>Connect BIRD or FRR</h1><p class="muted">Generate IRR prefix filters, review them and validate your router configuration.</p></div></div>
-      <article class="panel"><p id="connect-endpoint"></p><div id="router-commands" class="command-grid"></div><p class="fine">bgpq4 generates configuration text; it does not change a router. Review source choice and compare the candidate with your current policy before applying it.</p><a id="router-guide" href="https://github.com/Peravix/Rirrd/blob/codex/linux-parity/docs/operations/ROUTER_INTEGRATION.md">Detailed router workflow →</a></article>
+      <article class="panel"><p id="connect-endpoint"></p><div id="router-commands" class="command-grid"></div><p class="fine">bgpq4 generates configuration text; it does not change a router. Review source choice and compare the candidate with your current policy before applying it.</p><a id="router-guide" href="https://github.com/RIRRd/RIRRd/blob/codex/linux-parity/docs/operations/ROUTER_INTEGRATION.md">Detailed router workflow →</a></article>
       <article class="panel"><h2>IRR filters and RPKI have different roles</h2><p>IRR filters derive permitted routes from registry objects. RPKI validates route origins against signed resource data. Configure both policies deliberately; changing a WHOIS hostname alone does not enable RPKI on a router.</p><p id="router-rpki-note"></p></article>
     </section>
 
@@ -101,7 +101,7 @@
       <article class="panel"><h2>Understand the numbers</h2><p>Process RSS is resident application memory. Cgroup memory also includes cache charged to the service. Linux filesystem cache is reclaimable and does not mean the VM is out of RAM. RPKI validation and snapshot preparation create periodic CPU and I/O peaks.</p><p>The smaller IRR-only profile can omit RPKI validation. Full-source imports and cold RPKI collection need more headroom than idle queries. Resource measurements here are observations, not minimum host specifications.</p><div id="resource-history" class="two-column" hidden><article class="panel"><h2>Process resident memory</h2><div id="memory-chart" class="chart"></div></article><article class="panel"><h2>CPU · one core = 100%</h2><div id="cpu-chart" class="chart"></div></article></div><p id="resource-note" class="fine"></p></article>
     </section>
   </main>
-  <footer>RIRRd · Experimental software · <a href="https://github.com/Peravix/Rirrd">Project repository</a><span>Built with AI assistance · Contributions welcome with review and tests</span></footer>
+  <footer>RIRRd · Experimental software · <a href="https://github.com/RIRRd/RIRRd">Project repository</a><span>Built with AI assistance · Contributions welcome with review and tests</span></footer>
 </div>
 </body>
 </html>

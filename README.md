@@ -1,6 +1,6 @@
 # RIRRd
 
-**Beta 0.1.0-beta.1** · [MIT license](LICENSE) · [Project website](https://rirrd.co.uk/)
+**Beta 0.1.0-beta.2** · [MIT license](LICENSE) · [Project website](https://rirrd.co.uk/)
 · [Community tools](https://irrd.tools/) · [Beta status](docs/BETA_STATUS.md)
 
 A Rust Internet Routing Registry daemon with embedded storage, bounded WHOIS,
@@ -13,8 +13,8 @@ incomplete.** The baseline is official IRRd v4.5.4 at
 `8e8080dab744a348b7d0e6efcb53f403301dd075`. Check the
 [compatibility matrix](docs/compatibility/IRRD_FEATURE_MATRIX.md),
 [known gaps](docs/BETA_STATUS.md) and [progress record](AUTONOMOUS_PROGRESS.md).
-The source is being prepared for public beta publication; release artifacts
-must not be inferred from a source version alone.
+Source and issue tracking are hosted in the RIRRd GitHub organization.
+Release artifacts are published only after the release checks pass.
 
 ## Software and community network
 
@@ -38,7 +38,7 @@ with review, reproducible tests and clear provenance. Code can be used, modified
 and redistributed under MIT. Authorship does not establish correctness or security.
 See [CONTRIBUTING](CONTRIBUTING.md), [AI disclosure](docs/AI_DISCLOSURE.md) and
 [SECURITY](SECURITY.md). Report beta bugs using
-[GitHub Issues](https://github.com/Peravix/Rirrd/issues) once publication completes.
+[GitHub Issues](https://github.com/RIRRd/RIRRd/issues) for reproducible bugs and feature requests.
 
 ## Dashboard and router integration
 
@@ -67,9 +67,9 @@ python3 tools/testing/run.py --profile core --out /tmp/rirrd-core
 python3 tools/testing/run.py --profile web --out /tmp/rirrd-web
 ```
 
-[Core CI](https://github.com/Peravix/Rirrd/actions/workflows/ci.yml) ·
-[Parser/RPKI fuzzing](https://github.com/Peravix/Rirrd/actions/workflows/fuzz.yml) ·
-[Pinned upstream oracle](https://github.com/Peravix/Rirrd/actions/workflows/upstream-oracle.yml)
+[Core CI](https://github.com/RIRRd/RIRRd/actions/workflows/ci.yml) ·
+[Parser/RPKI fuzzing](https://github.com/RIRRd/RIRRd/actions/workflows/fuzz.yml) ·
+[Pinned upstream oracle](https://github.com/RIRRd/RIRRd/actions/workflows/upstream-oracle.yml)
 
 ## Local evaluation
 

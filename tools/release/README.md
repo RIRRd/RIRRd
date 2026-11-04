@@ -1,44 +1,57 @@
 # Beta publication
 
-Source version: `0.1.0-beta.1`. Release notes: `docs/releases/v0.1.0-beta.1.md`.
-Use a reviewed PR into protected main; never force-push main or bypass a required
-review/check. The branch is `release/v0.1.0-beta.1`, with focused source commits.
+Canonical repository: **RIRRd/RIRRd**. Current candidate version:
+`0.1.0-beta.2`; notes: `docs/releases/v0.1.0-beta.2.md`.
+Use a reviewed PR into protected main. Never force-push main or bypass required
+reviews/checks. The first organization repository is initialized from the
+verified project history; subsequent changes use the normal protected PR path.
 
-The SSH deploy key can push source branches and tags, but cannot administer the
-repository, inspect private Actions or change visibility. An authenticated GitHub
-account with the appropriate repository/admin permissions is required for those
-operations. Authenticate on the VM with `gh auth login`, or connect GitHub; never
-paste an access token into an issue, file, command transcript or chat.
+## Scoped access
 
-Read-only access/preflight:
+Use a fine-grained token whose resource owner is **RIRRd**, or an installation
+token from a GitHub App installed only in that organization. Repository
+administration, contents, Actions, Issues, pull requests and workflow-write
+permissions support publication. An SSH deploy key alone cannot administer a
+repository or inspect private Actions. Do not use account-wide OAuth merely to
+work in this organization. Keep credentials in a private secret store outside
+Git, and never paste them into issues, command arguments or chat.
+
+The GitHub CLI can use a scoped `GH_TOKEN` supplied by the operator's credential
+helper. Read-only preflight:
 
 ```sh
-python3 tools/release/publication-status.py
+python3 tools/release/publication-status.py --repo RIRRd/RIRRd --branch main
 ```
 
-After the review and required checks, merge through GitHub. Enable Issues and
-private vulnerability reporting, inspect the public tree/history scan and confirm
-that the default branch contains the reviewed beta. The owner has authorized public
-visibility and a beta release. An authenticated administrator can then perform:
+## Review, checks and visibility
+
+Inspect the source tree/history audit and secret scans, license/notices, beta
+limitations, issue forms and contribution/security policies. Confirm GitHub
+checks at the exact candidate revision, then use the reviewed protected branch.
+Enable Issues and private vulnerability reporting. The owner has authorized
+public beta publication. An authorized administrator can change visibility:
 
 ```sh
-gh repo edit Peravix/Rirrd --enable-issues \
+gh repo edit RIRRd/RIRRd --enable-issues \
   --visibility public --accept-visibility-change-consequences
 ```
 
-Confirm the public repository API is readable without credentials before changing
-`site/project/release.json` and source-availability wording. Repository visibility
-must not be claimed from a successful SSH push. Do not expose any runtime cache,
-queue, key, database or local backup in Git or release assets.
+Confirm the repository API and clone are accessible without credentials before
+setting `site/project/release.json` public metadata. Inspect public issue forms
+and their security-reporting links. Historical CI links in old checkpoints
+belong to the original repository; current runs must link to RIRRd/RIRRd.
+Keep runtime data, caches, private queues and credentials outside Git and assets.
 
-Push the matching `v0.1.0-beta.1` tag only at the verified release commit. The beta
-workflow checks the tag/version, format, strict Clippy, tests, audit and publication
-filenames, then builds/installs Debian and RPM packages on native x86-64/ARM64
-runners. Only after those jobs pass does it create an explicit GitHub prerelease
-with four native archives and SHA256SUMS. No latest/stable release is implied.
-Verify the resulting workflow/release URLs through authenticated GitHub access.
+## Tagged beta
 
-Obsolete AI-named branches may be removed after verifying every tip is preserved
-in the pushed release branch/tag. Keep an administrator-only Git bundle before
-cleanup; no history rewrite is needed. Historical compatibility docs retain their
-exact tested commits and do not become new release evidence automatically.
+Create a new matching `v0.1.0-beta.2` tag only at the verified release commit.
+Preserve historical tags rather than moving them. Beta publication calls the
+shared CI matrix, web, coverage, audit and workflow gates, then performs source
+hygiene/tag checks and native x86-64/ARM64 DEB/RPM installation/systemd checks.
+Only passing packages become a GitHub prerelease with four archives and
+SHA256SUMS. A source version alone is not a published download or stable release.
+
+After publication, verify the real release/artifact URLs and update the site
+release-published flag. The public node's runtime build is tracked separately
+from the latest software release. Static website publication must not restart
+or reimport the running routing registry.

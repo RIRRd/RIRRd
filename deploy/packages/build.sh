@@ -94,7 +94,7 @@ Priority: optional
 Architecture: $deb_arch
 Maintainer: Rirrd packaging <noreply@github.com>
 Depends: libc6 (>= $glibc_floor), libgcc-s1, ca-certificates, systemd, init-system-helpers
-Homepage: https://github.com/Peravix/Rirrd
+Homepage: https://github.com/RIRRd/RIRRd
 Description: Rust Internet Routing Registry daemon
  The service requires an operator-provided snapshot and explicit startup.
 EOF

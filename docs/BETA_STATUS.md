@@ -1,4 +1,4 @@
-# RIRRd 0.1.0-beta.1
+# RIRRd 0.1.0-beta.2
 
 RIRRd is beta software. It aims to reduce the resources needed for a self-hosted
 Internet Routing Registry, with an optional in-process RPKI validator. This beta
@@ -42,8 +42,7 @@ at the commits and environments documented in the source repository.
 
 ## Report a problem
 
-Use [GitHub Issues](https://github.com/Peravix/Rirrd/issues) once the repository is
-public. Include the version, OS/architecture, a minimal synthetic configuration,
+Use [GitHub Issues](https://github.com/RIRRd/RIRRd/issues) for reproducible reports. Include the version, OS/architecture, a minimal synthetic configuration,
 request/response, expected behavior, reproduction steps and relevant redacted
 logs. Performance reports should state the dataset, concurrency and measurements.
 Do not include private keys, credentials, real private contacts or runtime databases.

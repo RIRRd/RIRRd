@@ -307,7 +307,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             loaded = [s['source'] for s in stats.get('sources', []) if s['state'] == 'loaded']
             return self.respond(200, json.dumps({'mode': 'live', 'public_service': True,
                 'source_revision': stats.get('release', {}).get('source_commit'),
-                'version': stats.get('release', {}).get('version', '0.1.0-beta.1'), 'node': NODE,
+                'version': stats.get('release', {}).get('version', '0.1.0-beta.2'), 'node': NODE,
                 'sources': loaded, 'whois_listen': NODE['whois'],
                 'http_sources': [s['source'] for s in stats.get('sources', []) if s['state'] == 'loaded' and s.get('http_access', True)],
                 'http_whois_sources': [s['source'] for s in stats.get('sources', []) if s['state'] == 'loaded'],

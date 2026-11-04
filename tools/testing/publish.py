@@ -34,7 +34,7 @@ def main():
     args=parser.parse_args();reports=[checked(json.loads(path.read_text()))for path in [args.core,args.web]]
     commits={r['source_commit']for r in reports}
     if len(commits)!=1:raise ValueError('Run core and web against the same source revision')
-    result={'schema_version':1,'recorded_at':datetime.datetime.now(datetime.timezone.utc).isoformat(),'source_commit':reports[0]['source_commit'],'status':'passed' if all(r['status']=='passed' for r in reports)else'failed','reports':reports,'coverage':None,'ci_status':'not_verified','ci_url':'https://github.com/Peravix/Rirrd/actions/workflows/ci.yml'}
+    result={'schema_version':1,'recorded_at':datetime.datetime.now(datetime.timezone.utc).isoformat(),'source_commit':reports[0]['source_commit'],'status':'passed' if all(r['status']=='passed' for r in reports)else'failed','reports':reports,'coverage':None,'ci_status':'not_verified','ci_url':'https://github.com/RIRRd/RIRRd/actions/workflows/ci.yml'}
     if args.coverage:
         coverage=json.loads(args.coverage.read_text())
         if coverage['source_dirty']or coverage['source_commit']not in commits:raise ValueError('Coverage must match the clean source revision')
