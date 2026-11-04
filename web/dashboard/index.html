@@ -80,11 +80,11 @@
 
     <section id="page-connect" class="page" hidden>
       <div class="page-heading"><div><p class="eyebrow">ROUTER INTEGRATION</p><h1>Connect BIRD or FRR</h1><p class="muted">Generate IRR prefix filters, review them and validate your router configuration.</p></div></div>
-      <article class="panel"><p id="connect-endpoint"></p><div id="router-commands" class="command-grid"></div><p class="fine">bgpq4 generates configuration text; it does not change a router. Review source choice and compare the candidate with your current policy before applying it.</p><a id="router-guide" href="https://github.com/RIRRd/RIRRd/blob/codex/linux-parity/docs/operations/ROUTER_INTEGRATION.md">Detailed router workflow →</a></article>
+      <article class="panel"><p id="connect-endpoint"></p><div id="router-commands" class="command-grid"></div><p class="fine">bgpq4 generates configuration text; it does not change a router. Review source choice and compare the candidate with your current policy before applying it.</p><a id="router-guide" href="https://github.com/RIRRd/RIRRd/blob/dev/docs/operations/ROUTER_INTEGRATION.md">Detailed router workflow →</a></article>
     </section>
 
     <section id="page-system" class="page" hidden>
-      <div class="page-heading"><div><p class="eyebrow">APPLICATION RESOURCES</p><h1>Resource usage</h1><p class="muted">Measurements for this RIRRd process, including its embedded validator when enabled.</p></div></div>
+      <div class="page-heading"><div><p class="eyebrow">APPLICATION RESOURCES</p><h1>Resource usage</h1><p class="muted">Memory, CPU and database usage for this RIRRd process.</p></div></div>
       <div id="resource-metrics" class="metrics"></div>
       <article class="panel"><h2>Understand the numbers</h2><p>Process RSS is resident application memory. Cgroup memory also includes cache charged to the service. Linux filesystem cache is reclaimable and does not mean the VM is out of RAM. Snapshot preparation and imports create periodic CPU and I/O peaks.</p><p>Choose a source subset and a bounded database cache for smaller hosts. Full-source imports need more headroom than idle queries. Resource measurements here are observations, not minimum host specifications.</p><div id="resource-history" class="two-column" hidden><article class="panel"><h2>Process resident memory</h2><div id="memory-chart" class="chart"></div></article><article class="panel"><h2>CPU · one core = 100%</h2><div id="cpu-chart" class="chart"></div></article></div><p id="resource-note" class="fine"></p></article>
     </section>
