@@ -101,12 +101,12 @@ fn fetch_until(
     let limit = max_bytes.min(MAX_PREAMBLE_BYTES);
     let mut prefix = Vec::new();
     let no_updates = loop {
-        let start = prefix.len();
+        let line_start = prefix.len();
         ensure!(
             read_preamble_line(&mut reader, &mut prefix, limit)?,
             "NRTMv3 peer returned an empty response"
         );
-        match complete_line(&prefix[start..]) {
+        match complete_line(&prefix[line_start..]) {
             Some(b"") => continue,
             Some(line)
                 if line.eq_ignore_ascii_case(NO_UPDATES)
@@ -115,6 +115,7 @@ fn fetch_until(
             {
                 break true;
             }
+            Some(line) if next_serial_is_idle_range(line, start) => break true,
             Some(line) if preamble_comment(line) => continue,
             _ => break false,
         }
@@ -122,18 +123,41 @@ fn fetch_until(
 
     if no_updates {
         loop {
-            let start = prefix.len();
+            let line_start = prefix.len();
             if !read_preamble_line(&mut reader, &mut prefix, limit)? {
                 return Ok(None);
             }
             ensure!(
-                complete_line(&prefix[start..]) == Some(b""),
+                complete_line(&prefix[line_start..]) == Some(b""),
                 "unexpected data after NRTMv3 no-updates warning"
             );
         }
     }
 
     Ok(Some(Cursor::new(prefix).chain(reader)))
+}
+
+fn next_serial_is_idle_range(line: &[u8], start: u64) -> bool {
+    // RIPE returns this range error for a quiet poll of exactly last + 1.
+    // An expired cursor, a larger gap or any other error must remain an error.
+    let Some(range) = line.strip_prefix(b"%ERROR:401: invalid range: Not within ") else {
+        return false;
+    };
+    let Some((first, last)) = std::str::from_utf8(range)
+        .ok()
+        .and_then(|range| range.split_once('-'))
+    else {
+        return false;
+    };
+    let number = |value: &str| {
+        (!value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()))
+            .then(|| value.parse::<u64>().ok())
+            .flatten()
+    };
+    match (number(first), number(last)) {
+        (Some(first), Some(last)) => first <= last && last.checked_add(1) == Some(start),
+        _ => false,
+    }
 }
 
 fn preamble_comment(line: &[u8]) -> bool {
@@ -269,6 +293,50 @@ mod tests {
         reader.read_to_end(&mut received)?;
         assert_eq!(received, response);
         worker.join().unwrap()?;
+        Ok(())
+    }
+
+    #[test]
+    fn idle_range_error_requires_the_exact_next_serial_and_complete_framing() -> Result<()> {
+        for (response, idle) in [
+            ("%ERROR:401: invalid range: Not within 1-9\n\n", true),
+            (
+                "% Copyright banner\r\n%ERROR:401: invalid range: Not within 0-9\r\n",
+                true,
+            ),
+            ("%ERROR:401: invalid range: Not within 1-8\n", false),
+            ("%ERROR:401: invalid range: Not within 11-20\n", false),
+            ("%ERROR:401: invalid range: Not within 10-9\n", false),
+            ("%ERROR:401: invalid range: Not within +1-9\n", false),
+            (
+                "%ERROR:401: invalid range: Not within 1-18446744073709551615\n",
+                false,
+            ),
+            ("%ERROR:401: invalid range: Not within 1-9", false),
+            (
+                "%ERROR:401: invalid range: Not within 1-9\n%START Version: 3 TEST 10-10\n",
+                false,
+            ),
+            (
+                "%ERROR:401: invalid range: Not within 1-9\n% ERROR: access denied\n",
+                false,
+            ),
+            (
+                "%ERROR:401: access denied\n% Warning: there are no newer updates available\n",
+                false,
+            ),
+        ] {
+            let (address, worker) = peer(move |mut stream| stream.write_all(response.as_bytes()))?;
+            match fetch_staged(address, "TEST", 10, Duration::from_secs(2), 4096) {
+                Ok(None) => ensure!(idle, "invalid error became an idle poll"),
+                Ok(Some(input)) => {
+                    ensure!(!idle, "valid idle range was not recognized");
+                    ensure!(crate::nrtm3::Reader::new(input, "TEST", 4096).is_err());
+                }
+                Err(_) => ensure!(!idle, "valid idle reply failed"),
+            }
+            worker.join().unwrap()?;
+        }
         Ok(())
     }
 

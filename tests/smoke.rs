@@ -1032,6 +1032,82 @@ source: TEST
 }
 
 #[test]
+fn quiet_range_cli_pins_only_the_current_cursor_and_rejects_real_gaps() {
+    let workspace = tempfile::tempdir().unwrap();
+    let config = workspace.path().join("irrd.toml");
+    let snapshot = workspace.path().join("synthetic.rpsl");
+    fs::write(&snapshot, "aut-num: AS64496\nsource: TEST\n").unwrap();
+    for (index, response) in [
+        "%ERROR:401: invalid range: Not within 1-41\n\n",
+        "%ERROR:401: invalid range: Not within 1-40\n",
+        "%ERROR:401: invalid range: Not within 43-50\n",
+        "%ERROR:401: access denied\n",
+        "%ERROR:401: invalid range: Not within 1-41\n%START Version: 3 TEST 42-42\n",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let upstream = TcpListener::bind("127.0.0.1:0").unwrap();
+        upstream.set_nonblocking(true).unwrap();
+        let endpoint = upstream.local_addr().unwrap();
+        fs::write(&config, format!("database = \"registry.redb\"\nsources = [\"TEST\"]\nlisten = \"127.0.0.1:0\"\nmax_connections = 4\nio_timeout_seconds = 2\nmax_snapshot_bytes = 4096\n[nrtm3_sync.TEST]\nendpoint = \"{endpoint}\"\ninterval_seconds = 60\nbase_serial = 41\nobject_class_filter = [\"aut-num\"]\n")).unwrap();
+        if index == 0 {
+            successful(
+                cli(&config)
+                    .args(["import", "snapshot", "--source", "TEST", "--file"])
+                    .arg(&snapshot)
+                    .output()
+                    .unwrap(),
+            );
+        }
+        let peer = thread::spawn(move || {
+            let deadline = Instant::now() + IO_DEADLINE;
+            let mut stream = loop {
+                match upstream.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(Instant::now() < deadline, "CLI did not contact its peer");
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(error) => panic!("accepting CLI mirror request: {error}"),
+                }
+            };
+            stream.set_read_timeout(Some(IO_DEADLINE)).unwrap();
+            let mut request = String::new();
+            BufReader::new(&mut stream).read_line(&mut request).unwrap();
+            assert_eq!(request, "-g TEST:3:42-LAST\n");
+            stream.write_all(response.as_bytes()).unwrap();
+        });
+        let mut command = cli(&config);
+        command.args([
+            "source",
+            "sync-nrtm3",
+            "--source",
+            "TEST",
+            "--endpoint",
+            &endpoint.to_string(),
+        ]);
+        if index == 0 {
+            command.args(["--base-serial", "41"]);
+        }
+        let result = command.output().unwrap();
+        peer.join().unwrap();
+        assert_eq!(result.status.success(), index == 0, "{result:?}");
+        let status = successful(
+            cli(&config)
+                .args(["source", "status", "--source", "TEST"])
+                .output()
+                .unwrap(),
+        );
+        assert_eq!(
+            serde_json::from_slice::<Value>(&status).unwrap()["serial"],
+            41
+        );
+    }
+    successful(cli(&config).args(["database", "verify"]).output().unwrap());
+}
+
+#[test]
 fn bounded_nrtm3_cli_rejects_a_peer_that_exceeds_the_requested_range() {
     let workspace = tempfile::tempdir().unwrap();
     let config = workspace.path().join("irrd.toml");
@@ -1352,12 +1428,12 @@ fn shared_mirror_peer_is_bounded_without_exhausting_query_workers() {
         );
         for mut stream in [first, second] {
             stream
-                .write_all(b"% Warning: there are no newer updates available\n")
+                .write_all(b"%ERROR:401: invalid range: Not within 0-0\n")
                 .unwrap();
         }
         for _ in 2..7 {
             accept()
-                .write_all(b"% Warning: there are no newer updates available\n")
+                .write_all(b"%ERROR:401: invalid range: Not within 0-0\n")
                 .unwrap();
         }
     });
