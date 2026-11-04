@@ -16,6 +16,28 @@ The MIT-licensed source and public issue tracker are hosted at
 [RIRRd/RIRRd](https://github.com/RIRRd/RIRRd).
 Release artifacts are published only after the release checks pass.
 
+## Project background and disclaimer
+
+RIRRd is a passion project by **Lostepic (AaranCloud)**. Development began in a
+personal repository, with roughly three months of work before the project was
+shared publicly. It is now open source for the community to use, learn from,
+modify and contribute to. Development and maintenance happen as time allows.
+
+RIRRd is one of several Rust IRR implementations. The idea of writing an IRR
+daemon in Rust is not unique, and this project does not claim otherwise. It is
+not intended to take credit from, undermine or detract from other projects.
+We respect their work and welcome different approaches to the same problem.
+
+RIRRd is an independent implementation. No code was copied from another Rust
+IRR project. Protocol compatibility work uses official IRRd as its reference;
+compatibility claims are limited to the documented tests and evidence.
+
+**Use RIRRd at your own risk and do your own testing.** It remains beta software
+with incomplete IRRd parity. Validate its behaviour, data and generated routing
+policies in your own environment before relying on it. The MIT license provides
+the software as is, without warranty; ongoing support and development schedules
+are not guaranteed.
+
 ## Development
 
 Active changes are made on `dev`; `main` and release tags stay unchanged until
