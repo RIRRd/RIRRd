@@ -21,8 +21,20 @@ pub fn fetch_staged(
     timeout: Duration,
     max_bytes: u64,
 ) -> Result<Option<BufReader<std::fs::File>>> {
+    fetch_staged_until(endpoint, source, start, None, timeout, max_bytes)
+}
+
+/// A finite requested range keeps bootstrap batches within the normal byte cap.
+pub fn fetch_staged_until(
+    endpoint: SocketAddr,
+    source: &str,
+    start: u64,
+    end: Option<u64>,
+    timeout: Duration,
+    max_bytes: u64,
+) -> Result<Option<BufReader<std::fs::File>>> {
     let max_bytes = max_bytes.min(64 * 1024 * 1024);
-    let Some(response) = fetch(endpoint, source, start, timeout, max_bytes)? else {
+    let Some(response) = fetch_until(endpoint, source, start, end, timeout, max_bytes)? else {
         return Ok(None);
     };
     let mut stage = tempfile::tempfile().context("creating private NRTMv3 staging file")?;
@@ -47,11 +59,26 @@ pub fn fetch(
     timeout: Duration,
     max_bytes: u64,
 ) -> Result<Option<impl BufRead>> {
+    fetch_until(endpoint, source, start, None, timeout, max_bytes)
+}
+
+fn fetch_until(
+    endpoint: SocketAddr,
+    source: &str,
+    start: u64,
+    end: Option<u64>,
+    timeout: Duration,
+    max_bytes: u64,
+) -> Result<Option<impl BufRead>> {
     ensure!(
         !endpoint.ip().is_unspecified() && endpoint.port() != 0,
         "NRTMv3 endpoint must specify a peer IP address and port"
     );
     ensure!(start != 0, "NRTMv3 start serial must be positive");
+    ensure!(
+        end.is_none_or(|end| end >= start),
+        "NRTMv3 end serial precedes start serial"
+    );
     ensure!(
         source.len() <= 32 && crate::rpsl::generic_name(source),
         "invalid NRTMv3 source name"
@@ -62,7 +89,8 @@ pub fn fetch(
         .context("NRTMv3 timeout is out of range")?;
     let socket = TcpStream::connect_timeout(&endpoint, remaining(deadline)?)
         .with_context(|| format!("connecting to NRTMv3 peer {endpoint}"))?;
-    let query = format!("-g {}:3:{start}-LAST\n", source.to_ascii_uppercase());
+    let end = end.map_or_else(|| "LAST".to_owned(), |value| value.to_string());
+    let query = format!("-g {}:3:{start}-{end}\n", source.to_ascii_uppercase());
     write_query(&socket, query.as_bytes(), deadline).context("sending NRTMv3 request")?;
 
     let mut reader = TimedReader {
@@ -79,7 +107,13 @@ pub fn fetch(
         );
         match complete_line(&prefix[start..]) {
             Some(b"") => continue,
-            Some(NO_UPDATES | NO_UPDATES_NUMBERED) => break true,
+            Some(line)
+                if line.eq_ignore_ascii_case(NO_UPDATES)
+                    || line.eq_ignore_ascii_case(NO_UPDATES_NUMBERED) =>
+            {
+                break true;
+            }
+            Some(line) if preamble_comment(line) => continue,
             _ => break false,
         }
     };
@@ -98,6 +132,27 @@ pub fn fetch(
     }
 
     Ok(Some(Cursor::new(prefix).chain(reader)))
+}
+
+fn preamble_comment(line: &[u8]) -> bool {
+    if line.starts_with(b"#") {
+        return true;
+    }
+    let Some(body) = line.strip_prefix(b"%") else {
+        return false;
+    };
+    let mut body = body;
+    while let Some(rest) = body.strip_prefix(b"%") {
+        body = rest;
+    }
+    let body = body.trim_ascii_start();
+    let keyword = body
+        .split(|byte| byte.is_ascii_whitespace() || *byte == b':')
+        .next()
+        .unwrap_or_default();
+    ![b"START".as_slice(), b"END", b"ERROR"]
+        .iter()
+        .any(|directive| keyword.eq_ignore_ascii_case(directive))
 }
 
 fn complete_line(line: &[u8]) -> Option<&[u8]> {
@@ -216,6 +271,19 @@ mod tests {
     }
 
     #[test]
+    fn a_server_error_cannot_be_hidden_before_a_no_update_warning() -> Result<()> {
+        for prefix in ["%ERROR: unavailable", "%% ERROR: unavailable"] {
+            let response = format!("{prefix}\n% Warning: there are no newer updates available\n");
+            let (address, worker) = peer(move |mut stream| stream.write_all(response.as_bytes()))?;
+            let received = fetch_staged(address, "TEST", 10, Duration::from_secs(2), 4096)?
+                .context("server errors must not become an up-to-date result")?;
+            assert!(crate::nrtm3::Reader::new(received, "TEST", 4096).is_err());
+            worker.join().unwrap()?;
+        }
+        Ok(())
+    }
+
+    #[test]
     fn staged_transfer_keeps_its_budget_and_has_no_network_deadline_during_local_apply()
     -> Result<()> {
         let response = b"%START Version: 3 TEST 10-10\n\nADD 10\n\naut-num: AS64496\nsource: TEST\n\n%END TEST\n";
@@ -251,6 +319,16 @@ mod tests {
                 true,
             ),
             (
+                &b"% Published database banner\n% See publisher documentation\n\n% WARNING: there are no newer updates available\n\n"[..],
+                4096,
+                true,
+            ),
+            (
+                &b"# Database banner\n% Warning (1): there are no newer updates available\n"[..],
+                4096,
+                true,
+            ),
+            (
                 &b"% Warning: there are no newer updates available\n% ERROR\n"[..],
                 4096,
                 false,
@@ -261,6 +339,8 @@ mod tests {
                 false,
             ),
             (&b"\r\n"[..], 4096, false),
+            (&b"% Copyright banner only\n"[..], 4096, false),
+            (&b"% Unrecognised warning\n"[..], 4096, false),
             (&b""[..], 4096, false),
         ] {
             let (address, worker) = peer(move |mut stream| stream.write_all(response))?;

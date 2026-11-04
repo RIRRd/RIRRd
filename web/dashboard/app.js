@@ -86,7 +86,8 @@
     fillSelect('source-detail', names); fillSelect('browse-source', names);
     text('source-count', rows.length); text('source-summary', incremental + ' incremental · ' + (rows.length - incremental) + ' snapshot / other');
     text('freshness-summary', incremental + ' incremental feeds. ' + (rows.length - incremental) + ' sources use scheduled snapshots or have a different update state.');
-    text('sources-state', rows.length + ' configured sources'); renderDetail();
+    const retained = latest?.classes || metadata.retained_classes;
+    text('sources-state', rows.length + ' configured sources' + (Array.isArray(retained) ? ' · ' + retained.length + ' retained object classes' : '')); renderDetail();
   }
   function renderDetail() {
     const row = sourceRows().find(row => row.source === el('source-detail').value); if (!row) return;
@@ -95,6 +96,20 @@
     const grid = document.createElement('div'); grid.className = 'class-grid';
     for (const [name, total] of Object.entries(classes(row)).sort((a, b) => b[1] - a[1])) { const box = document.createElement('div'), label = document.createElement('span'), number = document.createElement('strong'); label.textContent = name; number.textContent = count(total); box.append(label, number); grid.append(box); }
     out.append(grid);
+    const retained = latest?.classes || metadata.retained_classes;
+    if (Array.isArray(retained)) {
+      const coverage = document.createElement('p'); coverage.className = 'fine';
+      coverage.textContent = (latest?.data_profile === 'full' ? 'Full IRRd class profile' : latest?.data_profile === 'routing' ? 'Routing-only profile' : 'Configured import profile') + ' · Retained classes: ' + retained.join(', ') + '.';
+      out.append(coverage);
+    }
+    for (const [field, label] of [['excluded_classes', 'Snapshot classes outside the configured profile'], ['quarantined_records', 'Quarantined snapshot records']]) {
+      const values = Object.entries(row[field] || {}).filter(([, value]) => value > 0);
+      if (!values.length) continue;
+      const details = document.createElement('details'), title = document.createElement('summary'), list = document.createElement('ul');
+      title.textContent = label + ' · ' + count(values.reduce((sum, [, value]) => sum + value, 0));
+      for (const [name, value] of values) { const item = document.createElement('li'); item.textContent = name + ': ' + count(value); list.append(item); }
+      details.append(title, list); out.append(details);
+    }
     const note = document.createElement('p'); note.className = 'fine'; note.textContent = row.mirror ? 'Committed mirror serial: ' + (row.mirror.serial ?? 'Not reported') + '. Last successful check: ' + (row.mirror.last_success_unix_seconds ? new Date(row.mirror.last_success_unix_seconds * 1000).toISOString() : 'Unreported') : 'Snapshot imported: ' + (row.imported_at || 'Unreported') + '. A snapshot is not a continuous feed.'; out.append(note);
     for (const file of row.downloads || []) {
       const details = document.createElement('details'), title = document.createElement('summary'), info = document.createElement('p'), hash = document.createElement('pre');

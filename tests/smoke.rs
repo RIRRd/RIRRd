@@ -906,6 +906,84 @@ max_snapshot_bytes = 4096
 }
 
 #[test]
+fn bounded_nrtm3_cli_rejects_a_peer_that_exceeds_the_requested_range() {
+    let workspace = tempfile::tempdir().unwrap();
+    let config = workspace.path().join("irrd.toml");
+    fs::write(&config, "database = \"registry.redb\"\nsources = [\"TEST\"]\nlisten = \"127.0.0.1:0\"\nmax_connections = 4\nio_timeout_seconds = 2\nmax_snapshot_bytes = 8192\n").unwrap();
+    let snapshot = workspace.path().join("snapshot.rpsl");
+    fs::write(&snapshot, "aut-num: AS64496\nsource: TEST\n").unwrap();
+    successful(
+        cli(&config)
+            .args(["import", "snapshot", "--source", "TEST", "--file"])
+            .arg(snapshot)
+            .output()
+            .unwrap(),
+    );
+    for (request, response, initial, succeeds) in [
+        (
+            "-g TEST:3:10-10\n",
+            "%START Version: 3 TEST 10-10\n\nADD 10\n\naut-num: AS64497\nsource: TEST\n\n%END TEST\n",
+            true,
+            true,
+        ),
+        (
+            "-g TEST:3:11-11\n",
+            "%START Version: 3 TEST 11-12\n\nADD 11\n\naut-num: AS64498\nsource: TEST\n\nADD 12\n\naut-num: AS64499\nsource: TEST\n\n%END TEST\n",
+            false,
+            false,
+        ),
+    ] {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = listener.local_addr().unwrap().to_string();
+        let peer = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket.set_read_timeout(Some(IO_DEADLINE)).unwrap();
+            let mut query = String::new();
+            BufReader::new(&mut socket).read_line(&mut query).unwrap();
+            assert_eq!(query, request);
+            socket.write_all(response.as_bytes()).unwrap();
+        });
+        let mut command = cli(&config);
+        command.args([
+            "source",
+            "sync-nrtm3",
+            "--source",
+            "TEST",
+            "--endpoint",
+            &endpoint,
+            "--end-serial",
+            if initial { "10" } else { "11" },
+        ]);
+        if initial {
+            command.args(["--base-serial", "9"]);
+        }
+        let result = command.output().unwrap();
+        assert_eq!(result.status.success(), succeeds);
+        if !succeeds {
+            assert!(
+                String::from_utf8_lossy(&result.stderr).contains("exceeds requested end serial")
+            );
+        }
+        peer.join().unwrap();
+        let status = successful(
+            cli(&config)
+                .args(["source", "status", "--source", "TEST"])
+                .output()
+                .unwrap(),
+        );
+        assert_eq!(
+            serde_json::from_slice::<Value>(&status).unwrap()["serial"],
+            10
+        );
+        let count = successful(cli(&config).args(["database", "count"]).output().unwrap());
+        assert_eq!(
+            serde_json::from_slice::<Value>(&count).unwrap()["objects"],
+            2
+        );
+    }
+}
+
+#[test]
 fn nrtm3_commits_objects_and_serial_together_over_file_and_tcp() {
     let workspace = tempfile::tempdir().unwrap();
     let config = workspace.path().join("irrd.toml");

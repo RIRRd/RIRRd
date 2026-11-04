@@ -166,6 +166,9 @@ enum SourceCommand {
         /// Network-only deadline, separate from local indexing time.
         #[arg(long, value_parser = clap::value_parser!(u64).range(1..=300))]
         timeout_seconds: Option<u64>,
+        /// Inclusive last serial for a bounded bootstrap batch.
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
+        end_serial: Option<u64>,
     },
     /// Remove one source's stored objects and indexes.
     Purge {
@@ -521,6 +524,7 @@ fn main() -> Result<()> {
                     endpoint,
                     base_serial,
                     timeout_seconds,
+                    end_serial,
                 },
         } => {
             ensure!(
@@ -544,18 +548,37 @@ fn main() -> Result<()> {
                     mirror.endpoint == endpoint && !mirror.object_class_filter.is_empty()
                 })
                 .map(|mirror| &mirror.object_class_filter);
-            match nrtm_client::fetch_staged(
-                endpoint,
-                &source,
-                start,
-                Duration::from_secs(timeout_seconds.unwrap_or(config.io_timeout_seconds)),
-                config.max_snapshot_bytes,
-            )? {
+            let timeout = Duration::from_secs(timeout_seconds.unwrap_or(config.io_timeout_seconds));
+            let response = match end_serial {
+                Some(end) => nrtm_client::fetch_staged_until(
+                    endpoint,
+                    &source,
+                    start,
+                    Some(end),
+                    timeout,
+                    config.max_snapshot_bytes,
+                ),
+                None => nrtm_client::fetch_staged(
+                    endpoint,
+                    &source,
+                    start,
+                    timeout,
+                    config.max_snapshot_bytes,
+                ),
+            }?;
+            match response {
                 Some(input) => {
+                    let transcript = if filter.is_some() {
+                        nrtm3::Reader::filtered(input, &source, config.max_snapshot_bytes)
+                    } else {
+                        nrtm3::Reader::new(input, &source, config.max_snapshot_bytes)
+                    }
+                    .map_err(anyhow::Error::msg)?;
+                    ensure!(
+                        end_serial.is_none_or(|end| transcript.range().1 <= end),
+                        "NRTMv3 response exceeds requested end serial"
+                    );
                     let serial = if let Some(classes) = filter {
-                        let transcript =
-                            nrtm3::Reader::filtered(input, &source, config.max_snapshot_bytes)
-                                .map_err(anyhow::Error::msg)?;
                         store.apply_nrtm3_filtered_if(
                             &source,
                             transcript.range(),
@@ -565,13 +588,7 @@ fn main() -> Result<()> {
                             || true,
                         )?
                     } else {
-                        apply_nrtm3(
-                            &store,
-                            &source,
-                            base_serial,
-                            input,
-                            config.max_snapshot_bytes,
-                        )?
+                        store.apply_nrtm3(&source, transcript.range(), base_serial, transcript)?
                     };
                     print_serial(&source, Some(serial));
                 }
