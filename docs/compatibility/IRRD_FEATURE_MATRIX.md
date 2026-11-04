@@ -46,6 +46,49 @@ public exports. Contacts with an empty display name retain their non-empty
 compares eight accepted/rejected cases in strict and mirror modes; it does not
 establish complete contact/account or authentication parity.
 
+## Full-class mirror evidence — 4 November 2026
+
+Runtime `eaed8fb81f16b44ae069816ed27a83b6c3310b86` exercises all
+19 standard classes through snapshot import, persistent storage, a real daemon
+restart, typed TCP and HTTP WHOIS queries, bounded object-key browsing,
+exact-key GraphQL and redacted public export in
+[`full_standard_class_profile_is_queryable_after_restart`](../../tests/smoke.rs).
+The synthetic pinned IRRd 4.5.4 oracle also checks eight blank-contact and
+missing-identity cases in strict and mirror modes. Empty display names are
+retained when their required NIC handle exists; this is distinct from accepting
+a missing contact identity.
+
+Initial incremental synchronization validates the actual stored class scope
+with indexed seeks, including an empty baseline, similar class prefixes and
+neighbouring source names. It does not rely on cached class totals. The same
+invariant remains part of the complete logical database verifier. This removes
+a scan of every source object from the first-sync write transaction while
+retaining filter mismatch rejection.
+
+Passing CI for that exact runtime:
+
+- [Native Linux x86-64/ARM64 and Windows, strict Clippy, locked tests, coverage,
+  browser checks and dependency audit](https://github.com/RIRRd/RIRRd/actions/runs/41873375424).
+- [Pinned upstream parser, authorization, schema and protocol oracle](https://github.com/RIRRd/RIRRd/actions/runs/41873375308).
+- [Deployment smoke](https://github.com/RIRRd/RIRRd/actions/runs/41873375247),
+  [fuzz smoke](https://github.com/RIRRd/RIRRd/actions/runs/41873375416),
+  [source publication hygiene](https://github.com/RIRRd/RIRRd/actions/runs/41873375263)
+  and [router/browser integration](https://github.com/RIRRd/RIRRd/actions/runs/41873375262).
+
+Local Linux validation passed format checking, strict Clippy, 179 Rust tests
+(one optional test skipped), 56 protocol cases and 32 report cases. A fresh
+official RustSec database at `965bf9ad083b58e6340d65829d85217b18be9290`
+reported no vulnerable dependencies or advisory warnings. The full isolated
+PostgreSQL/Redis oracle rerun passed the additional parser/schema/authentication
+checks and the existing 25 TCP plus 25 HTTP comparisons. It sends no updates to
+public registries.
+
+These checks establish the exercised mirror and query behavior. They do not
+establish full authoritative attribute/reference validation, account workflows,
+OpenPGP or scoped-token authorization, notifications, NRTMv4 server scheduling,
+event streams, complete query parity or sustained-load release qualification.
+RPKI remains deliberately outside the current IRR-only scope.
+
 ## RPSL and storage
 
 | Capability | Reference and specification | Rust implementation and compatibility target | Security requirement | Required evidence | Status |
