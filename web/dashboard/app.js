@@ -175,6 +175,12 @@
   }
   function queryText() {
     const value = el('query-value').value.trim(), kind = el('query-kind').value, family = el('query-family').value;
+    if (kind === 'object' && value.startsWith('!m')) {
+      const match = /^!m([a-z0-9-]+),([^\u0000-\u001f\u007f]+)$/i.exec(value);
+      const classes = Array.from(el('browse-class').options, option => option.value);
+      if (!match || value.length > 256 || !classes.includes(match[1].toLowerCase())) throw new Error('Choose a supported object class and key.');
+      return value;
+    }
     if (!value || value.length > 256 || !/^[a-z0-9][a-z0-9:._/ -]*$/i.test(value)) throw new Error('Enter an ASN, AS-set, IP address, prefix or object key.');
     if (kind === 'origin') { if (!/^AS\d+$/i.test(value) || Number(value.slice(2)) > 4294967295) throw new Error('Enter an ASN such as ' + sampleASN() + '.'); return (family === '6' ? '!6' : '!g') + value; }
     if (kind === 'recursive' || kind === 'members') return '!i' + value + (kind === 'recursive' ? ',1' : '');
@@ -257,7 +263,7 @@
     try {
       const p = new URLSearchParams({source: el('browse-source').value, class: el('browse-class').value, limit: '30'}); if (next && cursor) p.set('after', cursor);
       const data = await json('/v1/irr/objects?' + p); cursor = data.next_cursor; el('browse-next').disabled = !cursor; el('browse-results').replaceChildren();
-      data.keys.forEach(key => { const button = document.createElement('button'); button.type = 'button'; button.textContent = key; button.addEventListener('click', () => { el('query-value').value = ['route', 'route6'].includes(data.object_class) ? key.split('AS')[0] : key; el('query-kind').value = 'object'; el('query-source').value = data.source; updateCommand(); location.hash = 'query'; el('query-form').requestSubmit(); }); el('browse-results').append(button); });
+      data.keys.forEach(key => { const button = document.createElement('button'); button.type = 'button'; button.textContent = key; button.addEventListener('click', () => { el('query-value').value = '!m' + data.object_class + ',' + key; el('query-kind').value = 'object'; el('query-source').value = data.source; updateCommand(); location.hash = 'query'; el('query-form').requestSubmit(); }); el('browse-results').append(button); });
       text('browse-status', data.keys.length + ' keys from ' + data.source + '. Select a key to inspect it. Live data can change between pages.');
     } catch (error) { text('browse-status', error.message); } finally { el('browse-submit').disabled = false; }
   }

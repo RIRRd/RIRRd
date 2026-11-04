@@ -191,7 +191,7 @@ for name, path, status, contains in [
     ('newline_query','/v1/whois/?q=AS64496%0A%21gAS64497',400,None),
     ('oversized_query','/v1/whois/?q='+('A'*5000),400,None),
     ('unknown_browse_source','/v1/irr/objects?source=ABSENT&class=route',400,None),
-    ('credential_class_browse','/v1/irr/objects?source=EXAMPLE&class=mntner',400,None),
+    ('maintainer_keys_redacted','/v1/irr/objects?source=EXAMPLE&class=mntner',200,'DOCS-MNT'),
     ('oversized_page','/v1/irr/objects?source=EXAMPLE&class=route&limit=101',400,None),
     ('bad_cursor','/v1/irr/objects?source=EXAMPLE&class=route&after=%00',400,None),
     ('console','/ui/',200,'Registry explorer'),

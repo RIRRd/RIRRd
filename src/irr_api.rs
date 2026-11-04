@@ -1,4 +1,4 @@
-//! Bounded keyset browsing. Only HTTP-permitted routing sources/classes enter it.
+//! Bounded keyset browsing of standard IRRd classes in HTTP-permitted sources.
 use crate::storage::Store;
 use axum::{
     Json, Router,
@@ -32,18 +32,7 @@ async fn objects(State(context): State<Context>, Query(page): Query<Page>) -> Re
     let class = page.class_name.to_ascii_lowercase();
     let limit = page.limit.unwrap_or(30);
     if !context.sources.contains(&source)
-        || ![
-            "aut-num",
-            "as-set",
-            "route-set",
-            "route",
-            "route6",
-            "filter-set",
-            "peering-set",
-            "rtr-set",
-            "inet-rtr",
-        ]
-        .contains(&class.as_str())
+        || !crate::rpsl::supported_class(&class)
         || !(1..=100).contains(&limit)
         || page
             .after

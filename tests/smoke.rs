@@ -2222,7 +2222,7 @@ fn raw_http_whois_scope_is_independent_of_structured_queries_and_browse() {
     fs::write(&config, "database = \"registry.redb\"\nsources = [\"TEST\", \"OTHER\"]\nhttp_sources = [\"TEST\"]\nhttp_whois_sources = [\"TEST\", \"OTHER\"]\nlisten = \"127.0.0.1:0\"\nhttp_listen = \"127.0.0.1:0\"\nmax_connections = 8\nio_timeout_seconds = 2\nmax_snapshot_bytes = 65536\n").unwrap();
     let fixture = workspace.path().join("fixture.rpsl");
     for source in ["TEST", "OTHER"] {
-        fs::write(&fixture, format!("as-set: AS-A\nmembers: AS64496\nsource: {source}\n\nas-set: AS-B\nmembers: AS64497\nsource: {source}\n")).unwrap();
+        fs::write(&fixture, format!("as-set: AS-A\nmembers: AS64496\nsource: {source}\n\nas-set: AS-B\nmembers: AS64497\nsource: {source}\n\nmntner: PROFILE-MNT\nauth: BCRYPT-PW private-index-proof\nsource: {source}\n")).unwrap();
         successful(
             cli(&config)
                 .args(["import", "snapshot", "--source", source, "--file"])
@@ -2243,7 +2243,7 @@ fn raw_http_whois_scope_is_independent_of_structured_queries_and_browse() {
     assert!(raw.starts_with("HTTP/1.1 200 ") && raw.contains("source: OTHER"));
     for path in [
         "/v1/irr/objects?source=OTHER&class=as-set",
-        "/v1/irr/objects?source=TEST&class=mntner",
+        "/v1/irr/objects?source=TEST&class=auth",
         "/v1/irr/objects?source=TEST&class=as-set&limit=101",
         "/v1/irr/objects?source=TEST&class=as-set&after=%00",
     ] {
@@ -2257,6 +2257,10 @@ fn raw_http_whois_scope_is_independent_of_structured_queries_and_browse() {
         assert!(raw.starts_with("HTTP/1.1 200 "), "{raw}");
         serde_json::from_str(raw.split_once("\r\n\r\n").unwrap().1).unwrap()
     };
+    let maintainers = json_get("/v1/irr/objects?source=TEST&class=mntner");
+    assert_eq!(maintainers["keys"], serde_json::json!(["PROFILE-MNT"]));
+    assert!(!maintainers.to_string().contains("private-index-proof"));
+    assert!(get("/v1/irr/objects?source=OTHER&class=mntner").starts_with("HTTP/1.1 400 "));
     let first = json_get("/v1/irr/objects?source=TEST&class=as-set&limit=1");
     assert_eq!(first["keys"], serde_json::json!(["AS-A"]));
     assert_eq!(first["next_cursor"], "AS-A");
