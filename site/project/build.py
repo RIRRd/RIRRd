@@ -28,6 +28,7 @@ def main():
         destination=out/target;destination.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(source,destination);files.append(target)
     for name in ['index.html','project.css','project.js']:copy(ROOT/'assets'/name,name)
     copy(CORE/'site/brand/rirrd.svg','brand/rirrd.svg')
+    copy(CORE/'site/brand/rirrd-avatar.png','brand/rirrd-avatar.png')
     copy(CORE/'web/dashboard/charts.js','charts.js')
     copy(CORE/'site/coming-soon/public/comparison.json','comparison.json')
     copy(CORE/'LICENSE','license.txt')
