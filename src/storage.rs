@@ -394,17 +394,13 @@ impl Store {
                 return Ok(());
             }
             let records = write.open_table(OBJECTS)?;
-            let upper = format!("{source}\0");
-            let mut count = 0;
-            for entry in records.range((source.as_str(), "", "")..(upper.as_str(), "", ""))? {
-                let (identity, _) = entry?;
-                ensure!(
-                    classes.contains(identity.value().1),
-                    "snapshot contains an excluded mirror class"
-                );
-                count += 1;
-            }
-            ensure!(count > 0, "mirror bootstrap requires a nonempty snapshot");
+            let nonempty = check_source_classes(
+                &records,
+                &source,
+                |class| classes.contains(class),
+                "snapshot contains an excluded mirror class",
+            )?;
+            ensure!(nonempty, "mirror bootstrap requires a nonempty snapshot");
             serials.insert(source.as_str(), base)?;
             filters.insert(source.as_str(), policy.as_str())?;
         }
@@ -595,16 +591,14 @@ impl Store {
                 );
             } else if let Some(policy) = &policy {
                 ensure!(!policy.is_empty(), "empty NRTMv3 class filter");
-                filters.insert(source.as_str(), policy.as_str())?;
                 // Refuse a bootstrap that already contains excluded classes.
-                let upper = format!("{source}\0");
-                for entry in records.range((source.as_str(), "", "")..(upper.as_str(), "", ""))? {
-                    let (identity, _) = entry?;
-                    ensure!(
-                        classes.is_some_and(|classes| classes.contains(identity.value().1)),
-                        "snapshot contains objects outside the mirror class filter"
-                    );
-                }
+                check_source_classes(
+                    &records,
+                    &source,
+                    |class| classes.is_some_and(|classes| classes.contains(class)),
+                    "snapshot contains objects outside the mirror class filter",
+                )?;
+                filters.insert(source.as_str(), policy.as_str())?;
             }
             let mut last = if let Some(recorded) = recorded {
                 ensure!(
@@ -1614,14 +1608,12 @@ fn verify_mirror_filters(read: &ReadTransaction) -> Result<()> {
                 .is_none(),
             "filtered mirror must not expose a partial journal"
         );
-        let upper = format!("{source}\0");
-        for entry in records.range((source, "", "")..(upper.as_str(), "", ""))? {
-            let (identity, _) = entry?;
-            ensure!(
-                classes.contains(&identity.value().1),
-                "filtered mirror contains an excluded class"
-            );
-        }
+        check_source_classes(
+            &records,
+            source,
+            |class| classes.contains(&class),
+            "filtered mirror contains an excluded class",
+        )?;
     }
     Ok(())
 }
@@ -1660,6 +1652,35 @@ fn write_source_records(
     }
     ensure!(count > 0, "source {source} has no objects to export");
     Ok(count)
+}
+
+/// The primary key groups each source's objects by class. Seek past each class
+/// rather than reading every object body to validate a mirror's retained scope.
+/// This reads actual object keys, independently of the cached class counts.
+fn check_source_classes(
+    records: &impl ReadableTable<Identity<'static>, &'static str>,
+    source: &str,
+    accepts: impl Fn(&str) -> bool,
+    message: &str,
+) -> Result<bool> {
+    let upper = format!("{source}\0");
+    let mut lower_class = String::new();
+    let mut nonempty = false;
+    loop {
+        let class = {
+            let mut range =
+                records.range((source, lower_class.as_str(), "")..(upper.as_str(), "", ""))?;
+            let Some((identity, _)) = range.next().transpose()? else {
+                break;
+            };
+            identity.value().1.to_owned()
+        };
+        ensure!(accepts(&class), "{message}");
+        nonempty = true;
+        lower_class = class;
+        lower_class.push('\0');
+    }
+    Ok(nonempty)
 }
 
 fn read_serial(
@@ -3229,6 +3250,93 @@ mod tests {
         assert_eq!(store.verify()?, 2);
         assert!(store.apply_nrtm3("TEST", (42, 43), None, []).is_err());
         assert!(store.apply_nrtm3("TEST", (44, 44), Some(43), []).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn mirror_class_checks_preserve_prefix_boundaries_and_read_actual_keys() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = Store::open(&dir.path().join("registry.redb"))?;
+        let parse = |text: &str| crate::rpsl::parse_snapshot(text).map_err(anyhow::Error::msg);
+        store.replace_source(
+            "TEST",
+            [
+                parse("route: 192.0.2.0/24\norigin: AS64496\nsource: TEST\n"),
+                parse("route: 198.51.100.0/24\norigin: AS64496\nsource: TEST\n"),
+                parse("route-set: RS-EXAMPLE\nsource: TEST\n"),
+                parse("route6: 2001:db8::/32\norigin: AS64496\nsource: TEST\n"),
+            ],
+        )?;
+        store.replace_source(
+            "TEST-OTHER",
+            [parse(
+                "person: Neighbour Source\nnic-hdl: EX1-OTHER\nsource: TEST-OTHER\n",
+            )],
+        )?;
+        // Cached statistics are not a substitute for inspecting stored classes.
+        let write = store.db.begin_write()?;
+        write.open_table(CLASS_COUNTS)?.remove(("TEST", "route6"))?;
+        write.commit()?;
+        for names in [
+            vec!["route"],
+            vec!["route", "route-set"],
+            vec!["route", "route6"],
+        ] {
+            let filter = names.into_iter().map(str::to_owned).collect::<HashSet<_>>();
+            assert!(
+                store
+                    .confirm_mirror_base("TEST", 10, &filter)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("excluded mirror class")
+            );
+            assert!(
+                store
+                    .apply_nrtm3_filtered_if("TEST", (11, 11), Some(10), [], Some(&filter), || true)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("outside the mirror class filter")
+            );
+            assert_eq!(store.source_serial("TEST")?, None);
+        }
+        let write = store.db.begin_write()?;
+        write
+            .open_table(CLASS_COUNTS)?
+            .insert(("TEST", "route6"), 1)?;
+        write.commit()?;
+        let filter = ["route", "route-set", "route6"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<HashSet<_>>();
+        assert!(store.confirm_mirror_base("EMPTY", 10, &filter).is_err());
+        assert_eq!(store.source_serial("EMPTY")?, None);
+        assert_eq!(
+            store
+                .apply_nrtm3_filtered_if("TEST", (11, 11), Some(10), [], Some(&filter), || true)?,
+            11
+        );
+        store.confirm_mirror_base("TEST", 11, &filter)?;
+        assert_eq!(store.verify()?, 5);
+        // Keep all ordinary indexes coherent, but violate only the mirror policy.
+        let write = store.db.begin_write()?;
+        {
+            let mut records = write.open_table(OBJECTS)?;
+            let mut indexes = WriteIndexes::open(&write)?;
+            insert_snapshot_object(
+                &mut records,
+                &mut indexes,
+                "TEST",
+                &parse("rtr-set: RTRS-OUTSIDE\nsource: TEST\n")?,
+            )?;
+        }
+        write.commit()?;
+        assert!(
+            store
+                .verify()
+                .unwrap_err()
+                .to_string()
+                .contains("filtered mirror contains an excluded class")
+        );
         Ok(())
     }
 

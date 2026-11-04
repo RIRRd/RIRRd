@@ -84,3 +84,9 @@ display value may be empty; pinned IRRd 4.5.4 accepts this in strict and mirror
 parsing. RIRRd preserves these records and their empty display text. A missing
 or empty handle remains rejected, and an empty display name is not added to the
 inverse name index. Synthetic oracle and restart/query tests cover this case.
+
+Initial filtered-sync validation seeks the first actual object key of each
+stored class. It does not scan every RPSL body or trust cached class counts to
+decide whether a snapshot fits its filter. Class-prefix and neighbouring-source
+boundaries, empty snapshots and excluded classes have regression tests. Full
+database verification still checks all records and indexes.
