@@ -70,6 +70,13 @@ python3 tools/testing/run.py --profile web --out /tmp/rirrd-web
 [RPSL/NRTMv3 fuzzing](https://github.com/RIRRd/RIRRd/actions/workflows/fuzz.yml) ·
 [Pinned upstream oracle](https://github.com/RIRRd/RIRRd/actions/workflows/upstream-oracle.yml)
 
+## Install a Linux beta
+
+[Release packages](https://github.com/RIRRd/RIRRd/releases) support Linux x86-64
+and ARM64. See [installation and configuration](docs/operations/GETTING_STARTED.md).
+The checked-in `tools/install.sh` verifies the release checksum, supports
+`--download-only`, and leaves service startup to the operator.
+
 ## Local evaluation
 
 Install stable Rust with the platform's native linker and C compiler for the TLS dependency, then build and run:

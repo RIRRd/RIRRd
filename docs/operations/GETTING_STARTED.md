@@ -9,6 +9,27 @@ qualification are incomplete. Read [beta status](/docs/beta/) before deployment.
 The project is MIT licensed. The canonical repository is RIRRd/RIRRd on GitHub.
 Use a tagged beta release for a reproducible evaluation.
 
+## Linux release packages
+
+Download the matching x86-64 or ARM64 DEB/RPM from
+[GitHub Releases](https://github.com/RIRRd/RIRRd/releases). The beta release
+workflow builds on Debian 12, tests native packages and publishes `SHA256SUMS`.
+Packages preserve the operator configuration and require explicit service startup.
+
+From a checked-out release, the optional installer selects the architecture and
+verifies the archive against that release's checksum manifest:
+
+```sh
+# Download and verify only; no root access or service change.
+bash tools/install.sh --version 0.1.0-beta.2 --download-only /tmp/rirrd-package
+# Or install with your distribution package manager.
+sudo bash tools/install.sh --version 0.1.0-beta.2
+```
+
+Configure `/etc/rust-irrd/irrd.toml`, import a source snapshot while the daemon is
+stopped, run `config check` and `database verify`, then start
+`rust-irrd.service` explicitly. Keep HTTP on loopback behind your own proxy.
+
 ## Build and try a local fixture
 
 On Linux, install stable Rust, a C compiler/linker, pkg-config and CA certificates.
