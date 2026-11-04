@@ -80,3 +80,31 @@ remaining class/reference decisions, NRTMv4 publication/scheduling/recovery,
 broader queries, live scope/route-preference semantics and sustained release
 qualification. Native ARM64 and Windows evidence must be assessed from their
 actual CI runs. No historical performance number is relabeled as beta.2 capacity.
+
+## Public release qualification
+
+[Beta.2 release workflow](https://github.com/RIRRd/RIRRd/actions/runs/41813943576)
+passed all 11 jobs at the tested source revision: Linux x86-64, native ARM64 and
+Windows core, browser cases, source coverage, dependency audit, workflow syntax,
+history scan, both native package profiles and publication. Native DEB/RPM
+installation/bootstrap and real systemd startup were exercised by the package jobs.
+The [public prerelease](https://github.com/RIRRd/RIRRd/releases/tag/v0.1.0-beta.2)
+remains explicitly beta. Post-publication filename normalization was corrected
+in the installer/checksum manifest; future publication checks compare the actual
+server asset names and digests. Use the installer attached to the release.
+
+## Public network verification limit
+
+From the VM, both domains resolve to the intended IPv4/IPv6 addresses. Both
+HTTPS pages return 200 with valid Let's Encrypt certificates; HTTP redirects
+308 to HTTPS; retired validator paths return 404. Public-address WHOIS works
+over both families. The 19-source generation serves 4,994,092 routing objects
+at this observation. Browser/mobile/chart checks pass on both deployed sites.
+
+A GitHub-hosted external runner timed out establishing IPv4 HTTPS to the project
+domain in two attempts. This is an unresolved external reachability check, not
+an external pass. The VM listens on ports 80/443, its input rules allow those
+ports and SSH access is preserved. Azure artifact-storage endpoints also time
+out from the VM; artifacts could not be downloaded here. Provider routing/ACL
+checks and a fresh external test are still needed. No host firewall broadening
+was performed to conceal that result.

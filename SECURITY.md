@@ -9,9 +9,9 @@ Development interfaces stay on loopback or isolated container networks. Do not u
 ## Reporting
 
 Do not put live credentials, private keys, production registry data or a working
-exploit against another operator into a public issue. Use GitHub private
-vulnerability reporting when the repository offers it, or an independently
-verified private maintainer contact. No public security response SLA or unverified
+exploit against another operator into a public issue. Use
+[GitHub private vulnerability reporting](https://github.com/RIRRd/RIRRd/security/advisories/new),
+which is enabled for the public project repository. No public security response SLA or unverified
 security email address is announced at this checkpoint.
 
 ## Source publication hygiene

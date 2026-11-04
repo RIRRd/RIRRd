@@ -375,6 +375,61 @@
       }
     ]
   },
-  "ci_status": "not_verified",
-  "ci_url": "https://github.com/RIRRd/RIRRd/actions/workflows/ci.yml"
+  "ci_status": "verified_workflow",
+  "ci_url": "https://github.com/RIRRd/RIRRd/actions/workflows/ci.yml",
+  "verified_ci": {
+    "source_commit": "9dc614a58a8aafb54cc1d8b9252e58d42173d4a3",
+    "url": "https://github.com/RIRRd/RIRRd/actions/runs/41813943576",
+    "workflow": "Beta release",
+    "run_id": 41813943576,
+    "run_attempt": 1,
+    "conclusion": "success",
+    "checked_at": "2026-11-04T10:41:26.987021+00:00",
+    "jobs": [
+      {
+        "name": "build-suite / Locked dependency security audit",
+        "conclusion": "success"
+      },
+      {
+        "name": "build-suite / Core \u00b7 windows-latest",
+        "conclusion": "success"
+      },
+      {
+        "name": "build-suite / Source coverage and external protocol contracts",
+        "conclusion": "success"
+      },
+      {
+        "name": "build-suite / Validate workflow syntax and expressions",
+        "conclusion": "success"
+      },
+      {
+        "name": "build-suite / Core \u00b7 ubuntu-24.04-arm",
+        "conclusion": "success"
+      },
+      {
+        "name": "build-suite / Core \u00b7 ubuntu-24.04",
+        "conclusion": "success"
+      },
+      {
+        "name": "build-suite / Isolated websites and browser workflows",
+        "conclusion": "success"
+      },
+      {
+        "name": "verify",
+        "conclusion": "success"
+      },
+      {
+        "name": "packages / packages (ubuntu-24.04-arm, arm64, aarch64)",
+        "conclusion": "success"
+      },
+      {
+        "name": "packages / packages (ubuntu-24.04, amd64, x86_64)",
+        "conclusion": "success"
+      },
+      {
+        "name": "publish",
+        "conclusion": "success"
+      }
+    ]
+  }
 }

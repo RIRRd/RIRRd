@@ -48,8 +48,10 @@ Create a new matching `v0.1.0-beta.2` tag only at the verified release commit.
 Preserve historical tags rather than moving them. Beta publication calls the
 shared CI matrix, web, coverage, audit and workflow gates, then performs source
 hygiene/tag checks and native x86-64/ARM64 DEB/RPM installation/systemd checks.
-Only passing packages become a GitHub prerelease with four archives and
-SHA256SUMS. A source version alone is not a published download or stable release.
+Only passing packages become a GitHub prerelease with four archives, the
+installer and SHA256SUMS. DEB asset basenames replace `~` with `.` before hashing
+because GitHub normalizes unsupported upload-name characters. The final upload
+check compares every actual server asset name and SHA-256 digest with the manifest. A source version alone is not a published download or stable release.
 
 After publication, verify the real release/artifact URLs and update the site
 release-published flag. The public node's runtime build is tracked separately

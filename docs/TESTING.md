@@ -128,3 +128,15 @@ traces, visitor addresses, operator contacts, credentials and runtime paths.
 Full diagnostic traces remain in private local/CI artifacts. Commit the snapshot
 and use the existing static deployment script. Formatting-only or evidence
 commits after the tested revision are distinguished by the site's build manifest.
+
+If downloading artifacts is unavailable, keep local counts labeled local and
+attach separately verified workflow metadata only after every build/release job
+passes at the exact snapshot source revision:
+
+```sh
+python3 tools/testing/record_ci.py --repo RIRRd/RIRRd --run RUN_ID
+```
+
+The recorder rejects incomplete/failed runs, another source/repository, missing
+platform/browser/coverage/audit checks and failed or cancelled jobs. It does not
+change local case counts or label local outcomes as GitHub-produced artifacts.

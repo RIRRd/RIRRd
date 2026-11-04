@@ -24,6 +24,7 @@ jobs:
         run: |
           set -euo pipefail
           for host in rirrd.co.uk irrd.tools; do
+            getent ahostsv4 "$host"
             curl -4 --fail --silent --show-error --max-time 20 "https://$host/" > "$RUNNER_TEMP/$host.html"
             grep -qi 'RIRRd' "$RUNNER_TEMP/$host.html"
             test "$(curl -4 --silent --show-error --max-time 20 --output /dev/null --write-out '%{http_code} %{redirect_url}' "http://$host/")" = "308 https://$host/"
@@ -42,6 +43,7 @@ jobs:
           PY
           curl -4 --fail --silent --show-error --max-time 20 --get --data-urlencode 'sources=RIPE' --data-urlencode 'q=!gAS3333' https://irrd.tools/v1/whois/ | grep -F '193.0.0.0/21'
       - name: Verify IPv6 when the runner has a usable route
+        if: always()
         shell: bash
         run: |
           if ip -6 route get 2a0f:6280:1d:1940:e6d8:d666:4268:d4c8 >/dev/null 2>&1; then
@@ -52,6 +54,7 @@ jobs:
             echo 'IPv6 unavailable at this external runner; this is not a passed IPv6 check.'
           fi
   compose:
+    if: github.event_name != 'workflow_dispatch' || !inputs.public_readonly
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:

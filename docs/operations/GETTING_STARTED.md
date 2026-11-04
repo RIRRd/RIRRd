@@ -16,8 +16,11 @@ Download the matching x86-64 or ARM64 DEB/RPM from
 workflow builds on Debian 12, tests native packages and publishes `SHA256SUMS`.
 Packages preserve the operator configuration and require explicit service startup.
 
-From a checked-out release, the optional installer selects the architecture and
-verifies the archive against that release's checksum manifest:
+Use the [installer attached to beta.2](https://github.com/RIRRd/RIRRd/releases/download/v0.1.0-beta.2/install.sh)
+or the current source checkout. It selects the architecture and verifies the
+archive against the release checksum manifest. The attached installer includes
+the post-publication GitHub filename correction; the initial beta.2 tag's copy
+predates that correction.
 
 ```sh
 # Download and verify only; no root access or service change.

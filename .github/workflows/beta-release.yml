@@ -51,9 +51,14 @@ jobs:
           find dist -name '*.deb' -o -name '*.rpm' | sort > "$RUNNER_TEMP/archives"
           test "$(wc -l < "$RUNNER_TEMP/archives")" = 4
           mkdir release-assets
-          while IFS= read -r archive; do cp "$archive" release-assets/; done < "$RUNNER_TEMP/archives"
+          while IFS= read -r archive; do
+            name=$(basename "$archive")
+            name=${name//\~/.}
+            cp "$archive" "release-assets/$name"
+          done < "$RUNNER_TEMP/archives"
+          cp tools/install.sh release-assets/install.sh
           cd release-assets
-          sha256sum ./*.deb ./*.rpm > SHA256SUMS
+          sha256sum ./*.deb ./*.rpm ./install.sh > SHA256SUMS
       - name: Publish an explicit prerelease
         env:
           GH_TOKEN: ${{ github.token }}
@@ -62,3 +67,10 @@ jobs:
           gh release create "$TAG" release-assets/* --repo "$GITHUB_REPOSITORY" \
             --verify-tag --prerelease --title "RIRRd $TAG — beta" \
             --notes-file "docs/releases/$TAG.md"
+      - name: Verify published names and server-side SHA-256 digests
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" > "$RUNNER_TEMP/published-assets.json"
+          python3 tools/release/check-assets.py release-assets/SHA256SUMS "$RUNNER_TEMP/published-assets.json"

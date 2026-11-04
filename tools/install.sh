@@ -29,7 +29,7 @@ if [[ $format = auto ]]; then
     else die 'Select --format deb or --format rpm for downloading'; fi
 fi
 case $format in
-    deb) archive="rust-irrd_${version%%-*}~${version#*-}-1_${deb_arch}.deb"; manager=apt-get;;
+    deb) archive="rust-irrd_${version%%-*}.${version#*-}-1_${deb_arch}.deb"; manager=apt-get;;
     rpm) archive="rust-irrd-${version%%-*}-0.1.${version#*-}.${rpm_arch}.rpm"; manager=dnf;;
     *) die 'Package format must be deb or rpm';;
 esac

@@ -14,7 +14,7 @@ class Installer(unittest.TestCase):
     def run_installer(self,arch,format,manifest='valid'):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp);bin_dir=root/'bin';bin_dir.mkdir();output=root/'out'
-            archive=f'rust-irrd_0.1.0~beta.2-1_{"amd64" if arch=="x86_64" else "arm64"}.deb' if format=='deb' else f'rust-irrd-0.1.0-0.1.beta.2.{arch}.rpm'
+            archive=f'rust-irrd_0.1.0.beta.2-1_{"amd64" if arch=="x86_64" else "arm64"}.deb' if format=='deb' else f'rust-irrd-0.1.0-0.1.beta.2.{arch}.rpm'
             content=b'isolated synthetic package';digest=hashlib.sha256(content).hexdigest()
             text=f'{digest}  ./{archive}\n'
             if manifest=='corrupt':text='0'*64+f'  ./{archive}\n'
