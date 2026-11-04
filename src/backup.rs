@@ -142,7 +142,7 @@ fn require_eof(mut input: impl Read) -> Result<()> {
     Ok(())
 }
 
-fn require_absent(path: &Path) -> Result<()> {
+pub(crate) fn require_absent(path: &Path) -> Result<()> {
     match fs::symlink_metadata(path) {
         Ok(_) => anyhow::bail!("backup destination already exists"),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
@@ -156,7 +156,7 @@ fn directory_for(path: &Path) -> &Path {
         .unwrap_or_else(|| Path::new("."))
 }
 
-fn stage_for(path: &Path) -> Result<NamedTempFile> {
+pub(crate) fn stage_for(path: &Path) -> Result<NamedTempFile> {
     #[cfg(windows)]
     {
         use std::os::windows::fs::OpenOptionsExt;
@@ -186,7 +186,7 @@ fn lock_existing_file(file: &File, cache_bytes: usize) -> Result<Store> {
     Ok(Store::from_database(db))
 }
 
-fn publish(stage: NamedTempFile, path: &Path) -> Result<()> {
+pub(crate) fn publish(stage: NamedTempFile, path: &Path) -> Result<()> {
     stage
         .as_file()
         .sync_all()
@@ -219,7 +219,7 @@ mod tests {
     }
 
     #[test]
-    fn full_backup_round_trips_objects_and_source_metadata() -> Result<()> {
+    fn full_backup_and_repack_round_trip_objects_and_source_metadata() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let database = dir.path().join("registry.redb");
         let backup = dir.path().join("registry.backup");
@@ -287,7 +287,15 @@ mod tests {
             Some(signed)
         );
         assert_eq!(store.source_history("AUTH", 2)?[0].action, "delete");
-        let error = store
+        let packed = dir.path().join("packed.redb");
+        store.repack(&packed, 8 * 1024 * 1024)?;
+        let packed = Store::open_existing(&packed)?;
+        assert_eq!(packed.verify()?, 4);
+        assert_eq!(packed.source_serial("TEST")?, Some(10));
+        assert_eq!(packed.nrtm3_journal_bounds("TEST")?, Some((10, 10)));
+        assert_eq!(packed.nrtm4_state("SIGNED")?, store.nrtm4_state("SIGNED")?);
+        assert_eq!(packed.source_history("AUTH", 2)?[0].action, "delete");
+        let error = packed
             .apply_authoritative("AUTH", vec![Change::Upsert(person)], &passwords)
             .unwrap_err();
         assert!(error.to_string().contains("name is protected"));

@@ -28,6 +28,9 @@ use crate::{
     rpsl::{Object, lookup_attributes},
 };
 
+#[path = "storage_maintenance.rs"]
+mod maintenance;
+
 type Identity<'a> = (&'a str, &'a str, &'a str);
 type ExactKey = (&'static str, &'static str);
 type PrefixKey<'a> = (&'a str, &'a str, u128, u8, u32);

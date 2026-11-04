@@ -59,6 +59,22 @@ struct Cli {
     command: Command,
 }
 
+fn database_file_usage(path: &Path) -> Result<serde_json::Value> {
+    let metadata = fs::metadata(path)?;
+    let allocated_bytes: Option<u64> = {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            Some(metadata.blocks() * 512)
+        }
+        #[cfg(not(unix))]
+        {
+            None
+        }
+    };
+    Ok(serde_json::json!({"apparent_bytes":metadata.len(),"allocated_bytes":allocated_bytes}))
+}
+
 #[derive(Subcommand)]
 enum Command {
     Server,
@@ -203,6 +219,13 @@ enum ExportCommand {
 #[derive(Subcommand)]
 enum DatabaseCommand {
     Verify,
+    /// Report offline storage use by table; does not replace integrity checks.
+    Stats,
+    /// Repack an offline registry into a new, verified file without replacing it.
+    Repack {
+        #[arg(long)]
+        file: PathBuf,
+    },
     /// Read the committed object count; this does not verify index integrity.
     Count,
     /// Write a private, versioned backup of the offline database.
@@ -347,6 +370,30 @@ fn main() -> Result<()> {
                 Store::open_existing_with_cache(&config.database, config.database_cache_bytes())?
                     .verify()?;
             println!("{}", serde_json::json!({ "objects": objects }));
+        }
+        Command::Database {
+            command: DatabaseCommand::Stats,
+        } => {
+            let store =
+                Store::open_existing_with_cache(&config.database, config.database_cache_bytes())?;
+            let mut usage = serde_json::to_value(store.storage_usage()?)?;
+            usage["file"] = database_file_usage(&config.database)?;
+            println!("{usage}");
+        }
+        Command::Database {
+            command: DatabaseCommand::Repack { file },
+        } => {
+            backup::require_absent(&file)?;
+            let store =
+                Store::open_existing_with_cache(&config.database, config.database_cache_bytes())?;
+            let before = database_file_usage(&config.database)?;
+            let started = Instant::now();
+            let mut report =
+                serde_json::to_value(store.repack(&file, config.database_cache_bytes())?)?;
+            report["source_file"] = before;
+            report["output_file"] = database_file_usage(&file)?;
+            report["elapsed_seconds"] = started.elapsed().as_secs_f64().into();
+            println!("{report}");
         }
         Command::Database {
             command: DatabaseCommand::Count,

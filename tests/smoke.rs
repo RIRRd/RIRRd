@@ -2618,8 +2618,33 @@ fn full_standard_class_profile_is_queryable_after_restart() {
             .output()
             .unwrap(),
     );
-    for _ in 0..2 {
+    for iteration in 0..2 {
+        if iteration == 1 {
+            let packed = workspace.path().join("packed.redb");
+            let report: Value = serde_json::from_slice(&successful(
+                cli(&config)
+                    .args(["database", "repack", "--file"])
+                    .arg(&packed)
+                    .output()
+                    .unwrap(),
+            ))
+            .unwrap();
+            assert_eq!(report["objects"], 19);
+            let original = fs::read_to_string(&config).unwrap();
+            fs::write(&config, original.replace("registry.redb", "packed.redb")).unwrap();
+        }
         let (server, tcp) = Server::start_listener(&config, "WHOIS listening");
+        if iteration == 0 {
+            let busy_output = workspace.path().join("busy-output.redb");
+            let refused = cli(&config)
+                .args(["database", "repack", "--file"])
+                .arg(&busy_output)
+                .output()
+                .unwrap();
+            assert!(!refused.status.success());
+            assert!(!busy_output.exists());
+        }
+
         for (class, key, text) in cases {
             let answer = whois(tcp, format!("!m{class},{key}\n").as_bytes());
             assert!(
