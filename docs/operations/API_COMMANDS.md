@@ -91,10 +91,10 @@ object using a typed lookup. Authentication fields are redacted:
 
 ```sh
 curl --fail --get --data-urlencode 'source=RIPE' --data-urlencode 'class=mntner' \
-  --data-urlencode 'limit=30' https://dev.rirrd.co.uk/v1/irr/objects
+  --data-urlencode 'limit=30' https://dev.rirrd.net/v1/irr/objects
 # Replace EXAMPLE-MNT with a returned key.
 curl --fail --get --data-urlencode 'sources=RIPE' \
-  --data-urlencode 'q=!mmntner,EXAMPLE-MNT' https://dev.rirrd.co.uk/v1/whois/
+  --data-urlencode 'q=!mmntner,EXAMPLE-MNT' https://dev.rirrd.net/v1/whois/
 ```
 
 The same `!mCLASS,KEY` lookup selects person/role records by nic-hdl and keeps

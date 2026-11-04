@@ -253,7 +253,7 @@
     el('router-commands').replaceChildren();
     if (metadata.node?.public_whois === false) {
       text('connect-endpoint','Development uses HTTPS queries only. TCP WHOIS is private; port 43 on this VM continues to serve production.');
-      el('router-guide').href='https://rirrd.co.uk/docs/routers/';return;
+      el('router-guide').href='https://rirrd.net/docs/routers/';return;
     }
     const reserved = asn === 'AS64496' ? ' -p' : '';
     for (const [title, switches, name] of [['BIRD · IPv4 prefix set', '-4 -b', 'IRR_IN4'], ['BIRD · IPv6 prefix set', '-6 -b', 'IRR_IN6'], ['FRR · IPv4 prefix list', '-4', 'IRR_IN4'], ['FRR · IPv6 prefix list', '-6', 'IRR_IN6']]) el('router-commands').append(commandCard(title, 'Generate and review a candidate; choose your real peer or AS-set.', 'bgpq4' + reserved + ' ' + switches + ' -h ' + endpoint + ' -S ' + source + ' -l ' + name + ' ' + set));

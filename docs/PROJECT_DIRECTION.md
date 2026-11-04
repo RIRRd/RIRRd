@@ -30,7 +30,7 @@ source and public issues are at [RIRRd/RIRRd](https://github.com/RIRRd/RIRRd).
 
 The Rust service's dashboard is served on its existing loopback HTTP listener.
 The public community website and node directory are
-separate services at irrd.tools. rirrd.co.uk showcases the software and its
+separate services at irrd.tools. rirrd.net showcases the software and its
 measured development evidence. Public registry deployment is authorized for
 the experimental UK node, hosted by HYEHOST LLC.
 

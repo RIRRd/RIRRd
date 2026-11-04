@@ -1,7 +1,7 @@
 blank_issues_enabled: true
 contact_links:
   - name: Documentation and beta limitations
-    url: https://rirrd.co.uk/docs/beta/
+    url: https://rirrd.net/docs/beta/
     about: Read current limitations before enabling the beta on routing infrastructure.
   - name: Security reporting
     url: https://github.com/RIRRd/RIRRd/security/policy

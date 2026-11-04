@@ -5,7 +5,7 @@ edition = "2024"
 publish = false
 description = "A lightweight beta Rust Internet Routing Registry daemon"
 repository = "https://github.com/RIRRd/RIRRd"
-homepage = "https://rirrd.co.uk"
+homepage = "https://rirrd.net"
 license = "MIT"
 
 [dependencies]

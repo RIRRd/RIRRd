@@ -1,6 +1,6 @@
 # RIRRd
 
-**Beta 0.1.0-beta.2** · [MIT license](LICENSE) · [Project website](https://rirrd.co.uk/)
+**Beta 0.1.0-beta.2** · [MIT license](LICENSE) · [Project website](https://rirrd.net/)
 · [Community tools](https://irrd.tools/) · [Beta status](docs/BETA_STATUS.md)
 
 A Rust Internet Routing Registry daemon with embedded storage, bounded WHOIS,
@@ -26,7 +26,7 @@ maintained separately in a private repository.
 
 ## Software and community network
 
-- **rirrd.co.uk** showcases the project, measured benchmarks and beta documentation.
+- **rirrd.net** showcases the project, measured benchmarks and beta documentation.
 - **irrd.tools** hosts public routing tools, the reviewed node directory and
   private node submissions. The first node is in the UK, hosted by HYEHOST LLC.
 - The Rust daemon and `web/dashboard/` run independently. Running your own instance
@@ -67,7 +67,7 @@ Every push/PR runs the core matrix, independent protocol/recovery contracts,
 isolated website checks, source coverage and dependency audit. Reports include
 individual JSON/JUnit outcomes and retained failure logs. Short RPSL/NRTMv3 fuzz
 runs and container smoke checks also run per push/PR. Read [the testing guide](docs/TESTING.md)
-or inspect [the recorded verification page](https://rirrd.co.uk/testing/).
+or inspect [the recorded verification page](https://rirrd.net/testing/).
 
 ```sh
 python3 tools/testing/run.py --profile core --out /tmp/rirrd-core
