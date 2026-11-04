@@ -149,8 +149,34 @@ class Websites(unittest.TestCase):
     def test_snapshot_does_not_claim_unverified_github_success(self):
         self.open('project','/testing/','document.getElementById("verification-status") && !document.getElementById("verification-status").textContent.includes("Loading")')
         snapshot=json.loads((self.work/'project/testing/report.json').read_text())
-        expected='exported from the linked GitHub Actions' if snapshot.get('ci_status')=='recorded_run' else 'has not been verified'
+        expected='has not been verified'
+        if snapshot.get('ci_status')=='recorded_run':
+            expected='exported from the linked GitHub Actions'
+        elif snapshot.get('ci_status')=='verified_workflow':
+            from record_ci import REQUIRED
+            ci=snapshot['verified_ci']
+            self.assertEqual(ci['source_commit'],snapshot['source_commit'])
+            self.assertEqual(ci['conclusion'],'success')
+            self.assertEqual(ci['url'],'https://github.com/RIRRd/RIRRd/actions/runs/'+str(ci['run_id']))
+            self.assertTrue(REQUIRED<={job['name'].rsplit(' / ',1)[-1]for job in ci['jobs']})
+            self.assertTrue(all(job['conclusion']=='success'for job in ci['jobs']))
+            expected='The linked GitHub workflow passed at this tested revision'
         self.assertIn(expected,self.browser.js('document.getElementById("ci-verification-note").textContent'))
+
+    def test_mismatched_ci_proof_is_not_displayed_as_verified(self):
+        file=self.work/'project/testing/report.json';original=file.read_text()
+        try:
+            for changed in [{'source_commit':'0'*40},{'conclusion':'failure'}]:
+                snapshot=json.loads(original)
+                snapshot['ci_status']='verified_workflow'
+                snapshot['verified_ci']={**snapshot.get('verified_ci',{}),**changed}
+                file.write_text(json.dumps(snapshot))
+                self.browser.call('Network.clearBrowserCache',session=True)
+                self.open('project','/testing/','document.getElementById("verification-status") && !document.getElementById("verification-status").textContent.includes("Loading")')
+                self.assertIn('has not been verified',self.browser.js('document.getElementById("ci-verification-note").textContent'))
+        finally:
+            file.write_text(original)
+            self.browser.call('Network.clearBrowserCache',session=True)
 
     def test_community_counters_come_from_the_isolated_database(self):
         self.open('community',condition='document.getElementById("network-objects")?.textContent==="14"')
