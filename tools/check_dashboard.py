@@ -17,21 +17,28 @@ from urllib.parse import urlsplit
 
 
 class Browser:
-    def __init__(self, executable, profile, extra_args=()):
+    def __init__(self, executable, profile, extra_args=(), startup_timeout=60):
         command=[executable,'--headless','--no-sandbox','--disable-gpu','--disable-background-networking','--no-first-run','--remote-debugging-pipe','--user-data-dir='+profile, *extra_args]
-        self.child=subprocess.Popen(['bash','-c','exec '+shlex.join(command)+' 3<&0 4>&1'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,start_new_session=True)
+        self.stderr=tempfile.TemporaryFile()
+        self.child=subprocess.Popen(['bash','-c','exec '+shlex.join(command)+' 3<&0 4>&1'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=self.stderr,start_new_session=True)
         self.sequence=0;self.buffer=b'';self.events=[]
-        target=self.call('Target.createTarget',{'url':'about:blank'})['targetId']
-        self.session=self.call('Target.attachToTarget',{'targetId':target,'flatten':True})['sessionId']
-        self.call('Page.enable',session=True);self.call('Network.enable',session=True)
-        self.call('Runtime.enable',session=True)
+        try:
+            target=self.call('Target.createTarget',{'url':'about:blank'},timeout=startup_timeout)['targetId']
+            self.session=self.call('Target.attachToTarget',{'targetId':target,'flatten':True})['sessionId']
+            self.call('Page.enable',session=True);self.call('Network.enable',session=True)
+            self.call('Runtime.enable',session=True)
+        except Exception as error:
+            self.stderr.seek(0,os.SEEK_END);self.stderr.seek(max(0,self.stderr.tell()-4000))
+            diagnostic=self.stderr.read().decode('utf-8',errors='replace')
+            self.close()
+            raise RuntimeError(str(error)+(('\nBrowser startup diagnostics:\n'+diagnostic) if diagnostic else '')) from error
 
-    def call(self,method,params=None,session=False):
+    def call(self,method,params=None,session=False,timeout=25):
         self.sequence+=1
         message={'id':self.sequence,'method':method,'params':params or {}}
         if session:message['sessionId']=self.session
         self.child.stdin.write(json.dumps(message).encode()+b'\0');self.child.stdin.flush()
-        deadline=time.monotonic()+25
+        deadline=time.monotonic()+timeout
         while True:
             if b'\0' not in self.buffer:
                 remaining=deadline-time.monotonic()
@@ -63,6 +70,7 @@ class Browser:
         try:os.killpg(self.child.pid,signal.SIGKILL)
         except ProcessLookupError:pass
         self.child.stdin.close();self.child.stdout.close()
+        self.stderr.close()
 
 
 def main():
