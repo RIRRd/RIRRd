@@ -22,3 +22,24 @@ jobs:
             --entrypoint /bin/sh "$image" -c 'git config --global --add safe.directory /repo; exec gitleaks git /repo --log-opts=--all --redact --config /repo/.gitleaks.toml'
           docker run --rm --network none --mount "type=bind,source=$RUNNER_TEMP/public-tree,target=/tree,readonly" \
             "$image" dir /tree --redact --config /tree/.gitleaks.toml
+          # A new key block in the same Rust file must still be detected.
+          mkdir -p "$RUNNER_TEMP/secret-canary/src" "$RUNNER_TEMP/secret-canary-report"
+          python3 - "$RUNNER_TEMP/secret-canary/src/rpsl.rs" <<'PYTHON'
+          import base64, os, sys
+          from pathlib import Path
+          label = "PGP " + "PRIVATE KEY BLOCK"
+          body = base64.b64encode(os.urandom(48)).decode()
+          Path(sys.argv[1]).write_text("-----BEGIN " + label + "-----\n" + body + "\n-----END " + label + "-----\n")
+          PYTHON
+          set +e
+          docker run --rm --network none --mount "type=bind,source=$RUNNER_TEMP/secret-canary,target=/canary,readonly" \
+            --mount "type=bind,source=$PWD,target=/repo,readonly" \
+            --mount "type=bind,source=$RUNNER_TEMP/secret-canary-report,target=/out" \
+            "$image" dir /canary --redact --config /repo/.gitleaks.toml --report-format json --report-path /out/result.json
+          scan_status=$?
+          set -e
+          test "$scan_status" -eq 1
+          python3 - "$RUNNER_TEMP/secret-canary-report/result.json" <<'PYTHON'
+          import json, sys
+          assert any(row["RuleID"] == "private-key" for row in json.load(open(sys.argv[1])))
+          PYTHON
