@@ -40,4 +40,4 @@ BIRD/FRR consume generated policy; the filter generator queries RIRRd.
 
 See [router integration](operations/ROUTER_INTEGRATION.md),
 [small-host operation](operations/SMALL_HOSTS.md), and
-[the community network plan](community/NETWORK.md).
+[the community network plan](STATUS.md).

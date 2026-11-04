@@ -2423,3 +2423,84 @@ object_class_filter = ["aut-num", "route"]
     assert_eq!(whois(tcp, b"!mmntner,PRIVATE-MNT\n"), "D\n");
     drop(server);
 }
+
+#[test]
+fn public_http_admission_preserves_queries_and_rejects_writes() {
+    let workspace = tempfile::tempdir().unwrap();
+    let config = workspace.path().join("irrd.toml");
+    let base = r#"database = "registry.redb"
+sources = ["TEST"]
+listen = "127.0.0.1:0"
+http_listen = "127.0.0.1:0"
+http_public_queries = true
+max_connections = 4
+io_timeout_seconds = 2
+max_snapshot_bytes = 65536
+"#;
+    fs::write(&config, base).unwrap();
+    let fixture = workspace.path().join("fixture.rpsl");
+    fs::write(
+        &fixture,
+        (0..54)
+            .map(|n| format!("route6: 2001:db8:{n:x}::/48\norigin: AS64496\nsource: TEST\n\n"))
+            .collect::<String>(),
+    )
+    .unwrap();
+    successful(
+        cli(&config)
+            .args(["import", "snapshot", "--source", "TEST", "--file"])
+            .arg(&fixture)
+            .output()
+            .unwrap(),
+    );
+    let (server, address) = Server::start_listener(&config, "GraphQL listening");
+    let get = |path: &str, extra: &str| {
+        whois(
+            address,
+            format!("GET {path} HTTP/1.1\r\nHost: localhost\r\n{extra}Connection: close\r\n\r\n")
+                .as_bytes(),
+        )
+    };
+    let forwarded = "X-RIRRd-Client: 192.0.2.1\r\n";
+    let mut limited = 0;
+    for _ in 0..40 {
+        let reply = get("/v1/whois/?q=%216AS64496", forwarded);
+        if reply.starts_with("HTTP/1.1 200") {
+            assert_eq!(
+                reply
+                    .split_once("\r\n\r\n")
+                    .unwrap()
+                    .1
+                    .split_whitespace()
+                    .count(),
+                54
+            );
+            assert!(reply.to_lowercase().contains("server-timing: rirrd;dur="));
+        } else {
+            assert!(reply.starts_with("HTTP/1.1 429"), "{reply}");
+            limited += 1;
+        }
+    }
+    assert!(limited > 0);
+    assert!(get("/v1/whois/?q=%216AS64496", "").starts_with("HTTP/1.1 200"));
+    assert!(
+        get("/v1/whois/?q=%216AS64496", "X-RIRRd-Client: malformed\r\n")
+            .starts_with("HTTP/1.1 400")
+    );
+    assert!(get("/ui/http-stats.json", forwarded).starts_with("HTTP/1.1 404"));
+    assert!(get("/v1/submit/", forwarded).starts_with("HTTP/1.1 404"));
+    let metrics = get("/ui/http-stats.json", "");
+    let report: Value = serde_json::from_str(metrics.split_once("\r\n\r\n").unwrap().1).unwrap();
+    assert_eq!(report["requests"], 43);
+    assert_eq!(report["rate_limited"], limited);
+    assert_eq!(report["successful_sample_count"], 40 - limited);
+    drop(server);
+    fs::write(
+        &config,
+        format!("{base}http_authoritative_updates = true\n"),
+    )
+    .unwrap();
+    let output = cli(&config).args(["config", "check"]).output().unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("http_public_queries"));
+}

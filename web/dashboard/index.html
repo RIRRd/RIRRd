@@ -48,6 +48,7 @@
       </div>
       <article class="panel"><div class="panel-heading"><h2>Objects by source</h2><span class="fine">Current committed counts</span></div><div id="source-chart" class="chart"></div></article>
       <section id="overview-history" class="history-section" hidden><div class="panel-heading"><h2>Node activity</h2><label>Time range<select id="history-range"><option value="3600">Last hour</option><option value="21600">Last 6 hours</option><option value="86400" selected>Last 24 hours</option></select></label></div><p id="history-note" class="fine"></p><div class="two-column"><article class="panel"><h2>HTTP query rate</h2><div id="query-chart" class="chart"></div></article><article class="panel"><h2>HTTP response time · recent p95</h2><div id="latency-chart" class="chart"></div></article></div></section>
+      <article id="http-admission" class="panel" hidden><h2>HTTP admission and reliability</h2><div id="http-admission-metrics" class="mini-metrics"></div><p class="fine">Counters since native service start. Successful handler latency excludes rate-limit rejections, TLS and network delivery. No query-result cache is used.</p></article>
       <p class="fine">Explore registered routing policy and generate IRR filters. Availability here does not establish full IRRd parity or production qualification.</p>
     </section>
 

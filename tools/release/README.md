@@ -37,7 +37,7 @@ gh repo edit RIRRd/RIRRd --enable-issues \
 ```
 
 Confirm the repository API and clone are accessible without credentials before
-setting `site/project/release.json` public metadata. Inspect public issue forms
+updating any separately maintained website metadata. Inspect public issue forms
 and their security-reporting links. Historical CI links in old checkpoints
 belong to the original repository; current runs must link to RIRRd/RIRRd.
 Keep runtime data, caches, private queues and credentials outside Git and assets.

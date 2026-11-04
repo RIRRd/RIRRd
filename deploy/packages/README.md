@@ -49,7 +49,7 @@ bash deploy/packages/build.sh --arch arm64 target/aarch64-unknown-linux-gnu/rele
 
 Use the pinned baseline build environment and native CI for release qualification.
 Emulated checks establish execution under QEMU, not native ARM64 performance.
-The [upgraded VM evidence](../../docs/compatibility/UPGRADED_VM_CHECKPOINT.md)
+The [upgraded VM evidence](../../docs/STATUS.md)
 records both successful release-profile checks and an emulated debug timeout.
 
 ## Install and bootstrap

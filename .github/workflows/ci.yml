@@ -37,7 +37,7 @@ jobs:
           if-no-files-found: error
           retention-days: 14
   web:
-    name: Isolated websites and browser workflows
+    name: Bundled console browser workflows
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
@@ -45,9 +45,7 @@ jobs:
         with:
           persist-credentials: false
       - run: rustup update stable
-      - name: Install the distribution Markdown builder
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends python3-markdown
-      - name: Check both sites with a synthetic registry and private queue
+      - name: Check the bundled console with a synthetic registry
         run: /usr/bin/python3 tools/testing/run.py --profile web --out "${{ runner.temp }}/web-verification"
       - if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

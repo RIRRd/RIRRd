@@ -22,7 +22,7 @@ On 3 November 2026 the official latest-release API still returned v4.5.4;
 the open-issues API returned 34 issues and six PRs, all already mapped below.
 The public security-advisories API returned the same four GHSA identifiers.
 No newer-release behavior has been silently added to the pinned baseline.
-See [Linux VM evidence](LINUX_VM_CHECKPOINT.md) for new validation and open gates.
+See [Linux VM evidence](../STATUS.md) for new validation and open gates.
 
 ## Implementation priorities
 

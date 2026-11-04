@@ -3,7 +3,7 @@
 > Historical checkpoint: embedded RPKI and RTR were removed in beta.2 on
 > 4 November 2026. Validator measurements and commands below apply only to the
 > recorded historical source revisions. They are not current features. See
-> [the IRR-only checkpoint](IRR_ONLY_BETA2_CHECKPOINT.md).
+> [the IRR-only checkpoint](../STATUS.md).
 
 The public node at **https://rirrd.co.uk/** now serves nineteen public IRR sources.
 It is **RIRRd UK 01**, hosted in the **United Kingdom by HYEHOST LLC**, as supplied

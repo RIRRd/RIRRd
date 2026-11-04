@@ -7,7 +7,7 @@ from pathlib import Path
 import subprocess
 
 REQUIRED={'Core · ubuntu-24.04','Core · ubuntu-24.04-arm','Core · windows-latest',
-          'Isolated websites and browser workflows','Locked dependency security audit',
+          'Bundled console browser workflows','Locked dependency security audit',
           'Source coverage and external protocol contracts','Validate workflow syntax and expressions'}
 
 
@@ -31,7 +31,7 @@ def proof(run,jobs,source,repo):
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--repo',default='RIRRd/RIRRd');parser.add_argument('--run',type=int,required=True)
-    parser.add_argument('--snapshot',type=Path,default=Path('site/project/verification.json'))
+    parser.add_argument('--snapshot',type=Path,required=True)
     parser.add_argument('--gh',default='gh',help='Authenticated CLI or private organization-scoped wrapper')
     args=parser.parse_args();snapshot=json.loads(args.snapshot.read_text())
     def api(path):return json.loads(subprocess.check_output([args.gh,'api',path],text=True))

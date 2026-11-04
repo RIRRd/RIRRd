@@ -76,17 +76,10 @@ class Browser:
 def main():
     parser=argparse.ArgumentParser(description='Check the independent bundled RIRRd console')
     parser.add_argument('--url',required=True)
-    parser.add_argument('--mode',choices=['live','public'],required=True)
+    parser.add_argument('--mode',choices=['live'],required=True)
     parser.add_argument('--browser',default=shutil.which('chromium') or shutil.which('google-chrome'))
     parser.add_argument('--screenshots',type=Path)
     args=parser.parse_args()
-    if args.mode=='public':
-        import subprocess
-        origin=urlsplit(args.url)
-        command=[sys.executable,str(Path(__file__).with_name('check_community_ui.py')),'--url',origin.scheme+'://'+origin.netloc]
-        if args.screenshots:command += ['--screenshots',str(args.screenshots)]
-        subprocess.run(command,check=True)
-        return
     if not args.browser:parser.error('Chromium or Google Chrome is required')
     with tempfile.TemporaryDirectory(prefix='rirrd-console-browser-') as profile:
         browser=Browser(args.browser,profile)

@@ -11,10 +11,18 @@ to make running an IRR service practical on smaller Linux hosts.
 incomplete.** The baseline is official IRRd v4.5.4 at
 `8e8080dab744a348b7d0e6efcb53f403301dd075`. Check the
 [compatibility matrix](docs/compatibility/IRRD_FEATURE_MATRIX.md),
-[known gaps](docs/BETA_STATUS.md) and [progress record](AUTONOMOUS_PROGRESS.md).
+[known gaps](docs/BETA_STATUS.md) and [development status](docs/STATUS.md).
 The MIT-licensed source and public issue tracker are hosted at
 [RIRRd/RIRRd](https://github.com/RIRRd/RIRRd).
 Release artifacts are published only after the release checks pass.
+
+## Development
+
+Active changes are made on `dev`; `main` and release tags stay unchanged until
+reviewed release work. Development does not trigger package/release publication.
+The public repository contains the Rust daemon, self-hosted dashboard, tests and
+user documentation. Project/community websites and sponsored-node operations are
+maintained separately in a private repository.
 
 ## Software and community network
 
@@ -291,7 +299,7 @@ uses `irrd.tools:43`. Inspect the dashboard's loaded sources, missing feeds and
 snapshot times before testing. Seven sources follow NRTMv3 every sixty seconds; the remaining sources use daily snapshots.
 Submissions and administration are not public; full parity and production
 qualification remain incomplete. See the [router guide](docs/operations/ROUTER_INTEGRATION.md)
-and [live deployment guide](docs/operations/LIVE_SERVICE.md). Public IPv4/IPv6 and AS-set commands are in the [public query guide](docs/operations/PUBLIC_ROUTER_QUERIES.md).
+and [live deployment guide](docs/STATUS.md). Public IPv4/IPv6 and AS-set commands are in the [public query guide](docs/operations/PUBLIC_ROUTER_QUERIES.md).
 
 `http_sources` optionally restricts HTTP WHOIS/GraphQL to a nonempty subset of
 `sources`. TCP uses the full source list. This supports per-source distribution

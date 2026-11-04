@@ -138,11 +138,15 @@
     try {
       latest = await json(publicMode() ? 'live.json' : 'mirrors.json');
       if (publicMode() && latest.service !== 'online') throw new Error('Node service is unavailable');
-      text('mode-badge', publicMode() ? 'Live · Beta' : 'Private instance');
+      text('mode-badge', metadata.node?.environment === 'development' ? 'Development' : publicMode() ? 'Live · Beta' : 'Private instance');
       const totals = {};
       for (const group of Object.values(latest.class_counts || {})) for (const [name, value] of Object.entries(group)) totals[name] = (totals[name] || 0) + value;
       text('live-objects', count(latest.total_objects)); text('count-route', count(totals.route)); text('count-route6', count(totals.route6)); text('count-as-set', count(totals['as-set']));
       text('live-observed', latest.observed_at ? 'Observed ' + new Date(latest.observed_at).toLocaleString() + '. Counts include committed incremental edits.' : 'Committed database counts.');
+      if (latest.native_http) {
+        el('http-admission').hidden = false; const metrics=el('http-admission-metrics');metrics.replaceChildren();
+        for (const [label,value]of [['HTTP attempts',count(latest.native_http.requests)],['Successful HTTP replies',count(latest.native_http.successful)],['Rate limited · 429',count(latest.native_http.rate_limited)],['Admission busy',count(latest.native_http.admission_busy)],['Server errors',count(latest.native_http.server_errors)],['Successful p95',latest.native_http.successful_p95_ms==null?'No samples':latest.native_http.successful_p95_ms.toFixed(3)+' ms']]) {const box=document.createElement('div'),name=document.createElement('span'),number=document.createElement('strong');name.textContent=label;number.textContent=value;box.append(name,number);metrics.append(box);}
+      }
       renderSources();
       RIRRdCharts.bars(el('source-chart'), sourceRows().map(row => ({label:row.source,value:Object.values(classes(row)).reduce((n,v)=>n+v,0)})).sort((a,b)=>b.value-a.value), 'Committed routing objects by source');
       if (['overview','system'].includes(selected) || force) await refreshHistory(force);
@@ -219,12 +223,16 @@
     const asn = sampleASN(), set = sampleSet(), source = sourceDefault();
     el('command-examples').replaceChildren();
     for (const [title, note, q] of [['IPv4 prefixes by ASN', 'Every matching IPv4 route in the selected sources.', '!g' + asn], ['IPv6 prefixes by ASN', 'The IPv6 counterpart of the origin lookup.', '!6' + asn], ['All ASNs in an AS-set', 'Recursive membership, with nested sets expanded.', '!i' + set + ',1'], ['AS-set to IPv4 prefixes', 'Resolve member ASNs to originated IPv4 routes.', '!a4' + set], ['AS-set to IPv6 prefixes', 'Resolve member ASNs to originated IPv6 routes.', '!a6' + set], ['Direct AS-set members', 'Includes nested set names without recursive expansion.', '!i' + set]]) {
-      const p = new URLSearchParams({q, sources: source}); const value = whois + " '" + q + "'\n\n# HTTP, with explicit source selection\ncurl --fail '" + location.origin + '/v1/whois/?' + p + "'";
+      const p = new URLSearchParams({q, sources: source}); const value = (metadata.node?.public_whois === false ? "" : whois + " '" + q + "'\n\n# HTTP, with explicit source selection\n") + "curl --fail '" + location.origin + '/v1/whois/?' + p + "'";
       el('command-examples').append(commandCard(title, note, value));
     }
     const endpoint = host.includes(':') ? '[' + host + ']:' + port : host + ':' + port;
     text('connect-endpoint', publicMode() ? 'Public WHOIS endpoint: ' + endpoint : localOnly ? 'This instance binds WHOIS locally at ' + endpoint + '. Run these commands on this host, or use an authorised management tunnel.' : 'WHOIS endpoint for this host: ' + endpoint + '. Use an address reachable from your router-management host.');
     el('router-commands').replaceChildren();
+    if (metadata.node?.public_whois === false) {
+      text('connect-endpoint','Development uses HTTPS queries only. TCP WHOIS is private; port 43 on this VM continues to serve production.');
+      el('router-guide').href='https://rirrd.co.uk/docs/routers/';return;
+    }
     const reserved = asn === 'AS64496' ? ' -p' : '';
     for (const [title, switches, name] of [['BIRD · IPv4 prefix set', '-4 -b', 'IRR_IN4'], ['BIRD · IPv6 prefix set', '-6 -b', 'IRR_IN6'], ['FRR · IPv4 prefix list', '-4', 'IRR_IN4'], ['FRR · IPv6 prefix list', '-6', 'IRR_IN6']]) el('router-commands').append(commandCard(title, 'Generate and review a candidate; choose your real peer or AS-set.', 'bgpq4' + reserved + ' ' + switches + ' -h ' + endpoint + ' -S ' + source + ' -l ' + name + ' ' + set));
     if (publicMode()) el('router-guide').href = '/guides/routers/';
@@ -247,13 +255,17 @@
     try {
       metadata = await json('meta.json');
       if (publicMode() && location.hash === '#network') { location.replace('/#nodes'); return; }
-      text('mode-badge', publicMode() ? 'Live · Beta' : 'Private instance'); text('brand-caption', publicMode() ? 'Public node' : 'Your instance');
-      if (publicMode()) { document.querySelector('.brand>span:last-child').firstChild.nodeValue = 'irrd.tools'; document.querySelector('.mobile-brand').textContent = 'irrd.tools'; }
+      text('mode-badge', metadata.node?.environment === 'development' ? 'Development' : publicMode() ? 'Live · Beta' : 'Private instance'); text('brand-caption', publicMode() ? 'Public node' : 'Your instance');
+      if (publicMode()) { const brand=metadata.node?.environment==='development'?'RIRRd dev':'irrd.tools';document.querySelector('.brand>span:last-child').firstChild.nodeValue = brand; document.querySelector('.mobile-brand').textContent = brand; }
       text('node-name', metadata.node?.name || 'RIRRd instance');
       text('node-description', publicMode() ? [metadata.node?.location, metadata.node?.provider ? 'Hosted by ' + metadata.node.provider : '', 'Read-only routing tools'].filter(Boolean).join(' · ') : 'Your independently operated Internet Routing Registry.');
       text('instance-label', publicMode() ? 'Public read-only node' : 'Independent self-hosted instance'); el('community-link').hidden = !publicMode();
       text('mode-notice', publicMode() ? 'Public beta · Read-only queries. Source update times are listed individually.' : 'Self-hosted RIRRd console · Independent of the public community network. No community account or node listing is required.');
-      fillSelect('query-source', metadata.http_sources || metadata.sources, true); commands(); el('query-value').value = sampleASN(); updateCommand(); el('query-submit').disabled = false;
+      if (metadata.node?.environment === 'development') {
+        text('mode-notice','Development · '+metadata.version+' · Isolated snapshot, not a production endpoint. Changes are untagged and not release packages.');
+        text('instance-label','Development · separate database');text('brand-caption','DEV BRANCH');el('community-link').href='https://irrd.tools/';
+      }
+      fillSelect('query-source' , metadata.http_sources || metadata.sources, true); commands(); el('query-value').value = sampleASN(); updateCommand(); el('query-submit').disabled = false;
       const taskName = new URLSearchParams(location.search).get('task');
       if (['origin4','origin6','recursive','set4','set6','object'].includes(taskName)) task(taskName);
       const presetValue = new URLSearchParams(location.search).get('value'); if (presetValue && presetValue.length <= 256) { el('query-value').value = presetValue; updateCommand(); }

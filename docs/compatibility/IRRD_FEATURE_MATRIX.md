@@ -1,6 +1,6 @@
 # IRRd 4 compatibility inventory
 
-Current removal, migration and test evidence: [IRR-only beta.2 checkpoint](IRR_ONLY_BETA2_CHECKPOINT.md).
+Current removal, migration and test evidence: [IRR-only beta.2 checkpoint](../STATUS.md).
 
 > Current scope (4 November 2026): RIRRd is an IRR-only daemon. Embedded RPKI,
 > RTR, origin-validation APIs and ROA-file admission were removed for beta.2.
@@ -33,110 +33,10 @@ oracle results or protocol interop evidence as appropriate. Release
 extensions are tracked separately from upstream behaviour. Each row stays
 open until the stated behaviour and safety checks are demonstrated.
 
-## Beta 0.1.0-beta.1
+## Current development
 
-The [beta launch checkpoint](BETA_LAUNCH_CHECKPOINT.md) records the two-domain
-products, measured SVG graphs, RPKI covering/batch/status additions, native and
-ARM64 QEMU tests, 45+45 WHOIS / 71 authorization oracle matches and RPKI fuzzing.
-These additions do not establish live filtering, full mirroring/authentication
-parity or release qualification. Public GitHub release/CI evidence remains
-pending authenticated repository access.
-
-## Continuous build verification
-
-The [continuous-testing checkpoint](CONTINUOUS_TESTING_CHECKPOINT.md) records
-native protocol/recovery contracts, isolated browsers, report integrity, Linux
-and ARM evidence, measured source coverage and per-push/PR automation. The public
-testing page reports the tested revision and execution origin. These gates
-exercise the implemented beta; they do not close the remaining parity rows.
-
-## Compact ROV index and search efficiency
-
-The [resource/search checkpoint](../benchmarks/COMPACT_ROV_AND_SEARCH.md) records
-family-specific indexes, streamed feed parsing, bounded explanation invariants,
-full-scan/reference and CLI/API checks, Linux/ARM/fuzz evidence, paired kernel
-measurements and direct browser search. The UI/API exposes index allocation
-separately from process memory. This does not close live RPKI suppression,
-full validation coverage, authentication or release qualification gaps.
-
-## Community website and independent console
-
-The [community UX checkpoint](COMMUNITY_UX_CHECKPOINT.md) records separate
-community and self-hosted interfaces, private reviewed node submissions and
-browser-tested live prefix/set/ASN queries, source counts/browsing, API commands,
-router examples and RPKI state. These are usability and operational checks;
-they do not add upstream protocol parity or establish release readiness.
-
-## Continuous mirror and console checkpoint
-
-The [continuous-mirroring checkpoint](CONTINUOUS_MIRROR_CHECKPOINT.md) records
-serial-aligned filtered NRTMv3 scheduling, ordered upstream omissions, bounded
-large policy records, persistent class policy and quiet-source cursors. The
-console exposes per-source checks/coverage and the running GraphQL schema.
-Five source feeds are configured for 60-second incremental polling; other feeds
-remain explicitly snapshots or pending access. This does not establish signed
-NRTMv4 scheduling, downstream re-export or full mirroring parity.
-
-## Expanded source and authoritative checkpoint
-
-The [expanded checkpoint](EXPANDED_SOURCES_CHECKPOINT.md) records twelve real
-routing sources, verified resume after a failed candidate, disclosed record
-quarantine and source transport policy. AS-block/domain writes add maintainer
-and contact/zone-reference checks: 15 bounded profiles, 71 pinned HTTP decisions,
-45 cases per WHOIS transport and 16 additional schema cases. Native Linux and
-ARM64 QEMU pass 139 unit/17 integration/two client tests. The remaining four
-class profiles, cryptographic/account workflows and other parity gates stay open.
-
-## Live public test registry
-
-The [live checkpoint](LIVE_IRR_CHECKPOINT.md) records read-only WHOIS/HTTPS queries
-on five routing snapshots, source-permission isolation, measured telemetry and
-real bgpq4-generated BIRD/FRR candidates. Larger published policies are bounded
-at 4 MiB for snapshot imports; submission admission stays 64 KiB. Daily snapshot
-refresh is a deployment extension, not proof of continuous NRTM parity. Twelve
-tracked sources remain pending. Native Linux and ARM64 QEMU pass 138 unit/16
-integration/two client tests; full parity and new CI verification remain open.
-
-## Dashboard and small-host checkpoint
-
-The bundled read-only console uses the same loopback query API, with explicit
-synthetic-preview mode for static demos. The [small-host checkpoint](../benchmarks/SMALL_HOST_CHECKPOINT.md)
-records 64/16 MiB cache budgets, one-worker profiles, bounded imports and a separate
-per-file cache-eviction test. Real bgpq4 1.12 results matched the pinned oracle on
-12 original synthetic profiles, with BIRD 2.17.5 and FRR 10.3 syntax checks.
-Native Linux and ARM64 QEMU release checks pass 137 unit/15 integration/two client
-tests. This establishes neither full schema/authentication/mirroring parity nor
-production qualification. Source publication now has MIT/AI contribution guidance
-and file/history secret-scan checks; those are separate from release readiness.
-
-## GraphQL and 100k-object checkpoint
-
-The [synthetic scale checkpoint](../benchmarks/LINUX_SYNTHETIC_100K.md) records
-100,000-object import, memory, storage and normal TCP/HTTP request measurements.
-GraphQL policy/router values and 32 field types across four classes now have
-pinned-oracle coverage, alongside the nine supported organisation fields.
-Identity-only queries avoid eager text copies and attribute parsing. A matched
-before/after workload is reported separately; reduced allocations do not by
-themselves establish a throughput gain. Local Linux checks pass 137 application
-unit tests, 13 integration tests and two validating-client tests. New Actions
-run evidence still needs authenticated access. Full parity remains open.
-
-## Upgraded VM checkpoint
-
-See [the 24-CPU checkpoint](UPGRADED_VM_CHECKPOINT.md) for four additional
-bounded authoritative profiles (filter-set, peering-set, rtr-set and inet-rtr),
-maintainer dummy-hash replacement, 47 upstream HTTP decision cases, 25 policy
-schema cases, 134 unit/13 integration checks on native Linux and ARM64 QEMU
-release builds, and package/runtime measurements. No broad capability row is
-marked fully verified from these limited corpora. Native CI and full parity
-remain open.
-
-## Linux VM checkpoint
-
-The [3 November Linux evidence](LINUX_VM_CHECKPOINT.md) records authoritative
-organisation support, Linux checks and expanded pinned-oracle coverage. These
-checks establish only the listed behaviors. Full parity and production readiness
-remain open; historical CI links below are not new-run evidence.
+See [development status](../STATUS.md) and the per-commit CI reports. Historical
+host/operator checkpoints are maintained separately from the public daemon.
 
 ## RPSL and storage
 

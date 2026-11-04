@@ -19,6 +19,7 @@ mod nrtm4_records;
 mod nrtm4_remote;
 mod nrtm4_state;
 mod nrtm_client;
+mod public_http;
 mod route_policy;
 mod rpsl;
 mod scope;
@@ -736,6 +737,7 @@ async fn serve(config: Config, store: Arc<Store>) -> Result<()> {
                 update_sources,
                 timeout,
                 whois_sources: config.http_whois_sources.clone(),
+                public_queries: config.http_public_queries,
                 dashboard: dashboard::Metadata {
                     mode: "live",
                     version: env!("CARGO_PKG_VERSION"),

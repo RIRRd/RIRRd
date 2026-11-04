@@ -77,7 +77,7 @@ Record the previous binary's source revision separately; its SHA is automatic.
 Fixtures, logs, databases and caches stay outside Git. Commit the generator,
 controller, configuration and sanitized measurement JSON only. The static site
 on `codex/coming-soon` renders the completed JSON via
-`python3 site/coming-soon/render.py /path/to/results.json` before deployment.
+the separately maintained website tooling before publishing a comparison.
 
 If a client defect aborts the query stage **after all three valid imports**,
 correct and rebuild the client, then use `--resume /absolute/state/measured-...`.
@@ -97,12 +97,3 @@ Resume also requires `--resume-reason 'brief public explanation'`. The upstream
 allowlist diagnosis was verified directly: the same GraphQL POST returned 400
 with `Host: localhost` and 200 with the configured endpoint Host. The corrected
 client passed a live request preflight before restarting the query suite.
-
-## Monitoring delivery and historical validator measurements
-
-`compare_history_gateway.py` exercises the normal history HTTP handler in isolated
-processes. Use an explicit work/output location outside Git. The former ROV
-kernel benchmark is historical: the validator and its measurement tools were
-removed in beta.2. Check out the exact historical revision recorded in
-[the efficiency checkpoint](../../docs/benchmarks/UI_EFFICIENCY.md) to reproduce
-those older results. They do not describe the current IRR-only daemon.

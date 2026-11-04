@@ -1043,6 +1043,7 @@ pub struct HttpServiceConfig {
     pub timeout: Duration,
     pub dashboard: crate::dashboard::Metadata,
     pub whois_sources: Option<Vec<String>>,
+    pub public_queries: bool,
 }
 
 pub async fn serve(
@@ -1058,6 +1059,7 @@ pub async fn serve(
         timeout,
         dashboard,
         whois_sources,
+        public_queries,
     } = config;
     let schema = make_schema(store.clone(), sources.clone(), authoritative_sources)?;
     let mut app = Router::new()
@@ -1087,6 +1089,9 @@ pub async fn serve(
     }
     app = app.merge(crate::dashboard::router(dashboard, store.clone())?);
     app = app.merge(crate::irr_api::router(store.clone(), sources, timeout));
+    if public_queries {
+        app = crate::public_http::PublicHttp::new(timeout).wrap(app);
+    }
     app = app.layer(middleware::from_fn_with_state(
         listener.local_addr()?.ip(),
         bound_host,
@@ -1119,6 +1124,7 @@ mod tests {
             update_sources,
             timeout: Duration::from_secs(2),
             whois_sources: None,
+            public_queries: false,
             dashboard: crate::dashboard::Metadata {
                 mode: "live",
                 version: env!("CARGO_PKG_VERSION"),
