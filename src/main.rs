@@ -227,7 +227,11 @@ enum DatabaseCommand {
         file: PathBuf,
     },
     /// Read the committed object count; this does not verify index integrity.
-    Count,
+    Count {
+        /// Include committed per-source/class counts; still not an integrity check.
+        #[arg(long)]
+        by_class: bool,
+    },
     /// Write a private, versioned backup of the offline database.
     Backup {
         #[arg(long)]
@@ -396,14 +400,16 @@ fn main() -> Result<()> {
             println!("{report}");
         }
         Command::Database {
-            command: DatabaseCommand::Count,
+            command: DatabaseCommand::Count { by_class },
         } => {
             let store =
                 Store::open_existing_with_cache(&config.database, config.database_cache_bytes())?;
-            println!(
-                "{}",
-                serde_json::json!({"objects": store.object_count()?, "integrity_verified": false})
-            );
+            let mut report =
+                serde_json::json!({"objects": store.object_count()?, "integrity_verified": false});
+            if by_class {
+                report["class_counts"] = serde_json::to_value(store.class_counts()?)?;
+            }
+            println!("{report}");
         }
         Command::Database {
             command: DatabaseCommand::Backup { file },

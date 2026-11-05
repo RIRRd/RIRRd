@@ -7,6 +7,7 @@ complete second database. Repacking does not activate or replace a database.
 
 ```sh
 rust-irrd --config /private/offline.toml database stats
+rust-irrd --config /private/offline.toml database count --by-class
 rust-irrd --config /private/offline.toml database repack --file /private/packed.redb
 ```
 
@@ -28,6 +29,10 @@ Database-level `fragmented_bytes` includes free preallocated pages as well as
 unused room inside pages; it is not a promise that all those bytes can be removed.
 Per-table figures help distinguish data/index costs from free file capacity.
 
+`database count --by-class` reads the committed per-source/class counters. It
+does not scan or verify index integrity; its JSON explicitly reports
+`integrity_verified: false`. The default `database count` output is unchanged.
+
 ## Repack without changing the storage format
 
 `database repack --file NEW_PATH` creates a separate database using the existing
@@ -45,10 +50,13 @@ ordering, source priority, records, policy or credentials. Each batch holds up t
 group is streamed in bounded batches. Source and output each use the configured
 database cache budget; total process/kernel memory is not limited to one cache.
 
-Before publication the command verifies source indexes, hashes every typed
-key/value with length-delimited table identity/counts, verifies the output and
-compares the logical hashes. It compacts and closes the output, reopens it and
-repeats output verification/hash comparison. A private staging file is synced
+The command hashes every source key/value in canonical order while copying,
+before shuffling each bounded batch. It includes length-delimited table
+identity and row counts. After compaction and closing, it reopens the final
+artifact, runs full index/object verification and independently hashes its
+contents for comparison with the stable source snapshot. Publication requires
+both checks to pass; corrupt source indexes cannot produce an accepted copy.
+This avoids redundant full-database walks during large maintenance jobs. A private staging file is synced
 and published without overwriting an existing destination. Failed preparation
 removes its staging file; the original remains available.
 

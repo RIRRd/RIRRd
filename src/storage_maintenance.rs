@@ -171,12 +171,17 @@ fn copy_table<K: redb::Key + 'static, V: redb::Value + 'static>(
     source: &ReadTransaction,
     destination: &WriteTransaction,
     definition: TableDefinition<'_, K, V>,
-) -> Result<()> {
+    hash: &mut Sha256,
+) -> Result<usize> {
     let original = match source.open_table(definition) {
         Ok(table) => table,
-        Err(redb::TableError::TableDoesNotExist(_)) => return Ok(()),
+        Err(redb::TableError::TableDoesNotExist(_)) => return Ok(0),
         Err(error) => return Err(error.into()),
     };
+    eprintln!("Repacking table {}", definition.name());
+    hash.update([1]);
+    hash_bytes(hash, definition.name().as_bytes());
+    hash.update(original.len()?.to_le_bytes());
     let mut table = destination.open_table(definition)?;
     let mut rows = Vec::new();
     let mut bytes = 0;
@@ -184,6 +189,8 @@ fn copy_table<K: redb::Key + 'static, V: redb::Value + 'static>(
         let (key, value) = entry?;
         let key = K::as_bytes(&key.value()).as_ref().to_vec();
         let value = V::as_bytes(&value.value()).as_ref().to_vec();
+        hash_bytes(hash, &key);
+        hash_bytes(hash, &value);
         bytes += key.len() + value.len();
         rows.push((key, value));
         if bytes >= BATCH_BYTES || rows.len() >= BATCH_ROWS {
@@ -192,15 +199,20 @@ fn copy_table<K: redb::Key + 'static, V: redb::Value + 'static>(
         }
     }
     flush(&mut rows, &mut table)?;
-    Ok(())
+    Ok(1)
 }
 
 fn copy_multimap<K: redb::Key + 'static, V: redb::Key + 'static>(
     source: &ReadTransaction,
     destination: &WriteTransaction,
     definition: MultimapTableDefinition<'_, K, V>,
-) -> Result<()> {
+    hash: &mut Sha256,
+) -> Result<usize> {
     let original = source.open_multimap_table(definition)?;
+    eprintln!("Repacking multimap {}", definition.name());
+    hash.update([2]);
+    hash_bytes(hash, definition.name().as_bytes());
+    hash.update(original.len()?.to_le_bytes());
     let mut table = destination.open_multimap_table(definition)?;
     let mut rows = Vec::new();
     let mut bytes = 0;
@@ -211,6 +223,8 @@ fn copy_multimap<K: redb::Key + 'static, V: redb::Key + 'static>(
             let value = value?;
             let key = K::as_bytes(&key.value()).as_ref().to_vec();
             let value = V::as_bytes(&value.value()).as_ref().to_vec();
+            hash_bytes(hash, &key);
+            hash_bytes(hash, &value);
             bytes += key.len() + value.len();
             rows.push((key, value));
             if bytes >= BATCH_BYTES || rows.len() >= BATCH_ROWS {
@@ -220,7 +234,7 @@ fn copy_multimap<K: redb::Key + 'static, V: redb::Key + 'static>(
         }
     }
     flush_multimap(&mut rows, &mut table)?;
-    Ok(())
+    Ok(1)
 }
 
 fn flush_multimap<K: redb::Key + 'static, V: redb::Key + 'static>(
@@ -382,19 +396,21 @@ impl Store {
             "repack refuses persistent savepoints"
         );
         check.abort()?;
-        let objects = self.verify().context("verifying registry before repack")?;
-        let expected = logical_hash(&read)?;
-        ensure!(
-            expected.0 == read.list_tables()?.count() + read.list_multimap_tables()?.count(),
-            "repack cannot account for every source table"
-        );
+        let objects = read.open_table(OBJECTS)?.len()?;
+        // Hash the stable source snapshot in canonical order while copying it,
+        // before dispersing each batch. The independently read final artifact
+        // must match this digest and pass the complete semantic verifier.
+        let mut hash = Sha256::new();
+        hash.update(b"RIRRd logical database v1");
+        let mut tables = 0;
+        let expected;
         let stage = crate::backup::stage_for(output)?;
         {
             let db = Database::builder()
                 .set_cache_size(cache_bytes)
                 .create_file(stage.as_file().try_clone()?)?;
             let write = db.begin_write()?;
-            macro_rules! copy { ($($definition:expr),*) => { $(copy_table(&read, &write, $definition)?;)* }; }
+            macro_rules! copy { ($($definition:expr),*) => { $(tables += copy_table(&read, &write, $definition, &mut hash)?;)* }; }
             copy!(
                 OBJECTS,
                 PREFIXES,
@@ -410,25 +426,34 @@ impl Store {
                 AUTH_AUDIT,
                 PROTECTED_NAMES
             );
-            copy_multimap(&read, &write, EXACT)?;
-            copy_multimap(&read, &write, ORIGINS)?;
-            write.commit()?;
-            let mut rebuilt = Store::from_database(db);
-            ensure!(rebuilt.verify()? == objects, "repack changed object count");
+            tables += copy_multimap(&read, &write, EXACT, &mut hash)?;
+            tables += copy_multimap(&read, &write, ORIGINS, &mut hash)?;
             ensure!(
-                logical_hash(&rebuilt.db.begin_read()?)? == expected,
-                "repack changed logical database contents"
+                tables == read.list_tables()?.count() + read.list_multimap_tables()?.count(),
+                "repack cannot account for every source table"
             );
-            rebuilt.db.compact()?;
+            expected = (
+                tables,
+                hash.finalize()
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>(),
+            );
+            write.commit()?;
+            let mut db = db;
+            eprintln!("Compacting repacked database");
+            db.compact()?;
         }
         // Reopen the closed database through the private staging handle. Windows
         // deliberately denies a second path-based read handle before publication.
         {
+            eprintln!("Verifying closed and reopened database");
             let rebuilt = crate::backup::lock_existing_file(stage.as_file(), cache_bytes)?;
             ensure!(
                 rebuilt.verify()? == objects,
                 "repacked database failed reopen verification"
             );
+            eprintln!("Comparing final logical database hash");
             ensure!(
                 logical_hash(&rebuilt.db.begin_read()?)? == expected,
                 "repacked database changed after reopen"

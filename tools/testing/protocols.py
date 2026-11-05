@@ -38,6 +38,29 @@ class Protocols(unittest.TestCase):
         self.assertEqual(status, 200)
         return json.loads(raw)
 
+    def test_offline_repack_retains_class_counts_and_public_queries(self):
+        registry = Registry()
+        try:
+            before = json.loads(registry.cli('database', 'count', '--by-class').stdout)
+            self.assertFalse(before['integrity_verified'])
+            self.assertEqual(sum(sum(classes.values()) for classes in before['class_counts'].values()), before['objects'])
+            plain = json.loads(registry.cli('database', 'count').stdout)
+            self.assertEqual(set(plain), {'objects', 'integrity_verified'})
+            packed = registry.root / 'packed.redb'
+            result = json.loads(registry.cli('database', 'repack', '--file', str(packed)).stdout)
+            self.assertEqual(result['objects'], before['objects'])
+            self.assertEqual(len(result['logical_sha256']), 64)
+            self.assertNotEqual(registry.cli('database', 'repack', '--file', str(packed), success=False).returncode, 0)
+            registry.config.write_text(registry.config.read_text().replace('"registry.redb"', '"packed.redb"'))
+            self.assertEqual(json.loads(registry.cli('database', 'count', '--by-class').stdout), before)
+            registry.start()
+            self.assertIn(b'192.0.2.0/24', payload(registry.wire(b'!gAS64496\n')))
+            status, raw, _ = registry.request('/v1/whois/?q=%216AS64496')
+            self.assertEqual(status, 200)
+            self.assertIn(b'2001:db8:100::/48', raw)
+        finally:
+            registry.close()
+
     def test_tcp_utf8_length_is_bytes(self):
         raw = self.registry.wire(b'!!\n!sSECOND\n!maut-num,AS64496\n!q\n')
         self.assertTrue(raw.startswith(b'C\n'))
