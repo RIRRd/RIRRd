@@ -1,0 +1,291 @@
+{
+  "schema_version": 1,
+  "date": "2026-11-05",
+  "runtime_source_commit": "a0d6e0c289faa25fa57f24336763f55438696a50",
+  "verified_ci_commit": "3cb679916a1a2b11332ec55378fa7758f10f0a9a",
+  "runtime_rust_and_dashboard_sources_match_ci": true,
+  "runtime_binary_sha256": "229a1e15fe5056f05a37e04230832c3c87340c6b76c3d30cb166c8ebb8150f87",
+  "host": {
+    "os": "Debian GNU/Linux 13 (trixie)",
+    "logical_cpus": 24,
+    "kernel": "6.12.115+deb13.1-amd64",
+    "memory_bytes": 67357765632,
+    "filesystem": "ext4"
+  },
+  "original_file_before_maintenance": {
+    "apparent_bytes": 30068502528,
+    "allocated_bytes": 29090385920
+  },
+  "verified_repacked_snapshot": {
+    "objects": 13983606,
+    "tables": 15,
+    "logical_sha256": "b1dce95199c49e86bdc20055e3e049b81c8adfcdaa8517dd093aa110674597bf",
+    "elapsed_seconds": 3896.336750471,
+    "output_file": {
+      "allocated_bytes": 21098651648,
+      "apparent_bytes": 21477502976
+    }
+  },
+  "active_after_catchup": {
+    "observed_at": "2026-11-05T08:39:59Z",
+    "apparent_bytes": 21477502976,
+    "allocated_bytes": 21123784704,
+    "process_rss_bytes": 23531520,
+    "process_rss_peak_bytes": 23531520,
+    "normal_memory_limit_bytes": 3221225472,
+    "normal_shutdown_timeout": "30s",
+    "runtime_binary_sha256": "229a1e15fe5056f05a37e04230832c3c87340c6b76c3d30cb166c8ebb8150f87",
+    "objects": 13983866,
+    "sources": 21,
+    "classes": 19,
+    "class_counts": {
+      "as-block": 1716,
+      "as-set": 77335,
+      "aut-num": 100277,
+      "domain": 1219135,
+      "filter-set": 219,
+      "inet-rtr": 262,
+      "inet6num": 1758085,
+      "inetnum": 5586897,
+      "irt": 35331,
+      "key-cert": 9206,
+      "mntner": 165982,
+      "organisation": 121124,
+      "peering-set": 382,
+      "person": 38148,
+      "role": 158627,
+      "route": 3341423,
+      "route-set": 27757,
+      "route6": 1341834,
+      "rtr-set": 126
+    },
+    "following_mirrors": 14
+  },
+  "maintenance": {
+    "observed_at": "2026-11-05T08:25:24Z",
+    "daemon_and_maintenance_rss_peak_bytes": 1455095808,
+    "process_rss_bytes": 265773056,
+    "cgroup": {
+      "MemoryCurrent": 33192300544,
+      "MemoryPeak": 34359742464,
+      "CPUUsageNSec": 3085761997000,
+      "MemoryMax": 34359738368
+    },
+    "source_cache_mib": 64,
+    "maintenance_cache_mib": 1024,
+    "memory_accounting": "cgroup includes filesystem cache; RSS is the daemon and in-process maintenance job"
+  },
+  "health_samples": {
+    "samples": 248,
+    "failures": 0,
+    "maximum_seconds": 0.03827183702378534,
+    "scope": "loopback mirror-status endpoint sampled during online rebuild; not a query-capacity benchmark"
+  },
+  "verification": {
+    "full_index_object_verifier": true,
+    "canonical_source_output_hash_equal": true,
+    "tcp_http_graphql_representative_classes": 19,
+    "tcp_byte_framing": true,
+    "http_tcp_payload_equality": true,
+    "credential_redaction": true,
+    "as6939_ipv6_prefixes": 54,
+    "daemon_restart_and_next_mirror_poll": true,
+    "https_ipv4_ipv6": [
+      {
+        "family": "ipv4",
+        "http_status": 200,
+        "tls_verified": true,
+        "ipv6_prefixes": 54,
+        "vantage": "VM through public DNS and Caddy"
+      },
+      {
+        "family": "ipv6",
+        "http_status": 200,
+        "tls_verified": true,
+        "ipv6_prefixes": 54,
+        "vantage": "VM through public DNS and Caddy"
+      }
+    ],
+    "external_fetch": "Independent web-fetch tool could not access this domain; no external IP-family claim"
+  },
+  "storage_accounting": {
+    "allocated_pages": 5144539,
+    "file": {
+      "allocated_bytes": 21098651648,
+      "apparent_bytes": 21477502976
+    },
+    "fragmented_bytes": 7618375799,
+    "metadata_bytes": 1436038411,
+    "page_size": 4096,
+    "stored_bytes": 12420414078,
+    "tables": [
+      {
+        "branch_pages": 4,
+        "entries": 5794,
+        "fragmented_bytes": 140091,
+        "kind": "table",
+        "leaf_pages": 104,
+        "metadata_bytes": 31416,
+        "name": "as_block_cover_v1",
+        "stored_bytes": 270861
+      },
+      {
+        "branch_pages": 0,
+        "entries": 0,
+        "fragmented_bytes": 0,
+        "kind": "table",
+        "leaf_pages": 0,
+        "metadata_bytes": 0,
+        "name": "authoritative_audit_v1",
+        "stored_bytes": 0
+      },
+      {
+        "branch_pages": 0,
+        "entries": 0,
+        "fragmented_bytes": 0,
+        "kind": "table",
+        "leaf_pages": 0,
+        "metadata_bytes": 0,
+        "name": "authoritative_nrtm3_serials_v1",
+        "stored_bytes": 0
+      },
+      {
+        "branch_pages": 0,
+        "entries": 0,
+        "fragmented_bytes": 0,
+        "kind": "table",
+        "leaf_pages": 0,
+        "metadata_bytes": 0,
+        "name": "authoritative_protected_names_v1",
+        "stored_bytes": 0
+      },
+      {
+        "branch_pages": 7452,
+        "entries": 13983606,
+        "fragmented_bytes": 356571588,
+        "kind": "multimap",
+        "leaf_pages": 276572,
+        "metadata_bytes": 716615130,
+        "name": "exact_v1",
+        "stored_bytes": 90175586
+      },
+      {
+        "branch_pages": 4135,
+        "entries": 5742626,
+        "fragmented_bytes": 162882807,
+        "kind": "table",
+        "leaf_pages": 125873,
+        "metadata_bytes": 34488859,
+        "name": "inetnum_cover_v1",
+        "stored_bytes": 335141102
+      },
+      {
+        "branch_pages": 39026,
+        "entries": 37823696,
+        "fragmented_bytes": 1360520678,
+        "kind": "table",
+        "leaf_pages": 985760,
+        "metadata_bytes": 252058485,
+        "name": "inverse_v1",
+        "stored_bytes": 2584944293
+      },
+      {
+        "branch_pages": 0,
+        "entries": 14,
+        "fragmented_bytes": 1735,
+        "kind": "table",
+        "leaf_pages": 1,
+        "metadata_bytes": 116,
+        "name": "mirror_class_filters_v1",
+        "stored_bytes": 2245
+      },
+      {
+        "branch_pages": 0,
+        "entries": 0,
+        "fragmented_bytes": 0,
+        "kind": "table",
+        "leaf_pages": 0,
+        "metadata_bytes": 0,
+        "name": "nrtm3_journal_v1",
+        "stored_bytes": 0
+      },
+      {
+        "branch_pages": 0,
+        "entries": 0,
+        "fragmented_bytes": 0,
+        "kind": "table",
+        "leaf_pages": 0,
+        "metadata_bytes": 0,
+        "name": "nrtm4_state_v1",
+        "stored_bytes": 0
+      },
+      {
+        "branch_pages": 1,
+        "entries": 195,
+        "fragmented_bytes": 6708,
+        "kind": "table",
+        "leaf_pages": 2,
+        "metadata_bytes": 866,
+        "name": "object_class_counts_v1",
+        "stored_bytes": 4714
+      },
+      {
+        "branch_pages": 90902,
+        "entries": 13983606,
+        "fragmented_bytes": 5160119973,
+        "kind": "table",
+        "leaf_pages": 3443481,
+        "metadata_bytes": 375624670,
+        "name": "objects_v1",
+        "stored_bytes": 9115786621
+      },
+      {
+        "branch_pages": 5868,
+        "entries": 4683063,
+        "fragmented_bytes": 64361727,
+        "kind": "multimap",
+        "leaf_pages": 34998,
+        "metadata_bytes": 29132287,
+        "name": "origins_v1",
+        "stored_bytes": 73893122
+      },
+      {
+        "branch_pages": 2749,
+        "entries": 4683063,
+        "fragmented_bytes": 108351833,
+        "kind": "table",
+        "leaf_pages": 83672,
+        "metadata_bytes": 25433236,
+        "name": "route_prefixes_v1",
+        "stored_bytes": 220195347
+      },
+      {
+        "branch_pages": 0,
+        "entries": 14,
+        "fragmented_bytes": 3849,
+        "kind": "table",
+        "leaf_pages": 1,
+        "metadata_bytes": 60,
+        "name": "source_serials_v1",
+        "stored_bytes": 187
+      }
+    ]
+  },
+  "ci": {
+    "core": "https://github.com/RIRRd/RIRRd/actions/runs/41986891905",
+    "oracle": "https://github.com/RIRRd/RIRRd/actions/runs/41986892087",
+    "routers_dashboard": "https://github.com/RIRRd/RIRRd/actions/runs/41986891973",
+    "deployment": "https://github.com/RIRRd/RIRRd/actions/runs/41986891966",
+    "fuzz": "https://github.com/RIRRd/RIRRd/actions/runs/41986891960",
+    "publication_hygiene": "https://github.com/RIRRd/RIRRd/actions/runs/41986892068"
+  },
+  "scope": {
+    "development_activated": true,
+    "production_restarted": false,
+    "main_changed": false,
+    "release_published": false,
+    "raw_records_in_git": false,
+    "original_database_retained_for_rollback": true,
+    "storage_format_changed": false
+  }
+}

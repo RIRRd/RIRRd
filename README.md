@@ -92,6 +92,9 @@ runs and container smoke checks also run per push/PR. Read [the testing guide](d
 or inspect [the recorded verification page](https://rirrd.net/testing/).
 The [latest optimization checkpoint](docs/benchmarks/OPTIMIZATION_2026_11_04.md)
 records exact artifacts, constrained-host measurements and observed trade-offs.
+The [full-catalog storage checkpoint](docs/benchmarks/STORAGE_FULL_2026_11_05.md)
+records a verified 28-to-20 GiB development database repack, preserving all
+21 sources and 19 retained object classes.
 
 ```sh
 python3 tools/testing/run.py --profile core --out /tmp/rirrd-core

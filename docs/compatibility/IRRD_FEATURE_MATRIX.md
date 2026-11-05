@@ -35,12 +35,19 @@ open until the stated behaviour and safety checks are demonstrated.
 
 ## Current development
 
+The [full-catalog checkpoint](../benchmarks/STORAGE_FULL_2026_11_05.md) records
+activation of a verified 28-to-20 GiB development database: about 14 million
+objects, all 21 sources, 19 retained classes and 14 incremental feeds.
+Post-restart TCP/HTTP/GraphQL, redaction, framing and mirror polls passed.
+This is storage preservation evidence, not full feature parity.
+
 Offline table accounting and a schema-preserving new-file repack are described
 in the [storage checkpoint](../benchmarks/STORAGE_2026_11_04.md). All application
 rows, serials, journals, signed-client state and authoritative metadata are
 preserved and hashed; unknown tables/savepoints are refused. The 19-class normal
-CLI/TCP/HTTP/GraphQL test now reopens a repacked database. Synthetic space gains
-do not establish full-catalog savings or expand remaining feature-parity claims.
+CLI/TCP/HTTP/GraphQL test reopens a repacked database. The earlier synthetic
+measurements are separate from the full-catalog validation above; neither
+expands the remaining feature-parity claims.
 
 The [4 November allocation/release checkpoint](../benchmarks/OPTIMIZATION_2026_11_04.md)
 records smaller executables, bounded import/query allocation changes, complete

@@ -1,5 +1,8 @@
 # Database storage maintenance
 
+These development features require a build from `dev`. This work does not
+publish new release packages.
+
 The `database` subcommands require an **offline database or inactive generation**. The
 normal exclusive database lock rejects access to a serving instance. Use a
 private directory, keep a verified original for rollback and allow space for a
