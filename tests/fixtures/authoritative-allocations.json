@@ -1,0 +1,841 @@
+[
+  {
+    "name": "inetnum minimal",
+    "text": "inetnum: 198.18.16.0 - 198.18.16.255\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\n",
+    "valid": true
+  },
+  {
+    "name": "inetnum missing netname",
+    "text": "inetnum: 198.18.16.0 - 198.18.16.255\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\n",
+    "valid": false
+  },
+  {
+    "name": "inetnum missing country",
+    "text": "inetnum: 198.18.16.0 - 198.18.16.255\nnetname: Documentation network\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\n",
+    "valid": false
+  },
+  {
+    "name": "inetnum missing admin-c",
+    "text": "inetnum: 198.18.16.0 - 198.18.16.255\nnetname: Documentation network\ncountry: GB\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\n",
+    "valid": false
+  },
+  {
+    "name": "inetnum missing tech-c",
+    "text": "inetnum: 198.18.16.0 - 198.18.16.255\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\n",
+    "valid": false
+  },
+  {
+    "name": "inetnum missing status",
+    "text": "inetnum: 198.18.16.0 - 198.18.16.255\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\n",
+    "valid": false
+  },
+  {
+    "name": "inetnum missing mnt-by",
+    "text": "inetnum: 198.18.16.0 - 198.18.16.255\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nsource: AUTH-TEST\n",
+    "valid": false
+  },
+  {
+    "name": "inetnum rejects auth",
+    "text": "inetnum: 198.18.16.0 - 198.18.16.255\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\nauth: BCRYPT-PW synthetic-secret\n",
+    "valid": false
+  },
+  {
+    "name": "inetnum rejects mnt-lower",
+    "text": "inetnum: 198.18.16.0 - 198.18.16.255\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\nmnt-lower: OWNER-MNT\n",
+    "valid": false
+  },
+  {
+    "name": "inetnum rejects admin-c",
+    "text": "inetnum: 198.18.16.0 - 198.18.16.255\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\nadmin-c: MISSING, AMBIGUOUS\n",
+    "valid": false
+  },
+  {
+    "name": "inetnum rejects notify",
+    "text": "inetnum: 198.18.16.0 - 198.18.16.255\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\nnotify: invalid\n",
+    "valid": false
+  },
+  {
+    "name": "inetnum repeated references",
+    "text": "inetnum: 198.18.16.0 - 198.18.16.255\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\nadmin-c: CT1-AUTH\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\n",
+    "valid": true
+  },
+  {
+    "name": "inetnum folded remarks",
+    "text": "inetnum: 198.18.16.0 - 198.18.16.255\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\nremarks: First line\n+ Second line\n",
+    "valid": true
+  },
+  {
+    "name": "inetnum duplicate identity",
+    "text": "inetnum: 198.18.16.0 - 198.18.16.255\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ninetnum: 198.18.16.0 - 198.18.16.255\n",
+    "valid": false
+  },
+  {
+    "name": "inet6num minimal",
+    "text": "inet6num: 2001:db8:abcd::/48\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\n",
+    "valid": true
+  },
+  {
+    "name": "inet6num missing netname",
+    "text": "inet6num: 2001:db8:abcd::/48\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\n",
+    "valid": false
+  },
+  {
+    "name": "inet6num missing country",
+    "text": "inet6num: 2001:db8:abcd::/48\nnetname: Documentation network\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\n",
+    "valid": false
+  },
+  {
+    "name": "inet6num missing admin-c",
+    "text": "inet6num: 2001:db8:abcd::/48\nnetname: Documentation network\ncountry: GB\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\n",
+    "valid": false
+  },
+  {
+    "name": "inet6num missing tech-c",
+    "text": "inet6num: 2001:db8:abcd::/48\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\n",
+    "valid": false
+  },
+  {
+    "name": "inet6num missing status",
+    "text": "inet6num: 2001:db8:abcd::/48\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\n",
+    "valid": false
+  },
+  {
+    "name": "inet6num missing mnt-by",
+    "text": "inet6num: 2001:db8:abcd::/48\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nsource: AUTH-TEST\n",
+    "valid": false
+  },
+  {
+    "name": "inet6num rejects auth",
+    "text": "inet6num: 2001:db8:abcd::/48\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\nauth: BCRYPT-PW synthetic-secret\n",
+    "valid": false
+  },
+  {
+    "name": "inet6num rejects mnt-lower",
+    "text": "inet6num: 2001:db8:abcd::/48\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\nmnt-lower: OWNER-MNT\n",
+    "valid": false
+  },
+  {
+    "name": "inet6num rejects admin-c",
+    "text": "inet6num: 2001:db8:abcd::/48\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\nadmin-c: MISSING, AMBIGUOUS\n",
+    "valid": false
+  },
+  {
+    "name": "inet6num rejects notify",
+    "text": "inet6num: 2001:db8:abcd::/48\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\nnotify: invalid\n",
+    "valid": false
+  },
+  {
+    "name": "inet6num repeated references",
+    "text": "inet6num: 2001:db8:abcd::/48\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\nadmin-c: CT1-AUTH\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\n",
+    "valid": true
+  },
+  {
+    "name": "inet6num folded remarks",
+    "text": "inet6num: 2001:db8:abcd::/48\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\nremarks: First line\n+ Second line\n",
+    "valid": true
+  },
+  {
+    "name": "inet6num duplicate identity",
+    "text": "inet6num: 2001:db8:abcd::/48\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ninet6num: 2001:db8:abcd::/48\n",
+    "valid": false
+  },
+  {
+    "name": "irt minimal",
+    "text": "irt: IRT-ORACLE\naddress: Documentation Road\ne-mail: noc@example.invalid\nabuse-mailbox: abuse@example.invalid\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\n",
+    "valid": true
+  },
+  {
+    "name": "irt missing address",
+    "text": "irt: IRT-ORACLE\ne-mail: noc@example.invalid\nabuse-mailbox: abuse@example.invalid\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\n",
+    "valid": false
+  },
+  {
+    "name": "irt missing e-mail",
+    "text": "irt: IRT-ORACLE\naddress: Documentation Road\nabuse-mailbox: abuse@example.invalid\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\n",
+    "valid": false
+  },
+  {
+    "name": "irt missing abuse-mailbox",
+    "text": "irt: IRT-ORACLE\naddress: Documentation Road\ne-mail: noc@example.invalid\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\n",
+    "valid": false
+  },
+  {
+    "name": "irt missing mnt-by",
+    "text": "irt: IRT-ORACLE\naddress: Documentation Road\ne-mail: noc@example.invalid\nabuse-mailbox: abuse@example.invalid\nsource: AUTH-TEST\n",
+    "valid": false
+  },
+  {
+    "name": "irt rejects auth",
+    "text": "irt: IRT-ORACLE\naddress: Documentation Road\ne-mail: noc@example.invalid\nabuse-mailbox: abuse@example.invalid\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\nauth: BCRYPT-PW synthetic-secret\n",
+    "valid": false
+  },
+  {
+    "name": "irt rejects mnt-lower",
+    "text": "irt: IRT-ORACLE\naddress: Documentation Road\ne-mail: noc@example.invalid\nabuse-mailbox: abuse@example.invalid\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\nmnt-lower: OWNER-MNT\n",
+    "valid": false
+  },
+  {
+    "name": "irt rejects admin-c",
+    "text": "irt: IRT-ORACLE\naddress: Documentation Road\ne-mail: noc@example.invalid\nabuse-mailbox: abuse@example.invalid\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\nadmin-c: MISSING, AMBIGUOUS\n",
+    "valid": false
+  },
+  {
+    "name": "irt rejects notify",
+    "text": "irt: IRT-ORACLE\naddress: Documentation Road\ne-mail: noc@example.invalid\nabuse-mailbox: abuse@example.invalid\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\nnotify: invalid\n",
+    "valid": false
+  },
+  {
+    "name": "irt repeated references",
+    "text": "irt: IRT-ORACLE\naddress: Documentation Road\ne-mail: noc@example.invalid\nabuse-mailbox: abuse@example.invalid\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\nadmin-c: CT1-AUTH\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\n",
+    "valid": true
+  },
+  {
+    "name": "irt folded remarks",
+    "text": "irt: IRT-ORACLE\naddress: Documentation Road\ne-mail: noc@example.invalid\nabuse-mailbox: abuse@example.invalid\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\nremarks: First line\n+ Second line\n",
+    "valid": true
+  },
+  {
+    "name": "irt duplicate identity",
+    "text": "irt: IRT-ORACLE\naddress: Documentation Road\ne-mail: noc@example.invalid\nabuse-mailbox: abuse@example.invalid\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\nirt: IRT-ORACLE\n",
+    "valid": false
+  },
+  {
+    "name": "inetnum duplicate netname",
+    "text": "inetnum: 198.18.16.0 - 198.18.16.255\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\nnetname: Second\n",
+    "valid": false
+  },
+  {
+    "name": "inetnum duplicate status",
+    "text": "inetnum: 198.18.16.0 - 198.18.16.255\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\nstatus: ALLOCATED PA\n",
+    "valid": false
+  },
+  {
+    "name": "inetnum duplicate geofeed",
+    "text": "inetnum: 198.18.16.0 - 198.18.16.255\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: https://example.invalid/feed.csv\ngeofeed: https://example.invalid/feed.csv\n",
+    "valid": false
+  },
+  {
+    "name": "inetnum opaque country and status",
+    "text": "inetnum: 198.18.16.0 - 198.18.16.255\nnetname: Documentation network\ncountry: GB, NL\ncountry: arbitrary text\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: arbitrary status\n+ continued\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\n",
+    "valid": true
+  },
+  {
+    "name": "inetnum repeated reverse servers",
+    "text": "inetnum: 198.18.16.0 - 198.18.16.255\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\nrev-srv: ns.example.invalid\nrev-srv: second.example.invalid\n",
+    "valid": true
+  },
+  {
+    "name": "inetnum URL https://example.invalid/geofeed.csv",
+    "text": "inetnum: 198.18.16.0 - 198.18.16.255\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: https://example.invalid/geofeed.csv\n",
+    "valid": true
+  },
+  {
+    "name": "inetnum URL http://localhost/path?x=y",
+    "text": "inetnum: 198.18.16.0 - 198.18.16.255\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: http://localhost/path?x=y\n",
+    "valid": true
+  },
+  {
+    "name": "inetnum URL HTTPS://example.invalid/feed",
+    "text": "inetnum: 198.18.16.0 - 198.18.16.255\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: HTTPS://example.invalid/feed\n",
+    "valid": true
+  },
+  {
+    "name": "inetnum URL https://[2001:db8::1]/feed",
+    "text": "inetnum: 198.18.16.0 - 198.18.16.255\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: https://[2001:db8::1]/feed\n",
+    "valid": true
+  },
+  {
+    "name": "inetnum URL https://[v1.example]/feed",
+    "text": "inetnum: 198.18.16.0 - 198.18.16.255\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: https://[v1.example]/feed\n",
+    "valid": true
+  },
+  {
+    "name": "inetnum URL http://example.invalid:nonnumeric/feed",
+    "text": "inetnum: 198.18.16.0 - 198.18.16.255\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: http://example.invalid:nonnumeric/feed\n",
+    "valid": true
+  },
+  {
+    "name": "inetnum URL http://user:pass@example.invalid/feed",
+    "text": "inetnum: 198.18.16.0 - 198.18.16.255\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: http://user:pass@example.invalid/feed\n",
+    "valid": true
+  },
+  {
+    "name": "inetnum rejects URL ftp://example.invalid/feed",
+    "text": "inetnum: 198.18.16.0 - 198.18.16.255\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: ftp://example.invalid/feed\n",
+    "valid": false
+  },
+  {
+    "name": "inetnum rejects URL file:///etc/hosts",
+    "text": "inetnum: 198.18.16.0 - 198.18.16.255\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: file:///etc/hosts\n",
+    "valid": false
+  },
+  {
+    "name": "inetnum rejects URL https:///feed",
+    "text": "inetnum: 198.18.16.0 - 198.18.16.255\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: https:///feed\n",
+    "valid": false
+  },
+  {
+    "name": "inetnum rejects URL example.invalid/feed",
+    "text": "inetnum: 198.18.16.0 - 198.18.16.255\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: example.invalid/feed\n",
+    "valid": false
+  },
+  {
+    "name": "inetnum rejects URL https://[bad]/feed",
+    "text": "inetnum: 198.18.16.0 - 198.18.16.255\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: https://[bad]/feed\n",
+    "valid": false,
+    "reference_http_status": 500
+  },
+  {
+    "name": "inetnum rejects URL https://[127.0.0.1]/feed",
+    "text": "inetnum: 198.18.16.0 - 198.18.16.255\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: https://[127.0.0.1]/feed\n",
+    "valid": false,
+    "reference_http_status": 500
+  },
+  {
+    "name": "inetnum rejects URL https://[2001:db8::1/feed",
+    "text": "inetnum: 198.18.16.0 - 198.18.16.255\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: https://[2001:db8::1/feed\n",
+    "valid": false,
+    "reference_http_status": 500
+  },
+  {
+    "name": "inet6num duplicate netname",
+    "text": "inet6num: 2001:db8:abcd::/48\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\nnetname: Second\n",
+    "valid": false
+  },
+  {
+    "name": "inet6num duplicate status",
+    "text": "inet6num: 2001:db8:abcd::/48\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\nstatus: ALLOCATED PA\n",
+    "valid": false
+  },
+  {
+    "name": "inet6num duplicate geofeed",
+    "text": "inet6num: 2001:db8:abcd::/48\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: https://example.invalid/feed.csv\ngeofeed: https://example.invalid/feed.csv\n",
+    "valid": false
+  },
+  {
+    "name": "inet6num opaque country and status",
+    "text": "inet6num: 2001:db8:abcd::/48\nnetname: Documentation network\ncountry: GB, NL\ncountry: arbitrary text\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: arbitrary status\n+ continued\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\n",
+    "valid": true
+  },
+  {
+    "name": "inet6num repeated reverse servers",
+    "text": "inet6num: 2001:db8:abcd::/48\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\nrev-srv: ns.example.invalid\nrev-srv: second.example.invalid\n",
+    "valid": true
+  },
+  {
+    "name": "inet6num URL https://example.invalid/geofeed.csv",
+    "text": "inet6num: 2001:db8:abcd::/48\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: https://example.invalid/geofeed.csv\n",
+    "valid": true
+  },
+  {
+    "name": "inet6num URL http://localhost/path?x=y",
+    "text": "inet6num: 2001:db8:abcd::/48\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: http://localhost/path?x=y\n",
+    "valid": true
+  },
+  {
+    "name": "inet6num URL HTTPS://example.invalid/feed",
+    "text": "inet6num: 2001:db8:abcd::/48\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: HTTPS://example.invalid/feed\n",
+    "valid": true
+  },
+  {
+    "name": "inet6num URL https://[2001:db8::1]/feed",
+    "text": "inet6num: 2001:db8:abcd::/48\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: https://[2001:db8::1]/feed\n",
+    "valid": true
+  },
+  {
+    "name": "inet6num URL https://[v1.example]/feed",
+    "text": "inet6num: 2001:db8:abcd::/48\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: https://[v1.example]/feed\n",
+    "valid": true
+  },
+  {
+    "name": "inet6num URL http://example.invalid:nonnumeric/feed",
+    "text": "inet6num: 2001:db8:abcd::/48\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: http://example.invalid:nonnumeric/feed\n",
+    "valid": true
+  },
+  {
+    "name": "inet6num URL http://user:pass@example.invalid/feed",
+    "text": "inet6num: 2001:db8:abcd::/48\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: http://user:pass@example.invalid/feed\n",
+    "valid": true
+  },
+  {
+    "name": "inet6num rejects URL ftp://example.invalid/feed",
+    "text": "inet6num: 2001:db8:abcd::/48\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: ftp://example.invalid/feed\n",
+    "valid": false
+  },
+  {
+    "name": "inet6num rejects URL file:///etc/hosts",
+    "text": "inet6num: 2001:db8:abcd::/48\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: file:///etc/hosts\n",
+    "valid": false
+  },
+  {
+    "name": "inet6num rejects URL https:///feed",
+    "text": "inet6num: 2001:db8:abcd::/48\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: https:///feed\n",
+    "valid": false
+  },
+  {
+    "name": "inet6num rejects URL example.invalid/feed",
+    "text": "inet6num: 2001:db8:abcd::/48\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: example.invalid/feed\n",
+    "valid": false
+  },
+  {
+    "name": "inet6num rejects URL https://[bad]/feed",
+    "text": "inet6num: 2001:db8:abcd::/48\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: https://[bad]/feed\n",
+    "valid": false,
+    "reference_http_status": 500
+  },
+  {
+    "name": "inet6num rejects URL https://[127.0.0.1]/feed",
+    "text": "inet6num: 2001:db8:abcd::/48\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: https://[127.0.0.1]/feed\n",
+    "valid": false,
+    "reference_http_status": 500
+  },
+  {
+    "name": "inet6num rejects URL https://[2001:db8::1/feed",
+    "text": "inet6num: 2001:db8:abcd::/48\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: https://[2001:db8::1/feed\n",
+    "valid": false,
+    "reference_http_status": 500
+  },
+  {
+    "name": "inetnum range 198.18.16.7",
+    "text": "inetnum: 198.18.16.7\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\n",
+    "valid": true
+  },
+  {
+    "name": "inetnum range 198.18.16.7 - 198.18.16.9",
+    "text": "inetnum: 198.18.16.7 - 198.18.16.9\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\n",
+    "valid": true
+  },
+  {
+    "name": "inetnum range 198.18.16.9 - 198.18.16.7",
+    "text": "inetnum: 198.18.16.9 - 198.18.16.7\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\n",
+    "valid": false
+  },
+  {
+    "name": "inetnum range 2001:db8::1",
+    "text": "inetnum: 2001:db8::1\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\n",
+    "valid": false
+  },
+  {
+    "name": "inetnum range 198.18.16.0/24",
+    "text": "inetnum: 198.18.16.0/24\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\n",
+    "valid": true
+  },
+  {
+    "name": "inetnum range 198.18.16.1/24",
+    "text": "inetnum: 198.18.16.1/24\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\n",
+    "valid": false
+  },
+  {
+    "name": "inetnum range 0.0.0.0 - 255.255.255.255",
+    "text": "inetnum: 0.0.0.0 - 255.255.255.255\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\n",
+    "valid": true
+  },
+  {
+    "name": "inet6num prefix 2001:0DB8:abcd:0000::/48",
+    "text": "inet6num: 2001:0DB8:abcd:0000::/48\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\n",
+    "valid": true
+  },
+  {
+    "name": "inet6num prefix 2001:db8:abcd::1/128",
+    "text": "inet6num: 2001:db8:abcd::1/128\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\n",
+    "valid": true
+  },
+  {
+    "name": "inet6num prefix ::/0",
+    "text": "inet6num: ::/0\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\n",
+    "valid": true
+  },
+  {
+    "name": "inet6num prefix ::/128",
+    "text": "inet6num: ::/128\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\n",
+    "valid": true
+  },
+  {
+    "name": "inet6num prefix 2001:db8:abcd::1/48",
+    "text": "inet6num: 2001:db8:abcd::1/48\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\n",
+    "valid": false
+  },
+  {
+    "name": "inet6num prefix 192.0.2.0/24",
+    "text": "inet6num: 192.0.2.0/24\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\n",
+    "valid": false
+  },
+  {
+    "name": "inet6num prefix ::ffff:192.0.2.1/128",
+    "text": "inet6num: ::ffff:192.0.2.1/128\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\n",
+    "valid": false
+  },
+  {
+    "name": "inet6num prefix 2001:db8::/129",
+    "text": "inet6num: 2001:db8::/129\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\n",
+    "valid": false
+  },
+  {
+    "name": "irt reserved name",
+    "text": "irt: AS-RESERVED\naddress: Documentation Road\ne-mail: noc@example.invalid\nabuse-mailbox: abuse@example.invalid\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\n",
+    "valid": false
+  },
+  {
+    "name": "irt repeated mailbox",
+    "text": "irt: IRT-ORACLE\naddress: Documentation Road\ne-mail: noc@example.invalid\nabuse-mailbox: abuse@example.invalid\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ne-mail: second@example.invalid\nabuse-mailbox: other@example.invalid\naddress: Another Road\n",
+    "valid": true
+  },
+  {
+    "name": "irt invalid abuse mailbox",
+    "text": "irt: IRT-ORACLE\naddress: Documentation Road\ne-mail: noc@example.invalid\nabuse-mailbox: bad mailbox\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\n",
+    "valid": false
+  },
+  {
+    "name": "irt unknown allocation field",
+    "text": "irt: IRT-ORACLE\naddress: Documentation Road\ne-mail: noc@example.invalid\nabuse-mailbox: abuse@example.invalid\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ncountry: GB\n",
+    "valid": false
+  },
+  {
+    "name": "inetnum URL edge https://[fe80::1%25eth0]/feed.csv",
+    "text": "inetnum: 198.18.16.0 - 198.18.16.255\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: https://[fe80::1%25eth0]/feed.csv\n",
+    "valid": true
+  },
+  {
+    "name": "inetnum URL edge https://[fe80::1%eth0]/feed.csv",
+    "text": "inetnum: 198.18.16.0 - 198.18.16.255\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: https://[fe80::1%eth0]/feed.csv\n",
+    "valid": true
+  },
+  {
+    "name": "inetnum URL edge https://\u00e9.example/feed.csv",
+    "text": "inetnum: 198.18.16.0 - 198.18.16.255\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: https://\u00e9.example/feed.csv\n",
+    "valid": true
+  },
+  {
+    "name": "inetnum URL edge https://[fe80::1%]/feed.csv",
+    "text": "inetnum: 198.18.16.0 - 198.18.16.255\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: https://[fe80::1%]/feed.csv\n",
+    "valid": false,
+    "reference_http_status": 500
+  },
+  {
+    "name": "inetnum URL edge https://[fe80::1%eth%0]/feed.csv",
+    "text": "inetnum: 198.18.16.0 - 198.18.16.255\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: https://[fe80::1%eth%0]/feed.csv\n",
+    "valid": false,
+    "reference_http_status": 500
+  },
+  {
+    "name": "inetnum URL edge https://prefix[2001:db8::1]/feed",
+    "text": "inetnum: 198.18.16.0 - 198.18.16.255\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: https://prefix[2001:db8::1]/feed\n",
+    "valid": false,
+    "reference_http_status": 500
+  },
+  {
+    "name": "inetnum URL edge https://[2001:db8::1]suffix/feed",
+    "text": "inetnum: 198.18.16.0 - 198.18.16.255\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: https://[2001:db8::1]suffix/feed\n",
+    "valid": false,
+    "reference_http_status": 500
+  },
+  {
+    "name": "inetnum URL edge https://[[2001:db8::1]]/feed",
+    "text": "inetnum: 198.18.16.0 - 198.18.16.255\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: https://[[2001:db8::1]]/feed\n",
+    "valid": false,
+    "reference_http_status": 500
+  },
+  {
+    "name": "inetnum NFKC delimiter U+2047",
+    "text": "inetnum: 198.18.16.0 - 198.18.16.255\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: https://example\u2047host.invalid/feed\n",
+    "valid": false,
+    "reference_http_status": 500
+  },
+  {
+    "name": "inetnum NFKC delimiter U+2048",
+    "text": "inetnum: 198.18.16.0 - 198.18.16.255\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: https://example\u2048host.invalid/feed\n",
+    "valid": false,
+    "reference_http_status": 500
+  },
+  {
+    "name": "inetnum NFKC delimiter U+2049",
+    "text": "inetnum: 198.18.16.0 - 198.18.16.255\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: https://example\u2049host.invalid/feed\n",
+    "valid": false,
+    "reference_http_status": 500
+  },
+  {
+    "name": "inetnum NFKC delimiter U+2100",
+    "text": "inetnum: 198.18.16.0 - 198.18.16.255\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: https://example\u2100host.invalid/feed\n",
+    "valid": false,
+    "reference_http_status": 500
+  },
+  {
+    "name": "inetnum NFKC delimiter U+2101",
+    "text": "inetnum: 198.18.16.0 - 198.18.16.255\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: https://example\u2101host.invalid/feed\n",
+    "valid": false,
+    "reference_http_status": 500
+  },
+  {
+    "name": "inetnum NFKC delimiter U+2105",
+    "text": "inetnum: 198.18.16.0 - 198.18.16.255\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: https://example\u2105host.invalid/feed\n",
+    "valid": false,
+    "reference_http_status": 500
+  },
+  {
+    "name": "inetnum NFKC delimiter U+2106",
+    "text": "inetnum: 198.18.16.0 - 198.18.16.255\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: https://example\u2106host.invalid/feed\n",
+    "valid": false,
+    "reference_http_status": 500
+  },
+  {
+    "name": "inetnum NFKC delimiter U+2A74",
+    "text": "inetnum: 198.18.16.0 - 198.18.16.255\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: https://example\u2a74host.invalid/feed\n",
+    "valid": false,
+    "reference_http_status": 500
+  },
+  {
+    "name": "inetnum NFKC delimiter U+FE13",
+    "text": "inetnum: 198.18.16.0 - 198.18.16.255\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: https://example\ufe13host.invalid/feed\n",
+    "valid": false,
+    "reference_http_status": 500
+  },
+  {
+    "name": "inetnum NFKC delimiter U+FE16",
+    "text": "inetnum: 198.18.16.0 - 198.18.16.255\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: https://example\ufe16host.invalid/feed\n",
+    "valid": false,
+    "reference_http_status": 500
+  },
+  {
+    "name": "inetnum NFKC delimiter U+FE55",
+    "text": "inetnum: 198.18.16.0 - 198.18.16.255\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: https://example\ufe55host.invalid/feed\n",
+    "valid": false,
+    "reference_http_status": 500
+  },
+  {
+    "name": "inetnum NFKC delimiter U+FE56",
+    "text": "inetnum: 198.18.16.0 - 198.18.16.255\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: https://example\ufe56host.invalid/feed\n",
+    "valid": false,
+    "reference_http_status": 500
+  },
+  {
+    "name": "inetnum NFKC delimiter U+FE5F",
+    "text": "inetnum: 198.18.16.0 - 198.18.16.255\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: https://example\ufe5fhost.invalid/feed\n",
+    "valid": false,
+    "reference_http_status": 500
+  },
+  {
+    "name": "inetnum NFKC delimiter U+FE6B",
+    "text": "inetnum: 198.18.16.0 - 198.18.16.255\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: https://example\ufe6bhost.invalid/feed\n",
+    "valid": false,
+    "reference_http_status": 500
+  },
+  {
+    "name": "inetnum NFKC delimiter U+FF03",
+    "text": "inetnum: 198.18.16.0 - 198.18.16.255\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: https://example\uff03host.invalid/feed\n",
+    "valid": false,
+    "reference_http_status": 500
+  },
+  {
+    "name": "inetnum NFKC delimiter U+FF0F",
+    "text": "inetnum: 198.18.16.0 - 198.18.16.255\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: https://example\uff0fhost.invalid/feed\n",
+    "valid": false,
+    "reference_http_status": 500
+  },
+  {
+    "name": "inetnum NFKC delimiter U+FF1A",
+    "text": "inetnum: 198.18.16.0 - 198.18.16.255\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: https://example\uff1ahost.invalid/feed\n",
+    "valid": false,
+    "reference_http_status": 500
+  },
+  {
+    "name": "inetnum NFKC delimiter U+FF1F",
+    "text": "inetnum: 198.18.16.0 - 198.18.16.255\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: https://example\uff1fhost.invalid/feed\n",
+    "valid": false,
+    "reference_http_status": 500
+  },
+  {
+    "name": "inetnum NFKC delimiter U+FF20",
+    "text": "inetnum: 198.18.16.0 - 198.18.16.255\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: https://example\uff20host.invalid/feed\n",
+    "valid": false,
+    "reference_http_status": 500
+  },
+  {
+    "name": "inet6num URL edge https://[fe80::1%25eth0]/feed.csv",
+    "text": "inet6num: 2001:db8:abcd::/48\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: https://[fe80::1%25eth0]/feed.csv\n",
+    "valid": true
+  },
+  {
+    "name": "inet6num URL edge https://[fe80::1%eth0]/feed.csv",
+    "text": "inet6num: 2001:db8:abcd::/48\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: https://[fe80::1%eth0]/feed.csv\n",
+    "valid": true
+  },
+  {
+    "name": "inet6num URL edge https://\u00e9.example/feed.csv",
+    "text": "inet6num: 2001:db8:abcd::/48\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: https://\u00e9.example/feed.csv\n",
+    "valid": true
+  },
+  {
+    "name": "inet6num URL edge https://[fe80::1%]/feed.csv",
+    "text": "inet6num: 2001:db8:abcd::/48\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: https://[fe80::1%]/feed.csv\n",
+    "valid": false,
+    "reference_http_status": 500
+  },
+  {
+    "name": "inet6num URL edge https://[fe80::1%eth%0]/feed.csv",
+    "text": "inet6num: 2001:db8:abcd::/48\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: https://[fe80::1%eth%0]/feed.csv\n",
+    "valid": false,
+    "reference_http_status": 500
+  },
+  {
+    "name": "inet6num URL edge https://prefix[2001:db8::1]/feed",
+    "text": "inet6num: 2001:db8:abcd::/48\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: https://prefix[2001:db8::1]/feed\n",
+    "valid": false,
+    "reference_http_status": 500
+  },
+  {
+    "name": "inet6num URL edge https://[2001:db8::1]suffix/feed",
+    "text": "inet6num: 2001:db8:abcd::/48\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: https://[2001:db8::1]suffix/feed\n",
+    "valid": false,
+    "reference_http_status": 500
+  },
+  {
+    "name": "inet6num URL edge https://[[2001:db8::1]]/feed",
+    "text": "inet6num: 2001:db8:abcd::/48\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: https://[[2001:db8::1]]/feed\n",
+    "valid": false,
+    "reference_http_status": 500
+  },
+  {
+    "name": "inet6num NFKC delimiter U+2047",
+    "text": "inet6num: 2001:db8:abcd::/48\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: https://example\u2047host.invalid/feed\n",
+    "valid": false,
+    "reference_http_status": 500
+  },
+  {
+    "name": "inet6num NFKC delimiter U+2048",
+    "text": "inet6num: 2001:db8:abcd::/48\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: https://example\u2048host.invalid/feed\n",
+    "valid": false,
+    "reference_http_status": 500
+  },
+  {
+    "name": "inet6num NFKC delimiter U+2049",
+    "text": "inet6num: 2001:db8:abcd::/48\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: https://example\u2049host.invalid/feed\n",
+    "valid": false,
+    "reference_http_status": 500
+  },
+  {
+    "name": "inet6num NFKC delimiter U+2100",
+    "text": "inet6num: 2001:db8:abcd::/48\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: https://example\u2100host.invalid/feed\n",
+    "valid": false,
+    "reference_http_status": 500
+  },
+  {
+    "name": "inet6num NFKC delimiter U+2101",
+    "text": "inet6num: 2001:db8:abcd::/48\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: https://example\u2101host.invalid/feed\n",
+    "valid": false,
+    "reference_http_status": 500
+  },
+  {
+    "name": "inet6num NFKC delimiter U+2105",
+    "text": "inet6num: 2001:db8:abcd::/48\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: https://example\u2105host.invalid/feed\n",
+    "valid": false,
+    "reference_http_status": 500
+  },
+  {
+    "name": "inet6num NFKC delimiter U+2106",
+    "text": "inet6num: 2001:db8:abcd::/48\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: https://example\u2106host.invalid/feed\n",
+    "valid": false,
+    "reference_http_status": 500
+  },
+  {
+    "name": "inet6num NFKC delimiter U+2A74",
+    "text": "inet6num: 2001:db8:abcd::/48\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: https://example\u2a74host.invalid/feed\n",
+    "valid": false,
+    "reference_http_status": 500
+  },
+  {
+    "name": "inet6num NFKC delimiter U+FE13",
+    "text": "inet6num: 2001:db8:abcd::/48\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: https://example\ufe13host.invalid/feed\n",
+    "valid": false,
+    "reference_http_status": 500
+  },
+  {
+    "name": "inet6num NFKC delimiter U+FE16",
+    "text": "inet6num: 2001:db8:abcd::/48\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: https://example\ufe16host.invalid/feed\n",
+    "valid": false,
+    "reference_http_status": 500
+  },
+  {
+    "name": "inet6num NFKC delimiter U+FE55",
+    "text": "inet6num: 2001:db8:abcd::/48\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: https://example\ufe55host.invalid/feed\n",
+    "valid": false,
+    "reference_http_status": 500
+  },
+  {
+    "name": "inet6num NFKC delimiter U+FE56",
+    "text": "inet6num: 2001:db8:abcd::/48\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: https://example\ufe56host.invalid/feed\n",
+    "valid": false,
+    "reference_http_status": 500
+  },
+  {
+    "name": "inet6num NFKC delimiter U+FE5F",
+    "text": "inet6num: 2001:db8:abcd::/48\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: https://example\ufe5fhost.invalid/feed\n",
+    "valid": false,
+    "reference_http_status": 500
+  },
+  {
+    "name": "inet6num NFKC delimiter U+FE6B",
+    "text": "inet6num: 2001:db8:abcd::/48\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: https://example\ufe6bhost.invalid/feed\n",
+    "valid": false,
+    "reference_http_status": 500
+  },
+  {
+    "name": "inet6num NFKC delimiter U+FF03",
+    "text": "inet6num: 2001:db8:abcd::/48\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: https://example\uff03host.invalid/feed\n",
+    "valid": false,
+    "reference_http_status": 500
+  },
+  {
+    "name": "inet6num NFKC delimiter U+FF0F",
+    "text": "inet6num: 2001:db8:abcd::/48\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: https://example\uff0fhost.invalid/feed\n",
+    "valid": false,
+    "reference_http_status": 500
+  },
+  {
+    "name": "inet6num NFKC delimiter U+FF1A",
+    "text": "inet6num: 2001:db8:abcd::/48\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: https://example\uff1ahost.invalid/feed\n",
+    "valid": false,
+    "reference_http_status": 500
+  },
+  {
+    "name": "inet6num NFKC delimiter U+FF1F",
+    "text": "inet6num: 2001:db8:abcd::/48\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: https://example\uff1fhost.invalid/feed\n",
+    "valid": false,
+    "reference_http_status": 500
+  },
+  {
+    "name": "inet6num NFKC delimiter U+FF20",
+    "text": "inet6num: 2001:db8:abcd::/48\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: https://example\uff20host.invalid/feed\n",
+    "valid": false,
+    "reference_http_status": 500
+  },
+  {
+    "name": "inetnum URL ignored ASCII tab 0",
+    "text": "inetnum: 198.18.16.0 - 198.18.16.255\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: htt\tps://example.invalid/feed\n",
+    "valid": true
+  },
+  {
+    "name": "inetnum URL ignored ASCII tab 1",
+    "text": "inetnum: 198.18.16.0 - 198.18.16.255\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: https:/\t/example.invalid/feed\n",
+    "valid": true
+  },
+  {
+    "name": "inetnum URL ignored ASCII tab 2",
+    "text": "inetnum: 198.18.16.0 - 198.18.16.255\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: https://[2001:db8::\t1]/feed\n",
+    "valid": true
+  },
+  {
+    "name": "inet6num URL ignored ASCII tab 0",
+    "text": "inet6num: 2001:db8:abcd::/48\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: htt\tps://example.invalid/feed\n",
+    "valid": true
+  },
+  {
+    "name": "inet6num URL ignored ASCII tab 1",
+    "text": "inet6num: 2001:db8:abcd::/48\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: https:/\t/example.invalid/feed\n",
+    "valid": true
+  },
+  {
+    "name": "inet6num URL ignored ASCII tab 2",
+    "text": "inet6num: 2001:db8:abcd::/48\nnetname: Documentation network\ncountry: GB\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\nstatus: ASSIGNED PA\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\ngeofeed: https://[2001:db8::\t1]/feed\n",
+    "valid": true
+  }
+]

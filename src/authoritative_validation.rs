@@ -112,6 +112,35 @@ pub fn validate(object: &Object) -> Result<()> {
                 "descr", "nserver", "sub-dom", "dom-net", "refer", "remarks", "notify", "changed",
             ],
         ),
+        "inetnum" | "inet6num" => (
+            if object.class == "inetnum" {
+                &[
+                    "inetnum", "netname", "country", "admin-c", "tech-c", "status", "mnt-by",
+                    "source",
+                ]
+            } else {
+                &[
+                    "inet6num", "netname", "country", "admin-c", "tech-c", "status", "mnt-by",
+                    "source",
+                ]
+            },
+            &[
+                "descr", "rev-srv", "geofeed", "remarks", "notify", "changed",
+            ],
+        ),
+        "irt" => (
+            &[
+                "irt",
+                "address",
+                "e-mail",
+                "abuse-mailbox",
+                "mnt-by",
+                "source",
+            ],
+            &[
+                "phone", "fax-no", "admin-c", "tech-c", "remarks", "notify", "changed",
+            ],
+        ),
         "route" => (&["route", "origin", "mnt-by", "source"], ROUTE_OPTIONAL),
         "route6" => (&["route6", "origin", "mnt-by", "source"], ROUTE_OPTIONAL),
         "as-set" => (&["as-set", "mnt-by", "source"], AS_SET_OPTIONAL),
@@ -222,12 +251,26 @@ pub fn validate(object: &Object) -> Result<()> {
                     | "local-as"
                     | "rs-in"
                     | "rs-out"
+                    | "inetnum"
+                    | "inet6num"
+                    | "netname"
+                    | "status"
+                    | "geofeed"
+                    | "irt"
             )
         {
             return Err(anyhow!("duplicate {name} attribute"));
         }
         match name {
             "mnt-by" => {} // Validate the full list after collecting all occurrences.
+            "inet6num" => {
+                // Allocation prefixes share the pinned IPv6 syntax, but may
+                // include ::/0 or ::/128: route-only prohibitions do not apply.
+                Network::parse(
+                    scalar(attribute).ok_or_else(|| anyhow!("invalid inet6num prefix"))?,
+                    true,
+                )?;
+            }
             "route" | "route6" => {
                 let network = Network::parse(
                     scalar(attribute).ok_or_else(|| anyhow!("invalid {name} prefix"))?,
@@ -310,17 +353,27 @@ pub fn validate(object: &Object) -> Result<()> {
                 scalar(attribute).is_some_and(crate::rpsl::dns_name),
                 "invalid router DNS name"
             ),
-            "organisation" | "mntner" | "nic-hdl" | "source" | "admin-c" | "tech-c" => {
+            "organisation" | "mntner" | "nic-hdl" | "source" | "admin-c" | "tech-c" | "irt" => {
                 ensure!(
                     scalar(attribute).is_some_and(valid_name),
                     "invalid {name} name or reference"
                 );
             }
-            "e-mail" | "notify" | "upd-to" | "mnt-nfy" => {
+            "e-mail" | "notify" | "upd-to" | "mnt-nfy" | "abuse-mailbox" => {
                 ensure!(
                     scalar(attribute).is_some_and(valid_email),
                     "invalid {name} address"
                 );
+            }
+            "geofeed" => {
+                // This is stored RPSL metadata, never a URL fetched by the daemon.
+                // The pinned schema requires an HTTP(S) scheme and a network
+                // location; it does not impose a country/status vocabulary.
+                let value = parts(&attribute.raw).collect::<Vec<_>>().join(",");
+                // urllib.parse removes ASCII tabs/CR before parsing. Normalize
+                // for validation only, preserving the submitted RPSL text.
+                let normalized = value.replace(['\t', '\r'], "");
+                ensure!(valid_geofeed(&normalized), "invalid geofeed HTTP(S) URL");
             }
             "auth" => {
                 ensure!(
@@ -653,6 +706,79 @@ fn valid_name_with_prefix(value: &str, allowed_prefix: Option<&str>) -> bool {
             .any(|prefix| Some(*prefix) != allowed_prefix && upper.starts_with(prefix))
 }
 
+fn valid_geofeed(value: &str) -> bool {
+    let Some((scheme, rest)) = value.split_once("://") else {
+        return false;
+    };
+    if !scheme.eq_ignore_ascii_case("http") && !scheme.eq_ignore_ascii_case("https") {
+        return false;
+    }
+    let location = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    if location.is_empty() {
+        return false;
+    }
+    // Unicode 15.1 compatibility characters that introduce a URL delimiter
+    // under NFKC. The pinned Python URL parser rejects these in authorities;
+    // ordinary non-ASCII hostnames remain descriptive metadata and are allowed.
+    if location.chars().any(|character| {
+        matches!(
+            character,
+            '\u{2047}'
+                ..='\u{2049}'
+                    | '\u{2100}'
+                    | '\u{2101}'
+                    | '\u{2105}'
+                    | '\u{2106}'
+                    | '\u{2a74}'
+                    | '\u{fe13}'
+                    | '\u{fe16}'
+                    | '\u{fe55}'
+                    | '\u{fe56}'
+                    | '\u{fe5f}'
+                    | '\u{fe6b}'
+                    | '\u{ff03}'
+                    | '\u{ff0f}'
+                    | '\u{ff1a}'
+                    | '\u{ff1f}'
+                    | '\u{ff20}'
+        )
+    }) {
+        return false;
+    }
+    // urllib.parse, used by the pinned RPSLURLField, also validates bracketed
+    // IP literals. A URL is descriptive metadata: do not resolve its host or
+    // restrict it to a configured network, numeric port or registrable domain.
+    if location.contains('[') || location.contains(']') {
+        let host_port = location.rsplit('@').next().unwrap_or_default();
+        let Some(after) = host_port.strip_prefix('[') else {
+            return false;
+        };
+        let Some((host, port)) = after.split_once(']') else {
+            return false;
+        };
+        if !port.is_empty() && !port.starts_with(':') {
+            return false;
+        }
+        if let Some(version) = host.strip_prefix('v') {
+            return version.split_once('.').is_some_and(|(number, address)| {
+                !number.is_empty()
+                    && number.bytes().all(|byte| byte.is_ascii_hexdigit())
+                    && !address.is_empty()
+            });
+        }
+        let address = if let Some((address, scope)) = host.split_once('%') {
+            if scope.is_empty() || scope.contains('%') {
+                return false;
+            }
+            address
+        } else {
+            host
+        };
+        return address.parse::<std::net::Ipv6Addr>().is_ok();
+    }
+    true
+}
+
 fn valid_email(value: &str) -> bool {
     let Some((local, domain)) = value.split_once('@') else {
         return false;
@@ -724,6 +850,25 @@ fn valid_bcrypt_auth(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn allocation_and_irt_schemas_match_the_shared_pinned_oracle_corpus() {
+        let cases: Vec<serde_json::Value> = serde_json::from_str(include_str!(
+            "../tests/fixtures/authoritative-allocations.json"
+        ))
+        .unwrap();
+        for case in cases {
+            let result = parse(case["text"].as_str().unwrap())
+                .map_err(anyhow::Error::msg)
+                .and_then(|object| validate(&object));
+            assert_eq!(
+                result.is_ok(),
+                case["valid"],
+                "{}: {result:?}",
+                case["name"]
+            );
+        }
+    }
 
     const PERSON: &str = concat!(
         "person: Test Operator\n",
