@@ -48,7 +48,7 @@ def measure(address):
             'p99_ms': samples[math.ceil(.99*len(samples))-1], 'max_ms': samples[-1]}
 
 report = {
-    'kind': 'synthetic six-object smoke; includes TCP connection per request',
+    'kind': 'synthetic exact-key smoke; includes TCP connection per request',
     'candidate_commit': args.candidate_commit,
     'reference_commit': '8e8080dab744a348b7d0e6efcb53f403301dd075',
     'concurrency': args.concurrency,
