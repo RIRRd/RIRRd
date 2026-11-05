@@ -141,6 +141,16 @@ pub fn authorize(
             )?,
             "maintainer authentication failed"
         );
+        // A missing contact can still have inbound references after an operator
+        // snapshot restore. Do not let an ordinary update claim that identity:
+        // the pinned upstream protected-name check covers these references even
+        // when no deletion tombstone exists.
+        if previous.is_none() && matches!(object.class.as_str(), "person" | "role" | "mntner") {
+            ensure!(
+                !referenced(&object.class, &object.key)?,
+                "authoritative object name is protected by existing references"
+            );
+        }
         let parent = if previous.is_some() {
             None
         } else {

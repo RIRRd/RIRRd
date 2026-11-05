@@ -871,12 +871,21 @@ impl Store {
             );
             let mut records = write.open_table(OBJECTS)?;
             let mut indexes = WriteIndexes::open(&write)?;
+            let deleted_identities: HashSet<_> = changes
+                .iter()
+                .filter_map(|change| match change {
+                    Change::Delete(object) => Some((object.class.as_str(), object.key.as_str())),
+                    Change::Upsert(_) => None,
+                })
+                .collect();
             authorize(
                 &source,
                 &changes,
                 passwords,
                 |class, key| read_object(&records, &source, class, key),
-                |class, key| indexes.has_strong_reference(&source, class, key),
+                |class, key| {
+                    indexes.has_strong_reference_excluding(&source, class, key, &deleted_identities)
+                },
                 |object| indexes.allocation_parent(&records, object),
                 self.legacy_md5_sources.contains(&source),
             )?;
@@ -1890,7 +1899,18 @@ impl<'txn> WriteIndexes<'txn> {
         })
     }
 
+    #[cfg(test)]
     fn has_strong_reference(&self, source: &str, class: &str, key: &str) -> Result<bool> {
+        self.has_strong_reference_excluding(source, class, key, &HashSet::new())
+    }
+
+    fn has_strong_reference_excluding(
+        &self,
+        source: &str,
+        class: &str,
+        key: &str,
+        deleted: &HashSet<(&str, &str)>,
+    ) -> Result<bool> {
         let fields: &[&str] = match class {
             "mntner" => &["mnt-by"],
             "person" | "role" => &["admin-c", "tech-c", "zone-c"],
@@ -1900,10 +1920,15 @@ impl<'txn> WriteIndexes<'txn> {
         for &field in fields {
             let lower = (source, field, key, "", "");
             let upper = (source, field, end.as_str(), "", "");
-            for entry in self.inverse.range(lower..upper)?.take(2) {
+            // Each field has at most one index entry per referring identity.
+            // After the batch's deletions and self-reference, the next entry
+            // must reject the operation. The caller bounds batches to 32.
+            for entry in self.inverse.range(lower..upper)?.take(deleted.len() + 2) {
                 let (identity, _) = entry?;
                 let (_, _, _, referring_class, referring_key) = identity.value();
-                if (referring_class, referring_key) != (class, key) {
+                if (referring_class, referring_key) != (class, key)
+                    && !deleted.contains(&(referring_class, referring_key))
+                {
                     return Ok(true);
                 }
             }
@@ -2635,6 +2660,182 @@ mod tests {
         let indexes = WriteIndexes::open(&write)?;
         assert!(indexes.has_strong_reference("TEST", "mntner", "TEST-MNT")?);
         assert!(indexes.has_strong_reference("TEST", "person", "EO1-TEST")?);
+        Ok(())
+    }
+
+    #[test]
+    fn authoritative_dangling_contacts_cannot_be_claimed_without_a_tombstone() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = Store::open(&dir.path().join("registry.redb"))?;
+        let passwords = [String::from("fixture password")];
+        let sources = [String::from("TEST")];
+        seed_authoritative_maintainer(&store, &passwords[0])?;
+        let maintainer = store.first("mntner", "TEST-MNT", &sources)?.unwrap();
+        let dangling = crate::rpsl::parse(
+            "domain: dangling.example\nadmin-c: ADMIN-TEST\ntech-c: TECH-TEST\nzone-c: ZONE-TEST\nmnt-by: TEST-MNT\nsource: TEST\n",
+        ).map_err(anyhow::Error::msg)?;
+        store.replace_source("TEST", [Ok(maintainer), Ok(dangling.clone())])?;
+        for handle in ["ADMIN-TEST", "TECH-TEST", "ZONE-TEST"] {
+            for class in ["person", "role"] {
+                let person = authoritative_contact("Claimed Contact", handle)?;
+                let candidate =
+                    crate::rpsl::parse(&person.text.replacen("person:", &format!("{class}:"), 1))
+                        .map_err(anyhow::Error::msg)?;
+                let error = store
+                    .apply_authoritative("TEST", vec![Change::Upsert(candidate)], &passwords)
+                    .unwrap_err();
+                assert!(
+                    error
+                        .to_string()
+                        .contains("protected by existing references")
+                );
+                assert!(store.first(class, handle, &sources)?.is_none());
+            }
+        }
+        assert!(store.source_history("TEST", 10)?.is_empty());
+        assert_eq!(store.source_local_serial("TEST")?, None);
+        assert_eq!(store.nrtm3_journal_bounds("TEST")?, None);
+        // Cross-source references do not reserve a local contact name.
+        let elsewhere = crate::rpsl::parse(
+            &dangling
+                .text
+                .replace("source: TEST", "source: OTHER")
+                .replace("ADMIN-TEST", "ELSE-TEST"),
+        )
+        .map_err(anyhow::Error::msg)?;
+        store.replace_source("OTHER", [Ok(elsewhere)])?;
+        store.apply_authoritative(
+            "TEST",
+            vec![Change::Upsert(authoritative_contact(
+                "Local Contact",
+                "ELSE-TEST",
+            )?)],
+            &passwords,
+        )?;
+        assert_eq!(store.verify()?, 4);
+        Ok(())
+    }
+
+    #[test]
+    fn authoritative_batch_deletions_ignore_only_deleted_same_source_referrers() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = Store::open(&dir.path().join("registry.redb"))?;
+        let passwords = [String::from("fixture password")];
+        let sources = [String::from("TEST")];
+        seed_authoritative_maintainer(&store, &passwords[0])?;
+        let maintainer = store.first("mntner", "TEST-MNT", &sources)?.unwrap();
+        let contact = authoritative_contact("Existing Contact", "CONTACT-TEST")?;
+        let domain = crate::rpsl::parse("domain: batch.example\nadmin-c: CONTACT-TEST\ntech-c: CONTACT-TEST\nzone-c: CONTACT-TEST\nmnt-by: TEST-MNT\nsource: TEST\n")
+            .map_err(anyhow::Error::msg)?;
+        let extra = crate::rpsl::parse(&domain.text.replace("batch.example", "remaining.example"))
+            .map_err(anyhow::Error::msg)?;
+        store.replace_source(
+            "TEST",
+            [
+                Ok(maintainer),
+                Ok(contact.clone()),
+                Ok(domain.clone()),
+                Ok(extra.clone()),
+            ],
+        )?;
+        assert!(
+            store
+                .apply_authoritative(
+                    "TEST",
+                    vec![
+                        Change::Delete(contact.clone()),
+                        Change::Delete(domain.clone())
+                    ],
+                    &passwords
+                )
+                .is_err()
+        );
+        assert!(store.source_history("TEST", 10)?.is_empty());
+        // An upserted referrer still counts: modifications are not deletions.
+        assert!(
+            store
+                .apply_authoritative(
+                    "TEST",
+                    vec![
+                        Change::Delete(contact.clone()),
+                        Change::Delete(domain.clone()),
+                        Change::Upsert(extra.clone())
+                    ],
+                    &passwords
+                )
+                .is_err()
+        );
+        let other = crate::rpsl::parse(&extra.text.replace("source: TEST", "source: OTHER"))
+            .map_err(anyhow::Error::msg)?;
+        store.replace_source("OTHER", [Ok(other.clone())])?;
+        assert!(
+            store
+                .apply_authoritative(
+                    "TEST",
+                    vec![
+                        Change::Delete(contact.clone()),
+                        Change::Delete(domain.clone()),
+                        Change::Delete(other)
+                    ],
+                    &passwords
+                )
+                .is_err()
+        );
+        assert_eq!(store.verify()?, 5);
+        assert_eq!(
+            store.apply_authoritative(
+                "TEST",
+                vec![
+                    Change::Delete(contact.clone()),
+                    Change::Delete(domain),
+                    Change::Delete(extra)
+                ],
+                &passwords
+            )?,
+            3
+        );
+        assert!(store.first("person", &contact.key, &sources)?.is_none());
+        assert_eq!(store.source_history("TEST", 10)?.len(), 3);
+        assert_eq!(store.source_local_serial("TEST")?, Some(3));
+        assert_eq!(store.nrtm3_journal_bounds("TEST")?, Some((1, 3)));
+        assert_eq!(store.verify()?, 2);
+        Ok(())
+    }
+
+    #[test]
+    fn authoritative_reference_probe_handles_a_full_deletion_batch() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = Store::open(&dir.path().join("registry.redb"))?;
+        let passwords = [String::from("fixture password")];
+        let sources = [String::from("TEST")];
+        seed_authoritative_maintainer(&store, &passwords[0])?;
+        let maintainer = store.first("mntner", "TEST-MNT", &sources)?.unwrap();
+        let mut objects = vec![maintainer];
+        for number in 0..32 {
+            objects.push(
+                crate::rpsl::parse(&format!(
+                    "domain: batch-{number:02}.example\nmnt-by: TEST-MNT\nsource: TEST\n"
+                ))
+                .map_err(anyhow::Error::msg)?,
+            );
+        }
+        store.replace_source("TEST", objects.iter().cloned().map(Ok))?;
+        let batch = || objects[..32].iter().cloned().map(Change::Delete).collect();
+        assert!(
+            store
+                .apply_authoritative("TEST", batch(), &passwords)
+                .is_err()
+        );
+        assert_eq!(store.verify()?, 33);
+        store.apply_authoritative(
+            "TEST",
+            vec![Change::Delete(objects[32].clone())],
+            &passwords,
+        )?;
+        assert_eq!(store.apply_authoritative("TEST", batch(), &passwords)?, 32);
+        assert_eq!(store.verify()?, 0);
+        assert_eq!(store.source_local_serial("TEST")?, Some(33));
+        assert_eq!(store.source_history("TEST", 100)?.len(), 33);
         Ok(())
     }
 

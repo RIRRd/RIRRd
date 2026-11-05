@@ -3086,3 +3086,131 @@ max_snapshot_bytes = 65536
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("http_public_queries"));
 }
+
+#[test]
+fn authoritative_references_reject_name_takeover_and_allow_atomic_deletion() {
+    let workspace = tempfile::tempdir().unwrap();
+    let config = workspace.path().join("irrd.toml");
+    fs::write(&config, "database = \"registry.redb\"\nsources = [\"TEST\"]\nauthoritative_sources = [\"TEST\"]\nlisten = \"127.0.0.1:0\"\nhttp_listen = \"127.0.0.1:0\"\nhttp_authoritative_updates = true\nmax_connections = 4\nio_timeout_seconds = 2\nmax_snapshot_bytes = 65536\n").unwrap();
+    let password = "reference fixture proof";
+    let hash = bcrypt::hash_with_salt(password, 4, [19; 16]).unwrap();
+    let contact = |name: &str, kind: &str| {
+        format!(
+            "{kind}: Synthetic Contact\naddress: Example Road\nphone: +1 202 555 0100\ne-mail: contact@example.invalid\nnic-hdl: {name}\nmnt-by: OWNER-MNT\nsource: TEST\n"
+        )
+    };
+    let domain = |name: &str, handle: &str| {
+        format!(
+            "domain: {name}.example\nadmin-c: {handle}\ntech-c: {handle}\nzone-c: {handle}\nmnt-by: OWNER-MNT\nsource: TEST\n"
+        )
+    };
+    let cli_contact = contact("CLI-TEST", "person");
+    let http_contact = contact("HTTP-TEST", "role");
+    let cli_domain = domain("cli", "CLI-TEST");
+    let cli_extra = domain("cli-extra", "CLI-TEST");
+    let http_domain = domain("http", "HTTP-TEST");
+    let snapshot = workspace.path().join("fixture.rpsl");
+    fs::write(&snapshot, format!("mntner: OWNER-MNT\nauth: BCRYPT-PW {hash}\nmnt-by: OWNER-MNT\nsource: TEST\n\n{}\n{cli_contact}\n{cli_domain}\n{cli_extra}\n{http_contact}\n{http_domain}", domain("dangling", "MISSING-TEST"))).unwrap();
+    successful(
+        cli(&config)
+            .args([
+                "import",
+                "snapshot",
+                "--source",
+                "TEST",
+                "--authoritative-restore",
+                "--file",
+            ])
+            .arg(&snapshot)
+            .output()
+            .unwrap(),
+    );
+    let path = workspace.path().join("submission.rpsl");
+    let submit = |text: &str, delete: bool| {
+        fs::write(&path, text).unwrap();
+        let mut command = cli(&config);
+        command
+            .args(["update", "--source", "TEST", "--file"])
+            .arg(&path)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        if delete {
+            command.arg("--delete");
+        }
+        let mut child = command.spawn().unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(format!("{password}\n").as_bytes())
+            .unwrap();
+        child.wait_with_output().unwrap()
+    };
+    for kind in ["person", "role"] {
+        let denied = submit(&contact("MISSING-TEST", kind), false);
+        assert!(!denied.status.success());
+        let error = String::from_utf8_lossy(&denied.stderr);
+        assert!(error.contains("protected by existing references"));
+        assert!(!error.contains(password) && !error.contains("$2b$"));
+    }
+    assert!(
+        !submit(&format!("{cli_contact}\n{cli_domain}"), true)
+            .status
+            .success()
+    );
+    let report = successful(cli(&config).args(["database", "verify"]).output().unwrap());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&report).unwrap()["objects"],
+        7
+    );
+    successful(submit(
+        &format!("{cli_contact}\n{cli_domain}\n{cli_extra}"),
+        true,
+    ));
+    let (server, http) = Server::start_listener(&config, "GraphQL listening");
+    let request = |method: &str, objects: &[&str], proof: &str| {
+        let objects: Vec<_> = objects
+            .iter()
+            .map(|text| serde_json::json!({"object_text":text}))
+            .collect();
+        let body = serde_json::json!({"objects":objects,"passwords":[proof],"delete_reason":"synthetic cleanup"}).to_string();
+        let raw = whois(http, format!("{method} /v1/submit/ HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes());
+        assert!(raw.starts_with("HTTP/1.1 200 "));
+        assert!(!raw.contains(proof) && !raw.contains("$2b$"));
+        serde_json::from_str::<Value>(raw.split_once("\r\n\r\n").unwrap().1).unwrap()
+    };
+    for kind in ["person", "role"] {
+        assert_eq!(
+            request("POST", &[&contact("MISSING-TEST", kind)], password)["summary"]["failed"],
+            1
+        );
+    }
+    assert_eq!(
+        request("DELETE", &[&http_contact], password)["summary"]["failed"],
+        1
+    );
+    assert_eq!(
+        request(
+            "DELETE",
+            &[&http_contact, &http_domain],
+            "wrong fixture proof"
+        )["summary"]["failed"],
+        2
+    );
+    assert_eq!(
+        request("DELETE", &[&http_contact, &http_domain], password)["summary"]["successful_delete"],
+        2
+    );
+    // Atomic deletion does not remove the protected-name tombstone.
+    assert_eq!(
+        request("POST", &[&http_contact], password)["summary"]["failed"],
+        1
+    );
+    drop(server);
+    let report = successful(cli(&config).args(["database", "verify"]).output().unwrap());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&report).unwrap()["objects"],
+        2
+    );
+}
