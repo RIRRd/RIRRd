@@ -1437,6 +1437,11 @@ impl Store {
 
     /// Check index coverage and retained journal metadata.
     pub fn verify(&self) -> Result<u64> {
+        self.verify_with_cancel(None)
+    }
+
+    fn verify_with_cancel(&self, cancel: Option<&std::sync::atomic::AtomicBool>) -> Result<u64> {
+        maintenance::check_cancelled(cancel)?;
         let read = self.db.begin_read()?;
         let records = read.open_table(OBJECTS)?;
         let exact = read.open_multimap_table(EXACT)?;
@@ -1456,9 +1461,11 @@ impl Store {
         let mut indexed = 0;
         let mut routes = 0;
         for entry in exact.iter()? {
+            maintenance::check_cancelled(cancel)?;
             let (identity, classes) = entry?;
             let (source, key) = identity.value();
             for class in classes {
+                maintenance::check_cancelled(cancel)?;
                 let class = class?;
                 ensure!(
                     records.get((source, class.value(), key))?.is_some(),
@@ -1477,9 +1484,11 @@ impl Store {
         );
         let mut indexed_routes = 0;
         for entry in origins.iter()? {
+            maintenance::check_cancelled(cancel)?;
             let (identity, prefixes) = entry?;
             let (source, class, origin) = identity.value();
             for prefix in prefixes {
+                maintenance::check_cancelled(cancel)?;
                 let prefix = prefix?;
                 let key = format!("{}{origin}", prefix.value());
                 ensure!(
@@ -1495,6 +1504,7 @@ impl Store {
             "some routes are missing from the route origin index"
         );
         for entry in prefixes.iter()? {
+            maintenance::check_cancelled(cancel)?;
             let (identity, _) = entry?;
             let (source, class, network, length, origin) = identity.value();
             let key = route_key(class, network, length, origin)?;
@@ -1512,6 +1522,7 @@ impl Store {
         let mut indexed_inetnum_blocks = 0;
         let mut indexed_as_blocks = 0;
         for entry in records.iter()? {
+            maintenance::check_cancelled(cancel)?;
             let (identity, text) = entry?;
             let (source, class, key) = identity.value();
             *expected_counts

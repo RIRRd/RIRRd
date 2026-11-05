@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import socket
+import time
 import unittest
 from urllib.parse import urlencode
 
@@ -37,6 +38,52 @@ class Protocols(unittest.TestCase):
         status, raw, _ = self.registry.request('/graphql/', 'POST', json.dumps({'query':query}), {'Content-Type':'application/json'})
         self.assertEqual(status, 200)
         return json.loads(raw)
+
+    def test_shutdown_during_online_repack_keeps_the_original_verifiable(self):
+        registry = Registry()
+        try:
+            registry.config.write_text(registry.config.read_text().replace('max_snapshot_bytes = 262144', 'max_snapshot_bytes = 16777216'))
+            fixture = registry.root / 'large.rpsl'
+            fixture.write_text(''.join('aut-num: AS' + str(65000 + n) + '\ndescr: ' + 'x' * 4096 + '\nsource: EXAMPLE\n\n' for n in range(1000)))
+            registry.cli('import', 'snapshot', '--source', 'EXAMPLE', '--file', str(fixture))
+            baseline = json.loads(registry.cli('database', 'count', '--by-class').stdout)
+            packed = registry.root / 'interrupted.redb'
+            registry.start('--repack-to', str(packed), '--repack-cache-mib', '8')
+            child = registry.child
+            registry.stop()
+            self.assertEqual(child.returncode, 0, 'Maintenance shutdown must close database handles cleanly')
+            self.assertEqual(json.loads(registry.cli('database', 'verify').stdout)['objects'], baseline['objects'])
+            self.assertEqual(json.loads(registry.cli('database', 'count', '--by-class').stdout), baseline)
+            if packed.exists():
+                candidate = registry.root / 'candidate.toml'
+                candidate.write_text(registry.config.read_text().replace('"registry.redb"', '"interrupted.redb"'))
+                self.assertEqual(json.loads(registry.cli('database', 'verify', config=candidate).stdout)['objects'], baseline['objects'])
+        finally:
+            registry.close()
+
+    def test_server_repack_publishes_a_verified_inactive_copy_and_keeps_serving(self):
+        registry = Registry()
+        try:
+            baseline = json.loads(registry.cli('database', 'count', '--by-class').stdout)
+            packed = registry.root / 'online.redb'
+            registry.start('--repack-to', str(packed), '--repack-cache-mib', '8')
+            deadline = time.monotonic() + 15
+            while not packed.exists() and time.monotonic() < deadline:
+                self.assertIn(b'192.0.2.0/24', payload(registry.wire(b'!gAS64496\n')))
+                time.sleep(.01)
+            self.assertTrue(packed.is_file())
+            self.assertIn(b'192.0.2.0/24', payload(registry.wire(b'!gAS64496\n')))
+            self.assertEqual(registry.request('/v1/whois/?q=%216AS64496')[0], 200)
+            candidate = registry.root / 'candidate.toml'
+            candidate.write_text(registry.config.read_text().replace('"registry.redb"', '"online.redb"'))
+            self.assertEqual(json.loads(registry.cli('database', 'count', '--by-class', config=candidate).stdout), baseline)
+            self.assertEqual(json.loads(registry.cli('database', 'verify', config=candidate).stdout)['objects'], baseline['objects'])
+            registry.stop()
+            self.assertEqual(json.loads(registry.cli('database', 'count', '--by-class').stdout), baseline)
+            self.assertNotEqual(registry.cli('server', '--repack-to', str(packed), success=False).returncode, 0)
+            self.assertNotEqual(registry.cli('server', '--repack-cache-mib', '8', success=False).returncode, 0)
+        finally:
+            registry.close()
 
     def test_offline_repack_retains_class_counts_and_public_queries(self):
         registry = Registry()

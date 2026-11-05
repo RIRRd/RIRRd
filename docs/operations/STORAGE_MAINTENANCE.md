@@ -1,6 +1,6 @@
 # Database storage maintenance
 
-These commands require an **offline database or inactive generation**. The
+The `database` subcommands require an **offline database or inactive generation**. The
 normal exclusive database lock rejects access to a serving instance. Use a
 private directory, keep a verified original for rollback and allow space for a
 complete second database. Repacking does not activate or replace a database.
@@ -73,6 +73,35 @@ introduced by this operation.
 The output belongs to the user running the command. Before activation, give the
 intended daemon account read/write ownership and access through its private
 parent directory; retain restrictive file permissions.
+
+## Repack while serving
+
+A maintenance restart can launch a bounded background repack in the process
+that owns the serving database:
+
+```sh
+rust-irrd --config irrd.toml server --repack-to /private/candidate.redb \
+  --repack-cache-mib 256
+```
+
+The daemon keeps its configured query cache. The optional budget applies to the
+candidate only; it defaults to the configured cache size. Listeners and mirrors
+continue running. One stable read transaction covers all source tables and
+mirror cursors, even when updates commit during copying. Final verification and
+logical hashing still run before publication. Completion or failure is logged;
+the candidate is never selected automatically and the serving file stays in use.
+
+Long read transactions retain older pages needed by the snapshot. Allow space
+for both files and concurrent updates, and account for maintenance I/O and cache
+memory separately from ordinary queries. Use an absolute, private output path
+writable by the daemon account. Do not leave the one-shot options in a permanent
+service command: a later restart must not try to overwrite the finished file.
+
+Shutdown requests cancellation during table and index scans, then waits for
+clean database closure. Engine compaction and fsync are not interruptible; give
+maintenance shutdown sufficient time and never force-kill an active writer.
+Before activating the candidate, catch up its preserved mirror cursors and
+validate normal queries. Keep the previous generation for rollback.
 
 ## Compaction and trade-offs
 

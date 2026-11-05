@@ -2,6 +2,14 @@
 use super::*;
 use sha2::{Digest, Sha256};
 
+pub(super) fn check_cancelled(cancel: Option<&std::sync::atomic::AtomicBool>) -> Result<()> {
+    ensure!(
+        !cancel.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Relaxed)),
+        "database repack cancelled"
+    );
+    Ok(())
+}
+
 const BATCH_BYTES: usize = 1024 * 1024;
 const BATCH_ROWS: usize = 4096;
 
@@ -25,6 +33,51 @@ mod tests {
             )],
         )?;
         Ok(store)
+    }
+
+    #[test]
+    fn repack_uses_one_snapshot_during_concurrent_source_replacement() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let source = Store::open(&dir.path().join("source.redb"))?;
+        let replace = |generation| -> Result<()> {
+            source.replace_source(
+                "TEST",
+                (0..300).map(|index| {
+                    crate::rpsl::parse(&format!(
+                        "aut-num: AS{}\nas-name: GENERATION{generation}\nsource: TEST\n",
+                        64496 + index
+                    ))
+                    .map_err(anyhow::Error::msg)
+                }),
+            )?;
+            Ok(())
+        };
+        replace(0)?;
+        let mut valid_snapshots = vec![logical_hash(&source.db.begin_read()?)?];
+        let path = dir.path().join("packed.redb");
+        std::thread::scope(|scope| -> Result<()> {
+            let packed = scope.spawn(|| source.repack(&path, 1024 * 1024));
+            for generation in 1..=10 {
+                replace(generation)?;
+                valid_snapshots.push(logical_hash(&source.db.begin_read()?)?);
+            }
+            packed.join().unwrap()?;
+            Ok(())
+        })?;
+        let packed = Store::open_existing(&path)?;
+        assert_eq!(packed.verify()?, 300);
+        assert!(valid_snapshots.contains(&logical_hash(&packed.db.begin_read()?)?));
+        assert_eq!(source.verify()?, 300);
+        let cancel = std::sync::atomic::AtomicBool::new(true);
+        let cancelled = dir.path().join("cancelled.redb");
+        assert!(
+            source
+                .repack_with_cancel(&cancelled, 1024 * 1024, Some(&cancel))
+                .is_err()
+        );
+        assert!(!cancelled.exists());
+        assert!(source.verify_with_cancel(Some(&cancel)).is_err());
+        Ok(())
     }
 
     #[test]
@@ -172,6 +225,7 @@ fn copy_table<K: redb::Key + 'static, V: redb::Value + 'static>(
     destination: &WriteTransaction,
     definition: TableDefinition<'_, K, V>,
     hash: &mut Sha256,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<usize> {
     let original = match source.open_table(definition) {
         Ok(table) => table,
@@ -186,6 +240,7 @@ fn copy_table<K: redb::Key + 'static, V: redb::Value + 'static>(
     let mut rows = Vec::new();
     let mut bytes = 0;
     for entry in original.iter()? {
+        check_cancelled(cancel)?;
         let (key, value) = entry?;
         let key = K::as_bytes(&key.value()).as_ref().to_vec();
         let value = V::as_bytes(&value.value()).as_ref().to_vec();
@@ -207,6 +262,7 @@ fn copy_multimap<K: redb::Key + 'static, V: redb::Key + 'static>(
     destination: &WriteTransaction,
     definition: MultimapTableDefinition<'_, K, V>,
     hash: &mut Sha256,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<usize> {
     let original = source.open_multimap_table(definition)?;
     eprintln!("Repacking multimap {}", definition.name());
@@ -218,8 +274,10 @@ fn copy_multimap<K: redb::Key + 'static, V: redb::Key + 'static>(
     let mut bytes = 0;
     // Bound batches even inside a single high-cardinality multimap group.
     for entry in original.iter()? {
+        check_cancelled(cancel)?;
         let (key, values) = entry?;
         for value in values {
+            check_cancelled(cancel)?;
             let value = value?;
             let key = K::as_bytes(&key.value()).as_ref().to_vec();
             let value = V::as_bytes(&value.value()).as_ref().to_vec();
@@ -252,6 +310,7 @@ fn hash_table<K: redb::Key + 'static, V: redb::Value + 'static>(
     read: &ReadTransaction,
     definition: TableDefinition<'_, K, V>,
     hash: &mut Sha256,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<usize> {
     let table = match read.open_table(definition) {
         Ok(table) => table,
@@ -262,6 +321,7 @@ fn hash_table<K: redb::Key + 'static, V: redb::Value + 'static>(
     hash_bytes(hash, definition.name().as_bytes());
     hash.update(table.len()?.to_le_bytes());
     for entry in table.iter()? {
+        check_cancelled(cancel)?;
         let (key, value) = entry?;
         hash_bytes(hash, K::as_bytes(&key.value()).as_ref());
         hash_bytes(hash, V::as_bytes(&value.value()).as_ref());
@@ -273,14 +333,17 @@ fn hash_multimap<K: redb::Key + 'static, V: redb::Key + 'static>(
     read: &ReadTransaction,
     definition: MultimapTableDefinition<'_, K, V>,
     hash: &mut Sha256,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<usize> {
     let table = read.open_multimap_table(definition)?;
     hash.update([2]);
     hash_bytes(hash, definition.name().as_bytes());
     hash.update(table.len()?.to_le_bytes());
     for entry in table.iter()? {
+        check_cancelled(cancel)?;
         let (key, values) = entry?;
         for value in values {
+            check_cancelled(cancel)?;
             hash_bytes(hash, K::as_bytes(&key.value()).as_ref());
             hash_bytes(hash, V::as_bytes(&value?.value()).as_ref());
         }
@@ -288,13 +351,21 @@ fn hash_multimap<K: redb::Key + 'static, V: redb::Key + 'static>(
     Ok(1)
 }
 
+#[cfg(test)]
 fn logical_hash(read: &ReadTransaction) -> Result<(usize, String)> {
+    logical_hash_with_cancel(read, None)
+}
+
+fn logical_hash_with_cancel(
+    read: &ReadTransaction,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+) -> Result<(usize, String)> {
     // Hash canonical, length-delimited encodings, table kind/name and row count.
     let mut hash = Sha256::new();
     hash.update(b"RIRRd logical database v1");
     let mut tables = 0;
     macro_rules! table { ($($definition:expr),*) => {
-        $(tables += hash_table(read, $definition, &mut hash)?;)*
+        $(tables += hash_table(read, $definition, &mut hash, cancel)?;)*
     }; }
     table!(
         OBJECTS,
@@ -311,8 +382,8 @@ fn logical_hash(read: &ReadTransaction) -> Result<(usize, String)> {
         AUTH_AUDIT,
         PROTECTED_NAMES
     );
-    tables += hash_multimap(read, EXACT, &mut hash)?;
-    tables += hash_multimap(read, ORIGINS, &mut hash)?;
+    tables += hash_multimap(read, EXACT, &mut hash, cancel)?;
+    tables += hash_multimap(read, ORIGINS, &mut hash, cancel)?;
     let digest = hash
         .finalize()
         .iter()
@@ -363,6 +434,16 @@ fn table_usage(
 
 impl Store {
     pub fn repack(&self, output: &Path, cache_bytes: usize) -> Result<RepackReport> {
+        self.repack_with_cancel(output, cache_bytes, None)
+    }
+
+    pub fn repack_with_cancel(
+        &self,
+        output: &Path,
+        cache_bytes: usize,
+        cancel: Option<&std::sync::atomic::AtomicBool>,
+    ) -> Result<RepackReport> {
+        check_cancelled(cancel)?;
         crate::backup::require_absent(output)?;
         let read = self.db.begin_read()?;
         let normal = [
@@ -410,7 +491,7 @@ impl Store {
                 .set_cache_size(cache_bytes)
                 .create_file(stage.as_file().try_clone()?)?;
             let write = db.begin_write()?;
-            macro_rules! copy { ($($definition:expr),*) => { $(tables += copy_table(&read, &write, $definition, &mut hash)?;)* }; }
+            macro_rules! copy { ($($definition:expr),*) => { $(tables += copy_table(&read, &write, $definition, &mut hash, cancel)?;)* }; }
             copy!(
                 OBJECTS,
                 PREFIXES,
@@ -426,8 +507,8 @@ impl Store {
                 AUTH_AUDIT,
                 PROTECTED_NAMES
             );
-            tables += copy_multimap(&read, &write, EXACT, &mut hash)?;
-            tables += copy_multimap(&read, &write, ORIGINS, &mut hash)?;
+            tables += copy_multimap(&read, &write, EXACT, &mut hash, cancel)?;
+            tables += copy_multimap(&read, &write, ORIGINS, &mut hash, cancel)?;
             ensure!(
                 tables == read.list_tables()?.count() + read.list_multimap_tables()?.count(),
                 "repack cannot account for every source table"
@@ -450,15 +531,16 @@ impl Store {
             eprintln!("Verifying closed and reopened database");
             let rebuilt = crate::backup::lock_existing_file(stage.as_file(), cache_bytes)?;
             ensure!(
-                rebuilt.verify()? == objects,
+                rebuilt.verify_with_cancel(cancel)? == objects,
                 "repacked database failed reopen verification"
             );
             eprintln!("Comparing final logical database hash");
             ensure!(
-                logical_hash(&rebuilt.db.begin_read()?)? == expected,
+                logical_hash_with_cancel(&rebuilt.db.begin_read()?, cancel)? == expected,
                 "repacked database changed after reopen"
             );
         }
+        check_cancelled(cancel)?;
         crate::backup::publish(stage, output)?;
         Ok(RepackReport {
             objects,

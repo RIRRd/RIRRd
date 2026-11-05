@@ -77,7 +77,14 @@ fn database_file_usage(path: &Path) -> Result<serde_json::Value> {
 
 #[derive(Subcommand)]
 enum Command {
-    Server,
+    Server {
+        /// Build a separate verified candidate from a stable read snapshot while serving.
+        #[arg(long)]
+        repack_to: Option<PathBuf>,
+        /// Destination cache budget for the optional maintenance job, in MiB.
+        #[arg(long, requires = "repack_to", value_parser = clap::value_parser!(u64).range(1..=4096))]
+        repack_cache_mib: Option<u64>,
+    },
     Config {
         #[command(subcommand)]
         command: ConfigCommand,
@@ -470,7 +477,21 @@ fn main() -> Result<()> {
                 })
             );
         }
-        Command::Server => {
+        Command::Server {
+            repack_to,
+            repack_cache_mib,
+        } => {
+            let maintenance = repack_to
+                .map(|path| -> Result<_> {
+                    backup::require_absent(&path)?;
+                    let cache = usize::try_from(
+                        repack_cache_mib.unwrap_or(config.database_cache_mib as u64),
+                    )?
+                    .checked_mul(1024 * 1024)
+                    .context("maintenance cache budget overflow")?;
+                    Ok((path, cache))
+                })
+                .transpose()?;
             let route_policy = RoutePolicy::load(&config)?;
             let store = Arc::new(
                 Store::open_for_service_with_cache(
@@ -490,7 +511,7 @@ fn main() -> Result<()> {
             runtime
                 .enable_all()
                 .build()?
-                .block_on(serve(config, store))?;
+                .block_on(serve(config, store, maintenance))?;
         }
         Command::Export {
             command:
@@ -771,7 +792,11 @@ fn print_serial(source: &str, serial: Option<u64>) {
     );
 }
 
-async fn serve(config: Config, store: Arc<Store>) -> Result<()> {
+async fn serve(
+    config: Config,
+    store: Arc<Store>,
+    maintenance: Option<(PathBuf, usize)>,
+) -> Result<()> {
     let whois = TcpListener::bind(config.listen)
         .await
         .context("binding WHOIS")?;
@@ -837,6 +862,27 @@ async fn serve(config: Config, store: Arc<Store>) -> Result<()> {
             },
         ));
     }
+    let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let maintenance = maintenance.map(|(path, cache)| {
+        let store = store.clone();
+        let cancel = cancel.clone();
+        tokio::task::spawn_blocking(move || {
+            let started = Instant::now();
+            match store.repack_with_cancel(&path, cache, Some(&cancel)) {
+                Ok(report) => {
+                    let mut report = serde_json::to_value(report)?;
+                    report["output_file"] = database_file_usage(&path)?;
+                    report["elapsed_seconds"] = started.elapsed().as_secs_f64().into();
+                    tracing::info!(report = %report, "Online repack completed; candidate is inactive");
+                    Ok(())
+                }
+                Err(error) => {
+                    tracing::warn!(error = %error, "Online repack did not publish a candidate; serving database retained");
+                    Err(error)
+                }
+            }
+        })
+    });
     services.spawn(async move { whois::serve(whois, &config, store, stopped).await });
     let mut result = tokio::select! {
         result = shutdown_signal() => result.context("waiting for shutdown"),
@@ -846,9 +892,15 @@ async fn serve(config: Config, store: Arc<Store>) -> Result<()> {
             _ => Err(anyhow::anyhow!("a listener stopped unexpectedly")),
         },
     };
+    cancel.store(true, std::sync::atomic::Ordering::Relaxed);
     let _ = stop.send(true);
     while let Some(service) = services.join_next().await {
         result = result.and_then(|()| service?);
+    }
+    // A blocking database writer must close cleanly before runtime shutdown.
+    // Cancellation is checked in scans; engine compaction/fsync must finish.
+    if let Some(maintenance) = maintenance {
+        let _ = maintenance.await;
     }
     result
 }
