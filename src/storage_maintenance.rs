@@ -550,7 +550,7 @@ impl Store {
     }
 
     pub fn storage_usage(&self) -> Result<StorageUsage> {
-        let read = self.db.begin_read()?;
+        let read = self.read_transaction()?;
         let mut tables = Vec::new();
         for handle in read.list_tables()? {
             let name = handle.name().to_owned();

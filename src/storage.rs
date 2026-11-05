@@ -2,14 +2,18 @@
 
 use std::{
     borrow::Cow,
+    cell::RefCell,
     cmp::Ordering,
     collections::HashSet,
     io::Write,
     net::{Ipv4Addr, Ipv6Addr},
     ops::RangeInclusive,
     path::Path,
-    sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering as AtomicOrdering},
+    },
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, Result, ensure};
@@ -82,6 +86,152 @@ const AUTH_AUDIT: TableDefinition<JournalKey, AuditValue> =
 const PROTECTED_NAMES: TableDefinition<Identity<'static>, ()> =
     TableDefinition::new("authoritative_protected_names_v1");
 const NRTM3_RETAINED_OPERATIONS: u64 = 4096;
+
+/// One immutable redb snapshot for an entire logical query. It is registry
+/// bound and owned by calculation scopes, never by outgoing response bodies.
+/// redb readers coexist with staged and committing writers, so mirrors need
+/// not hold ordinary queries behind their mutation gate.
+#[derive(Clone)]
+pub(crate) struct QueryView {
+    registry: Arc<RwLock<()>>,
+    transaction: Arc<ReadTransaction>,
+    #[cfg(test)]
+    lifetime: Arc<()>,
+}
+
+thread_local! {
+    static QUERY_VIEW: RefCell<Option<QueryView>> = const { RefCell::new(None) };
+}
+
+impl QueryView {
+    /// Install this snapshot only for synchronous database calculations on
+    /// this worker. A nested scope or panic restores the previous view.
+    pub(crate) fn run<T>(&self, work: impl FnOnce() -> T) -> T {
+        struct Restore(Option<QueryView>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                QUERY_VIEW.with(|active| active.replace(self.0.take()));
+            }
+        }
+        let _restore = Restore(QUERY_VIEW.with(|active| active.replace(Some(self.clone()))));
+        work()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn lifetime(&self) -> std::sync::Weak<()> {
+        Arc::downgrade(&self.lifetime)
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct QueryControl {
+    deadline: Instant,
+    cancelled: Arc<AtomicBool>,
+    heavy: Arc<std::sync::Mutex<Option<Arc<HeavyQueryLease>>>>,
+}
+
+thread_local! {
+    static QUERY_CONTROL: RefCell<Option<QueryControl>> = const { RefCell::new(None) };
+}
+
+pub(crate) struct CancelQuery(QueryControl);
+impl Drop for CancelQuery {
+    fn drop(&mut self) {
+        self.0.cancelled.store(true, AtomicOrdering::Relaxed);
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct QueryDeadlineExceeded;
+impl std::fmt::Display for QueryDeadlineExceeded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("query deadline exceeded or request cancelled")
+    }
+}
+impl std::error::Error for QueryDeadlineExceeded {}
+
+impl QueryControl {
+    pub(crate) fn new(timeout: Duration) -> Self {
+        Self {
+            deadline: Instant::now() + timeout,
+            cancelled: Arc::new(AtomicBool::new(false)),
+            heavy: Arc::new(std::sync::Mutex::new(None)),
+        }
+    }
+
+    pub(crate) fn cancel_on_drop(&self) -> CancelQuery {
+        CancelQuery(self.clone())
+    }
+
+    pub(crate) fn run<T>(&self, work: impl FnOnce() -> Result<T>) -> Result<T> {
+        struct Restore(Option<QueryControl>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                QUERY_CONTROL.with(|active| active.replace(self.0.take()));
+            }
+        }
+        let _restore = Restore(QUERY_CONTROL.with(|active| active.replace(Some(self.clone()))));
+        check_query_deadline()?;
+        work()
+    }
+}
+
+// One oversized prefix expansion may run/serialize at a time. Small lookups
+// retain their normal concurrency. The request control owns the lease beyond
+// the blocking worker, including TCP writes and HTTP body consumption.
+static HEAVY_QUERY_ACTIVE: AtomicBool = AtomicBool::new(false);
+pub(crate) struct HeavyQueryLease;
+impl Drop for HeavyQueryLease {
+    fn drop(&mut self) {
+        HEAVY_QUERY_ACTIVE.store(false, AtomicOrdering::Release);
+    }
+}
+#[derive(Debug)]
+pub(crate) struct HeavyQueryBusy;
+impl std::fmt::Display for HeavyQueryBusy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("large query capacity busy; retry later")
+    }
+}
+impl std::error::Error for HeavyQueryBusy {}
+
+pub(crate) fn acquire_heavy_query() -> Result<Arc<HeavyQueryLease>> {
+    QUERY_CONTROL.with(|active| {
+        let active = active.borrow();
+        let mut held = active
+            .as_ref()
+            .map(|control| control.heavy.lock().expect("query lease"));
+        if let Some(lease) = held.as_ref().and_then(|guard| guard.as_ref()) {
+            return Ok(lease.clone());
+        }
+        HEAVY_QUERY_ACTIVE
+            .compare_exchange(
+                false,
+                true,
+                AtomicOrdering::Acquire,
+                AtomicOrdering::Relaxed,
+            )
+            .map_err(|_| HeavyQueryBusy)?;
+        let lease = Arc::new(HeavyQueryLease);
+        if let Some(held) = held.as_mut() {
+            **held = Some(lease.clone());
+        }
+        Ok(lease)
+    })
+}
+
+pub(crate) fn check_query_deadline() -> Result<()> {
+    QUERY_CONTROL.with(|active| {
+        if let Some(control) = active.borrow().as_ref() {
+            ensure!(
+                !control.cancelled.load(AtomicOrdering::Relaxed)
+                    && Instant::now() < control.deadline,
+                QueryDeadlineExceeded
+            );
+        }
+        Ok(())
+    })
+}
 
 enum SourceReplacement {
     Mirror,
@@ -290,7 +440,43 @@ impl Store {
         }
     }
 
-    /// Hold a read guard across a service query that performs multiple reads.
+    /// Pin a committed view without taking the writer-ordering gate. Capture
+    /// this once per logical TCP/HTTP/GraphQL request and clone it into workers.
+    pub(crate) fn query_view(&self) -> Result<QueryView> {
+        Ok(QueryView {
+            registry: self.query_gate.clone(),
+            transaction: Arc::new(self.db.begin_read()?),
+            #[cfg(test)]
+            lifetime: Arc::new(()),
+        })
+    }
+
+    fn read_transaction(&self) -> Result<Arc<ReadTransaction>> {
+        check_query_deadline()?;
+        QUERY_VIEW.with(|active| {
+            if let Some(view) = active.borrow().as_ref() {
+                ensure!(
+                    Arc::ptr_eq(&view.registry, &self.query_gate),
+                    "query view belongs to a different registry"
+                );
+                Ok(view.transaction.clone())
+            } else {
+                Ok(Arc::new(self.db.begin_read()?))
+            }
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn active_query_view_lifetime(&self) -> Option<std::sync::Weak<()>> {
+        QUERY_VIEW.with(|active| {
+            active.borrow().as_ref().and_then(|view| {
+                Arc::ptr_eq(&view.registry, &self.query_gate).then(|| view.lifetime())
+            })
+        })
+    }
+
+    /// Serialize writer/authentication operations. Public queries use MVCC
+    /// snapshots; read guards remain available only for explicit coordination.
     pub fn query_gate(&self) -> &Arc<RwLock<()>> {
         &self.query_gate
     }
@@ -315,7 +501,7 @@ impl Store {
     pub fn class_counts(
         &self,
     ) -> Result<std::collections::BTreeMap<String, std::collections::BTreeMap<String, u64>>> {
-        let read = self.db.begin_read()?;
+        let read = self.read_transaction()?;
         let counts = read.open_table(CLASS_COUNTS)?;
         let mut result =
             std::collections::BTreeMap::<String, std::collections::BTreeMap<String, u64>>::new();
@@ -338,7 +524,7 @@ impl Store {
         limit: usize,
     ) -> Result<(Vec<String>, bool)> {
         ensure!(limit > 0 && limit <= 100, "object page limit must be 1–100");
-        let read = self.db.begin_read()?;
+        let read = self.read_transaction()?;
         let records = read.open_table(OBJECTS)?;
         let upper = format!("{class}\0");
         let lower = after.map_or(std::ops::Bound::Included((source, class, "")), |key| {
@@ -361,7 +547,7 @@ impl Store {
     }
 
     pub fn object_count(&self) -> Result<u64> {
-        Ok(self.db.begin_read()?.open_table(OBJECTS)?.len()?)
+        Ok(self.read_transaction()?.open_table(OBJECTS)?.len()?)
     }
 
     /// Persist a verified snapshot cursor after a complete no-new-updates reply.
@@ -764,7 +950,7 @@ impl Store {
 
     pub fn source_serial(&self, source: &str) -> Result<Option<u64>> {
         let source = canonical_source(source)?;
-        let read = self.db.begin_read()?;
+        let read = self.read_transaction()?;
         read.open_table(OBJECTS)
             .context("missing or invalid registry objects table")?;
         read_serial(&read, SERIALS, &source)
@@ -774,7 +960,7 @@ impl Store {
     /// upstream serial used to resume mirrored sources.
     pub fn source_local_serial(&self, source: &str) -> Result<Option<u64>> {
         let source = canonical_source(source)?;
-        let read = self.db.begin_read()?;
+        let read = self.read_transaction()?;
         read.open_table(OBJECTS)
             .context("missing or invalid registry objects table")?;
         read_serial(&read, AUTH_NRTM3_SERIALS, &source)
@@ -783,7 +969,7 @@ impl Store {
     /// Read the committed NRTMv4 trust and session state for a source.
     pub fn nrtm4_state(&self, source: &str) -> Result<Option<CommittedState>> {
         let source = canonical_source(source)?;
-        let read = self.db.begin_read()?;
+        let read = self.read_transaction()?;
         read.open_table(OBJECTS)
             .context("missing or invalid registry objects table")?;
         let state = match read.open_table(NRTM4_STATE) {
@@ -1101,7 +1287,7 @@ impl Store {
     pub fn source_history(&self, source: &str, limit: usize) -> Result<Vec<AuditEntry>> {
         ensure!(limit <= 1000, "authoritative history limit exceeds 1000");
         let source = canonical_source(source)?;
-        let read = self.db.begin_read()?;
+        let read = self.read_transaction()?;
         read.open_table(OBJECTS)
             .context("missing or invalid registry objects table")?;
         let audit = match read.open_table(AUTH_AUDIT) {
@@ -1133,7 +1319,7 @@ impl Store {
     /// Return the oldest and newest retained NRTMv3 operations for one source.
     pub fn nrtm3_journal_bounds(&self, source: &str) -> Result<Option<(u64, u64)>> {
         let source = canonical_source(source)?;
-        let read = self.db.begin_read()?;
+        let read = self.read_transaction()?;
         let journal = match read.open_table(JOURNAL) {
             Ok(table) => table,
             Err(redb::TableError::TableDoesNotExist(_)) => return Ok(None),
@@ -1167,7 +1353,7 @@ impl Store {
     ) -> Result<Option<(u64, Vec<Operation>)>> {
         let source = canonical_source(source)?;
         ensure!(start > 0, "invalid NRTMv3 journal range");
-        let read = self.db.begin_read()?;
+        let read = self.read_transaction()?;
         let committed =
             publication_serial(&read, &source)?.context("NRTMv3 journal unavailable for source")?;
         if end.is_none() && committed.checked_add(1) == Some(start) {
@@ -1249,7 +1435,7 @@ impl Store {
         if limit == 0 || sources.is_empty() {
             return Ok(Vec::new());
         }
-        let read = self.db.begin_read()?;
+        let read = self.read_transaction()?;
         let exact = read.open_multimap_table(EXACT)?;
         let records = read.open_table(OBJECTS)?;
         let mut objects = Vec::new();
@@ -1291,7 +1477,7 @@ impl Store {
             return self.routes_by_origin(&value, sources, limit);
         }
         let next_value = format!("{value}\0");
-        let read = self.db.begin_read()?;
+        let read = self.read_transaction()?;
         let records = read.open_table(OBJECTS)?;
         let inverse = read.open_table(INVERSE)?;
         let mut objects = Vec::new();
@@ -1320,7 +1506,7 @@ impl Store {
         sources: &[String],
         limit: usize,
     ) -> Result<Vec<Object>> {
-        let read = self.db.begin_read()?;
+        let read = self.read_transaction()?;
         let records = read.open_table(OBJECTS)?;
         let origins = read.open_multimap_table(ORIGINS)?;
         let mut routes = Vec::new();
@@ -1348,7 +1534,7 @@ impl Store {
 
     /// Find the first object of the specified class and canonical key in source order.
     pub fn first(&self, class: &str, key: &str, sources: &[String]) -> Result<Option<Object>> {
-        let read = self.db.begin_read()?;
+        let read = self.read_transaction()?;
         let records = read.open_table(OBJECTS)?;
         let mut remaining_bytes = MAX_QUERY_OBJECT_BYTES;
         for source in sources {
@@ -1359,6 +1545,103 @@ impl Store {
             }
         }
         Ok(None)
+    }
+
+    /// Extract a set's lookup fields directly from borrowed storage text. Large
+    /// remarks and other RPSL fields never become owned query result strings.
+    pub(crate) fn first_set_attributes(
+        &self,
+        class: &str,
+        key: &str,
+        sources: &[String],
+        remaining_bytes: &mut usize,
+    ) -> Result<Option<(String, crate::rpsl::lookup::LookupAttributes)>> {
+        ensure!(matches!(class, "as-set" | "route-set"), "invalid set class");
+        let read = self.read_transaction()?;
+        let records = read.open_table(OBJECTS)?;
+        for source in sources {
+            check_query_deadline()?;
+            if let Some(text) = records.get((source.as_str(), class, key))? {
+                *remaining_bytes = remaining_bytes
+                    .checked_sub(text.value().len())
+                    .ok_or(QueryMaterializationLimit)?;
+                bound_set_lookup_values(text.value())?;
+                let attributes =
+                    lookup_attributes(class, text.value()).map_err(anyhow::Error::msg)?;
+                return Ok(Some((source.clone(), attributes)));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Resolve member-of and mnt-by from indexes. Descriptions, credentials and
+    /// unrelated attributes of member objects are neither read nor cloned.
+    pub(crate) fn visit_indirect_set_members(
+        &self,
+        source: &str,
+        key: &str,
+        as_set: bool,
+        maintainers: &[String],
+        remaining_lookups: &mut usize,
+        mut visit: impl FnMut(crate::rpsl::lookup::SetMember) -> Result<()>,
+    ) -> Result<()> {
+        use crate::rpsl::lookup::SetMember;
+        if maintainers.is_empty() {
+            return Ok(());
+        }
+        let any_maintainer = maintainers.iter().any(|mnt| mnt == "ANY");
+        let read = self.read_transaction()?;
+        let inverse = read.open_table(INVERSE)?;
+        let classes: &[&str] = if as_set {
+            &["aut-num"]
+        } else {
+            &["route", "route6"]
+        };
+        for &class in classes {
+            let next_class = format!("{class}\0");
+            let lower = (source, "member-of", key, class, "");
+            let upper = (source, "member-of", key, next_class.as_str(), "");
+            for entry in inverse.range(lower..upper)? {
+                check_query_deadline()?;
+                *remaining_lookups = remaining_lookups.checked_sub(1).ok_or(QueryScanLimit)?;
+                let (identity, _) = entry?;
+                let (_, _, _, _, member_key) = identity.value();
+                let mut allowed = any_maintainer;
+                if !allowed {
+                    for maintainer in maintainers {
+                        check_query_deadline()?;
+                        *remaining_lookups =
+                            remaining_lookups.checked_sub(1).ok_or(QueryScanLimit)?;
+                        if inverse
+                            .get((source, "mnt-by", maintainer.as_str(), class, member_key))?
+                            .is_some()
+                        {
+                            allowed = true;
+                            break;
+                        }
+                    }
+                }
+                if !allowed {
+                    continue;
+                }
+                let member = if as_set {
+                    SetMember::Asn(
+                        member_key
+                            .strip_prefix("AS")
+                            .context("invalid indexed ASN")?
+                            .parse()?,
+                        None,
+                    )
+                } else {
+                    let (prefix, _) = member_key
+                        .rsplit_once("AS")
+                        .context("invalid indexed route")?;
+                    SetMember::Prefix(prefix.to_ascii_lowercase(), None)
+                };
+                visit(member)?;
+            }
+        }
+        Ok(())
     }
 
     /// Find routes at one canonical prefix in source priority order.
@@ -1375,7 +1658,7 @@ impl Store {
         }
         let start = format!("{prefix}AS");
         let end = format!("{prefix}AT");
-        let read = self.db.begin_read()?;
+        let read = self.read_transaction()?;
         let records = read.open_table(OBJECTS)?;
         let mut routes = Vec::new();
         let mut remaining_bytes = MAX_QUERY_OBJECT_BYTES;
@@ -1416,7 +1699,7 @@ impl Store {
             return self.routes_at_prefix(class, prefix, sources, limit);
         }
         let prefix = RoutePrefix::parse(class, prefix)?;
-        let read = self.db.begin_read()?;
+        let read = self.read_transaction()?;
         let records = read.open_table(OBJECTS)?;
         let prefixes = read.open_table(PREFIXES)?;
         let mut routes = Vec::new();
@@ -1493,7 +1776,7 @@ impl Store {
         if limit == 0 || sources.is_empty() {
             return Ok(Vec::new());
         }
-        let read = self.db.begin_read()?;
+        let read = self.read_transaction()?;
         let origins = read.open_multimap_table(ORIGINS)?;
         // Values are already unique and ordered inside one source. A common
         // single-source query needs neither a hash set nor duplicate strings.
@@ -1501,15 +1784,21 @@ impl Store {
             return origins
                 .get((source.as_str(), class, origin))?
                 .take(limit)
-                .map(|prefix| Ok(prefix?.value().to_ascii_lowercase()))
+                .map(|prefix| {
+                    check_query_deadline()?;
+                    Ok(prefix?.value().to_ascii_lowercase())
+                })
                 .collect();
         }
         let mut seen = HashSet::new();
         let mut prefixes = Vec::new();
+        let mut remaining_scans = 2_000_000usize;
         for source in sources {
             // Each source has unique prefixes, so at most the current number of
             // results can repeat. Inspecting `limit` entries suffices to fill the cap.
             for prefix in origins.get((source.as_str(), class, origin))?.take(limit) {
+                check_query_deadline()?;
+                remaining_scans = remaining_scans.checked_sub(1).ok_or(QueryScanLimit)?;
                 let prefix = prefix?;
                 if !seen.contains(prefix.value()) && seen.insert(prefix.value().to_owned()) {
                     prefixes.push(prefix.value().to_ascii_lowercase());
@@ -1522,10 +1811,31 @@ impl Store {
         Ok(prefixes)
     }
 
+    /// Visit indexed prefixes without materializing route objects or a second
+    /// per-origin result collection. The caller charges every visited row and
+    /// can stop the complete expansion by returning its budget error.
+    pub(crate) fn visit_origin_prefixes(
+        &self,
+        class: &str,
+        origin: &str,
+        sources: &[String],
+        mut visit: impl FnMut(&str) -> Result<()>,
+    ) -> Result<()> {
+        let read = self.read_transaction()?;
+        let origins = read.open_multimap_table(ORIGINS)?;
+        for source in sources {
+            for prefix in origins.get((source.as_str(), class, origin))? {
+                check_query_deadline()?;
+                visit(prefix?.value())?;
+            }
+        }
+        Ok(())
+    }
+
     /// Write raw RPSL from one committed source snapshot, including any sensitive attributes.
     pub fn export_source(&self, source: &str, output: impl Write) -> Result<u64> {
         let source = canonical_source(source)?;
-        let read = self.db.begin_read()?;
+        let read = self.read_transaction()?;
         write_source_records(&read, &source, output, false)
     }
 
@@ -1537,7 +1847,7 @@ impl Store {
         output: impl Write,
     ) -> Result<(u64, Option<u64>)> {
         let source = canonical_source(source)?;
-        let read = self.db.begin_read()?;
+        let read = self.read_transaction()?;
         let serial = publication_serial(&read, &source)?;
         let count = write_source_records(&read, &source, output, true)?;
         Ok((count, serial))
@@ -1550,7 +1860,7 @@ impl Store {
 
     fn verify_with_cancel(&self, cancel: Option<&std::sync::atomic::AtomicBool>) -> Result<u64> {
         maintenance::check_cancelled(cancel)?;
-        let read = self.db.begin_read()?;
+        let read = self.read_transaction()?;
         let records = read.open_table(OBJECTS)?;
         let exact = read.open_multimap_table(EXACT)?;
         let origins = read.open_multimap_table(ORIGINS)?;
@@ -2497,6 +2807,35 @@ fn route_index_parts<'a>(class: &str, key: &'a str) -> Result<Option<(&'a str, &
 /// Stored snapshot records can be much larger than the public response budget.
 pub(crate) const MAX_QUERY_OBJECT_BYTES: usize = 2 * 1024 * 1024;
 
+/// Bound typed lookup extraction before allocating member vectors. Large
+/// irrelevant remarks are cheap, but millions of repeated members are not.
+fn bound_set_lookup_values(text: &str) -> Result<()> {
+    let mut remaining = crate::sets::MAX_RESULTS;
+    let mut lookup_field = false;
+    for line in text.lines() {
+        check_query_deadline()?;
+        if line.starts_with(['#', '%']) {
+            continue;
+        }
+        let value = if line.starts_with([' ', '\t', '+']) {
+            &line[1..]
+        } else if let Some((name, value)) = line.split_once(':') {
+            lookup_field = crate::rpsl::lookup::is_inverse_field(name);
+            value
+        } else {
+            lookup_field = false;
+            continue;
+        };
+        if lookup_field && !value.trim().is_empty() {
+            let count = value.bytes().filter(|&byte| byte == b',').count() + 1;
+            remaining = remaining
+                .checked_sub(count)
+                .ok_or(QueryMaterializationLimit)?;
+        }
+    }
+    Ok(())
+}
+
 #[derive(Debug)]
 pub(crate) struct QueryMaterializationLimit;
 
@@ -2575,6 +2914,191 @@ mod tests {
 
     const CRASH_TEST_DATABASE: &str = "RUST_IRRD_CRASH_TEST_DATABASE";
     const CRASH_TEST_READY: &[u8] = b"replacement in progress\n";
+
+    #[test]
+    fn query_views_are_registry_bound_and_restore_nested_and_panicking_scopes() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let first = Store::open(&directory.path().join("first.redb"))?;
+        let second = Store::open(&directory.path().join("second.redb"))?;
+        let one = first.query_view()?;
+        let two = second.query_view()?;
+        one.run(|| -> Result<()> {
+            assert!(first.active_query_view_lifetime().is_some());
+            assert!(
+                second
+                    .object_count()
+                    .unwrap_err()
+                    .to_string()
+                    .contains("different registry")
+            );
+            two.run(|| -> Result<()> {
+                assert_eq!(second.object_count()?, 0);
+                assert!(first.object_count().is_err());
+                Ok(())
+            })?;
+            assert_eq!(first.object_count()?, 0);
+            Ok(())
+        })?;
+        assert!(first.active_query_view_lifetime().is_none());
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            one.run(|| panic!("synthetic calculation panic"));
+        }));
+        assert!(panic.is_err());
+        assert!(first.active_query_view_lifetime().is_none());
+        assert_eq!(second.object_count()?, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn query_view_keeps_indexes_metadata_exports_and_recursive_results_on_one_commit() -> Result<()>
+    {
+        let directory = tempfile::tempdir()?;
+        let store = Store::open(&directory.path().join("registry.redb"))?;
+        let object = |text: &str| crate::rpsl::parse(text).map_err(anyhow::Error::msg);
+        let old_root = object("as-set: AS-ROOT\nmembers: AS64496\nsource: TEST\n")?;
+        let old_route = object("route: 192.0.2.0/24\norigin: AS64496\nsource: TEST\n")?;
+        store.replace_source("TEST", [Ok(old_root), Ok(old_route.clone())])?;
+        let view = store.query_view()?;
+        let initial_counts = store.class_counts()?;
+        let mut initial_export = Vec::new();
+        store.export_public_source("TEST", &mut initial_export)?;
+        let new_route = object("route: 198.51.100.0/24\norigin: AS64497\nsource: TEST\n")?;
+        let new_root = object("as-set: AS-ROOT\nmembers: AS64497\nsource: TEST\n")?;
+        let person = object("person: Synthetic Person\nnic-hdl: TEST-PERSON\nsource: TEST\n")?;
+        store.apply_nrtm3(
+            "TEST",
+            (1, 4),
+            Some(0),
+            [
+                Ok(Operation {
+                    kind: Kind::Delete,
+                    serial: 1,
+                    object: old_route,
+                }),
+                Ok(Operation {
+                    kind: Kind::Add,
+                    serial: 2,
+                    object: new_route,
+                }),
+                Ok(Operation {
+                    kind: Kind::Add,
+                    serial: 3,
+                    object: new_root,
+                }),
+                Ok(Operation {
+                    kind: Kind::Add,
+                    serial: 4,
+                    object: person,
+                }),
+            ],
+        )?;
+        // The writer committed while the old read transaction was still
+        // pinned. Every nested read must remain on that same prior version.
+        view.run(|| -> Result<()> {
+            let sources = ["TEST".into()];
+            assert_eq!(store.object_count()?, 2);
+            assert_eq!(store.class_counts()?, initial_counts);
+            assert_eq!(store.source_serial("TEST")?, None);
+            assert_eq!(store.nrtm3_journal_bounds("TEST")?, None);
+            assert!(store.object_keys("TEST", "person", None, 8)?.0.is_empty());
+            assert_eq!(
+                crate::sets::routes_for_as_set(&store, &sources, "AS-ROOT", None, &[])?,
+                ["192.0.2.0/24"]
+            );
+            let mut export = Vec::new();
+            store.export_public_source("TEST", &mut export)?;
+            assert_eq!(export, initial_export);
+            Ok(())
+        })?;
+        let fresh = store.query_view()?;
+        fresh.run(|| -> Result<()> {
+            assert_eq!(store.object_count()?, 3);
+            assert_eq!(store.source_serial("TEST")?, Some(4));
+            assert_eq!(store.nrtm3_journal_bounds("TEST")?, Some((1, 4)));
+            assert_eq!(
+                crate::sets::routes_for_as_set(&store, &["TEST".into()], "AS-ROOT", None, &[])?,
+                ["198.51.100.0/24"]
+            );
+            Ok(())
+        })?;
+        Ok(())
+    }
+
+    #[test]
+    fn oversized_query_lease_survives_workers_and_is_shared_by_request() -> Result<()> {
+        let first = QueryControl::new(Duration::from_secs(60));
+        let first_lease = first.run(acquire_heavy_query)?;
+        let another_field = first.run(acquire_heavy_query)?;
+        assert!(Arc::ptr_eq(&first_lease, &another_field));
+        let contender = QueryControl::new(Duration::from_secs(60));
+        assert!(contender.run(acquire_heavy_query).is_err());
+        drop(first_lease);
+        drop(another_field);
+        // The request owner still protects serialization / slow-reader output.
+        assert!(contender.run(acquire_heavy_query).is_err());
+        drop(first);
+        let recovered = contender.run(acquire_heavy_query)?;
+        drop(recovered);
+        drop(contender);
+        Ok(())
+    }
+
+    #[test]
+    fn set_lookup_preflight_bounds_duplicate_tokens_before_extraction() -> Result<()> {
+        let repeated = "AS1,".repeat(crate::sets::MAX_RESULTS);
+        let error = bound_set_lookup_values(&format!("as-set: AS-BIG\nmembers: {repeated}AS1\n"))
+            .unwrap_err();
+        assert!(error.is::<QueryMaterializationLimit>());
+        bound_set_lookup_values(&format!(
+            "as-set: AS-SMALL\nmembers: AS1\nremarks: {}\n",
+            "x".repeat(MAX_QUERY_OBJECT_BYTES + 1)
+        ))?;
+        Ok(())
+    }
+
+    #[test]
+    fn cancelled_index_scan_stops_before_next_row_and_restores_worker_context() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let store = Store::open(&directory.path().join("cancel.redb"))?;
+        store.replace_source(
+            "TEST",
+            ["192.0.2.0/24", "198.51.100.0/24"]
+                .into_iter()
+                .map(|prefix| {
+                    crate::rpsl::parse(&format!("route: {prefix}\norigin: AS64496\nsource: TEST\n"))
+                        .map_err(anyhow::Error::msg)
+                }),
+        )?;
+        let control = QueryControl::new(Duration::from_secs(10));
+        let cancel = control.cancel_on_drop();
+        let (ready, started) = std::sync::mpsc::channel();
+        let (resume, resumed) = std::sync::mpsc::channel();
+        let worker = thread::spawn(move || {
+            let mut visited = 0;
+            let result = control.run(|| {
+                store.visit_origin_prefixes("route", "AS64496", &["TEST".into()], |_| {
+                    visited += 1;
+                    if visited == 1 {
+                        ready.send(())?;
+                        resumed.recv()?;
+                    }
+                    Ok(())
+                })
+            });
+            (result, visited, check_query_deadline().is_ok())
+        });
+        started.recv_timeout(Duration::from_secs(2))?;
+        drop(cancel);
+        resume.send(())?;
+        let (result, visited, restored) = worker.join().expect("query worker panicked");
+        assert!(result.unwrap_err().is::<QueryDeadlineExceeded>());
+        assert_eq!(visited, 1);
+        assert!(restored);
+        let expired = QueryControl::new(Duration::ZERO)
+            .run(|| -> Result<()> { panic!("expired work must never start") });
+        assert!(expired.unwrap_err().is::<QueryDeadlineExceeded>());
+        Ok(())
+    }
 
     struct CrashChild(Child);
 

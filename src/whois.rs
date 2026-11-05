@@ -26,6 +26,7 @@ use tokio::{
 
 use crate::{
     config::Config,
+    query_sources::{self, SourceAliases},
     storage::{PrefixMatch, Store},
 };
 
@@ -44,6 +45,8 @@ struct ConnectionPermit {
 
 struct Access {
     sources: Arc<[String]>,
+    aliases: SourceAliases,
+    defaults: Arc<[String]>,
     nrtm3: HashMap<String, HashSet<IpAddr>>,
 }
 
@@ -156,11 +159,25 @@ struct HttpParameters {
 
 /// Serve unframed WHOIS results on the optional HTTP listener. NRTM transfer
 /// privileges belong only to the separate TCP listener and its peer ACL.
+#[cfg(test)]
 pub fn http_router(store: Arc<Store>, sources: Vec<String>, deadline: Duration) -> Router {
+    http_router_with_aliases(store, sources, SourceAliases::new(), deadline)
+}
+
+pub fn http_router_with_aliases(
+    store: Arc<Store>,
+    sources: Vec<String>,
+    aliases: SourceAliases,
+    deadline: Duration,
+) -> Router {
+    let aliases = query_sources::visible(&sources, &aliases);
+    let defaults = query_sources::available(&sources, &aliases).into();
     let state = HttpWhois {
         client: Client {
             access: Arc::new(Access {
                 sources: sources.into(),
+                aliases,
+                defaults,
                 nrtm3: HashMap::new(),
             }),
             peer: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
@@ -209,12 +226,25 @@ async fn http_query(State(state): State<HttpWhois>, request: Request) -> Respons
         if names.len() > 1024 || names.chars().any(char::is_control) {
             return invalid_query.into_response();
         }
-        let Some(sources) = select_sources(&names, &state.client.access.sources) else {
+        let Some(selected) = select_sources(
+            &names,
+            &state.client.access.sources,
+            &state.client.access.aliases,
+        ) else {
             return invalid_query.into_response();
         };
+        let sources = query_sources::expand(
+            &selected,
+            &state.client.access.sources,
+            &state.client.access.aliases,
+        )
+        .expect("validated source selection");
+        let aliases = query_sources::visible(&sources, &state.client.access.aliases);
         Client {
             access: Arc::new(Access {
                 sources: sources.into(),
+                aliases,
+                defaults: selected.into(),
                 nrtm3: HashMap::new(),
             }),
             peer: state.client.peer,
@@ -225,13 +255,23 @@ async fn http_query(State(state): State<HttpWhois>, request: Request) -> Respons
     let Ok(permit) = state.slots.try_acquire_owned() else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
+    let control = crate::storage::QueryControl::new(state.deadline);
+    let _cancel = control.cancel_on_drop();
+    let response_control = control.clone();
     let worker = with_query_view(state.store, move |store| {
         let _permit = permit;
-        execute_http(query.trim(), store, &client)
+        control.run(|| execute_http(query.trim(), store, &client))
     });
     match timeout(state.deadline, worker).await {
         Ok(Ok(Ok((StatusCode::NO_CONTENT, _)))) => StatusCode::NO_CONTENT.into_response(),
-        Ok(Ok(Ok((status, body)))) => (status, body).into_response(),
+        Ok(Ok(Ok((status, body)))) => {
+            let mut response = (status, body).into_response();
+            response.extensions_mut().insert(response_control);
+            crate::public_http::retain_query_control(response)
+        }
+        Ok(Ok(Err(error))) if error.is::<crate::storage::QueryDeadlineExceeded>() => {
+            StatusCode::GATEWAY_TIMEOUT.into_response()
+        }
         Ok(Ok(Err(error))) => {
             tracing::error!(%error, "HTTP WHOIS lookup failed");
             (
@@ -247,7 +287,7 @@ async fn http_query(State(state): State<HttpWhois>, request: Request) -> Respons
 
 fn execute_http(query: &str, store: &Store, client: &Client) -> Result<(StatusCode, String)> {
     let configured = &client.access.sources;
-    let mut sources = configured.clone();
+    let mut sources = client.access.defaults.clone();
     let mut persistent = false;
     let invalid = || {
         (
@@ -256,7 +296,13 @@ fn execute_http(query: &str, store: &Store, client: &Client) -> Result<(StatusCo
         )
     };
     let no_content = || (StatusCode::NO_CONTENT, String::new());
-    let Some(prepared) = ripe_modifiers(query, configured, &mut sources, &mut persistent) else {
+    let Some(prepared) = ripe_modifiers(
+        query,
+        configured,
+        &client.access.aliases,
+        &mut sources,
+        &mut persistent,
+    ) else {
         return Ok(invalid());
     };
     if let Some(command) = session_command(prepared) {
@@ -266,7 +312,9 @@ fn execute_http(query: &str, store: &Store, client: &Client) -> Result<(StatusCo
             | SessionCommand::ListExclusions
             | SessionCommand::Identify
             | SessionCommand::Noop => no_content(),
-            SessionCommand::SelectSources(names) if select_sources(names, configured).is_some() => {
+            SessionCommand::SelectSources(names)
+                if select_sources(names, configured, &client.access.aliases).is_some() =>
+            {
                 no_content()
             }
             SessionCommand::Exclude(names) if parse_exclusions(names).is_some() => no_content(),
@@ -294,7 +342,13 @@ fn unframe_http(response: String, irrd: bool) -> Result<(StatusCode, String)> {
     if irrd {
         if let Some(error) = response.strip_prefix("F ") {
             return Ok((
-                StatusCode::BAD_REQUEST,
+                if error == "Large query capacity busy; retry later\n" {
+                    StatusCode::SERVICE_UNAVAILABLE
+                } else if error == "Query timed out\n" {
+                    StatusCode::GATEWAY_TIMEOUT
+                } else {
+                    StatusCode::BAD_REQUEST
+                },
                 error.trim_end_matches('\n').to_owned(),
             ));
         }
@@ -318,7 +372,13 @@ fn unframe_http(response: String, irrd: bool) -> Result<(StatusCode, String)> {
     }
     if let Some(error) = response.strip_prefix("%% ERROR: ") {
         return Ok((
-            StatusCode::BAD_REQUEST,
+            if error.trim() == "Large query capacity busy; retry later" {
+                StatusCode::SERVICE_UNAVAILABLE
+            } else if error.trim() == "Query timed out" {
+                StatusCode::GATEWAY_TIMEOUT
+            } else {
+                StatusCode::BAD_REQUEST
+            },
             error.trim_end_matches('\n').to_owned(),
         ));
     }
@@ -353,6 +413,8 @@ pub async fn serve(
     let mut clients = JoinSet::new();
     let access = Arc::new(Access {
         sources: config.sources.clone().into(),
+        aliases: config.source_aliases.clone(),
+        defaults: query_sources::available(&config.sources, &config.source_aliases).into(),
         nrtm3: config.nrtm3_serve.clone(),
     });
 
@@ -396,7 +458,7 @@ async fn handle(
     let access = &client.access;
     let (read, mut write) = socket.into_split();
     let mut input = BufReader::new(read);
-    let mut selected = access.sources.clone();
+    let mut selected = access.defaults.clone();
     let mut excluded: Arc<[String]> = Arc::new([]);
     let mut persistent = false;
     let mut idle = deadline;
@@ -414,8 +476,15 @@ async fn handle(
         }
         let text = query_line(&line);
         let prepared = text.and_then(|query| {
-            ripe_modifiers(query, &access.sources, &mut selected, &mut persistent)
+            ripe_modifiers(
+                query,
+                &access.sources,
+                &access.aliases,
+                &mut selected,
+                &mut persistent,
+            )
         });
+        let mut response_control = None;
         let response = match prepared.and_then(session_command) {
             Some(SessionCommand::Quit) => return,
             Some(SessionCommand::Persistent) => {
@@ -441,7 +510,7 @@ async fn handle(
                 None => format!("F Invalid value for timeout: {value}\n"),
             },
             Some(SessionCommand::SelectSources(requested)) => {
-                match select_sources(requested, &access.sources) {
+                match select_sources(requested, &access.sources, &access.aliases) {
                     Some(requested) => {
                         selected = requested.into();
                         "C\n".to_owned()
@@ -458,7 +527,7 @@ async fn handle(
                     {
                         "%% ERROR: Access denied\n\n\n".to_owned()
                     } else {
-                        let Some((response, returned_permit)) = lookup(
+                        let Some((response, returned_permit, control)) = lookup(
                             query,
                             store.clone(),
                             selected.clone(),
@@ -472,6 +541,7 @@ async fn handle(
                             return;
                         };
                         permit = returned_permit;
+                        response_control = Some(control);
                         response
                     }
                 } else {
@@ -493,6 +563,7 @@ async fn handle(
         {
             return;
         }
+        drop(response_control);
     }
 }
 
@@ -534,6 +605,7 @@ fn parse_timeout(value: &str) -> Option<Duration> {
 fn ripe_modifiers<'a>(
     mut query: &'a str,
     allowed: &Arc<[String]>,
+    aliases: &SourceAliases,
     selected: &mut Arc<[String]>,
     persistent: &mut bool,
 ) -> Option<&'a str> {
@@ -548,11 +620,11 @@ fn ripe_modifiers<'a>(
         match flag {
             "-s" => {
                 let (names, rest) = word(argument);
-                next_sources = Some(select_sources(names, allowed)?.into());
+                next_sources = Some(select_sources(names, allowed, aliases)?.into());
                 query = rest;
             }
             "-a" => {
-                next_sources = Some(allowed.clone());
+                next_sources = Some(query_sources::available(allowed, aliases).into());
                 query = argument;
             }
             "-k" => {
@@ -587,17 +659,20 @@ fn word(line: &str) -> (&str, &str) {
         .map_or((line, ""), |(head, rest)| (head, rest.trim_start()))
 }
 
-fn select_sources(requested: &str, allowed: &[String]) -> Option<Vec<String>> {
-    let mut selected = Vec::new();
-    for source in requested.split(',') {
-        let source = allowed
-            .iter()
-            .find(|name| name.eq_ignore_ascii_case(source))?;
-        if !selected.contains(source) {
-            selected.push(source.clone());
-        }
-    }
-    Some(selected)
+fn select_sources(
+    requested: &str,
+    allowed: &[String],
+    aliases: &SourceAliases,
+) -> Option<Vec<String>> {
+    // !s-lc reports selected logical names, including repetitions; resolution
+    // separately removes duplicate physical sources like the pinned upstream.
+    requested
+        .split(',')
+        .map(|source| {
+            let name = source.to_ascii_uppercase();
+            query_sources::known(&name, allowed, aliases).then_some(name)
+        })
+        .collect()
 }
 
 fn parse_exclusions(value: &str) -> Option<Vec<String>> {
@@ -615,19 +690,19 @@ fn parse_set_name(value: &str) -> Option<String> {
     .then(|| value.to_ascii_uppercase())
 }
 
-/// Wait for an immutable query view without occupying a blocking thread. Once
-/// started, the worker owns that view until it finishes even if the request
-/// deadline expires. The caller's single timeout covers both waiting and work.
+/// Pin one committed database snapshot for the complete synchronous lookup.
+/// Mirroring may commit while this worker reads, without mixing generations or
+/// occupying the service writer gate. An abandoned async waiter does not release
+/// the worker's snapshot early; it is dropped before response delivery begins.
 async fn with_query_view<T: Send + 'static>(
     store: Arc<Store>,
     work: impl FnOnce(&Store) -> T + Send + 'static,
-) -> Result<T, tokio::task::JoinError> {
-    let view = store.query_gate().clone().read_owned().await;
+) -> Result<T> {
     tokio::task::spawn_blocking(move || {
-        let _view = view;
-        work(&store)
+        let view = store.query_view()?;
+        Ok(view.run(|| work(&store)))
     })
-    .await
+    .await?
 }
 
 async fn lookup(
@@ -638,12 +713,15 @@ async fn lookup(
     client: Client,
     deadline: Duration,
     permit: ConnectionPermit,
-) -> Option<(String, ConnectionPermit)> {
+) -> Option<(String, ConnectionPermit, crate::storage::QueryControl)> {
     let nrtm = matches!(&query, Query::Nrtm3 { .. });
     let discovery = matches!(&query, Query::Nrtm3Sources);
     let irrd = query.uses_irrd_framing();
+    let control = crate::storage::QueryControl::new(deadline);
+    let _cancel = control.cancel_on_drop();
+    let worker_control = control.clone();
     let lookup = with_query_view(store, move |store| {
-        let result = execute(query, store, &sources, &excluded, &client);
+        let result = worker_control.run(|| execute(query, store, &sources, &excluded, &client));
         (result, permit)
     });
     let response = match timeout(deadline, lookup).await {
@@ -663,7 +741,7 @@ async fn lookup(
         }
         _ => return None,
     };
-    Some(response)
+    Some((response.0, response.1, control))
 }
 
 fn execute(
@@ -673,11 +751,26 @@ fn execute(
     excluded: &[String],
     client: &Client,
 ) -> Result<String> {
+    let sources = query_sources::expand(sources, &client.access.sources, &client.access.aliases)
+        .context("invalid query source selection")?;
     let irrd = query.uses_irrd_framing();
-    match execute_inner(query, store, sources, excluded, client) {
+    match execute_inner(query, store, &sources, excluded, client) {
+        Err(error) if error.is::<crate::storage::HeavyQueryBusy>() => Ok(if irrd {
+            "F Large query capacity busy; retry later\n"
+        } else {
+            "%% ERROR: Large query capacity busy; retry later\n\n\n"
+        }
+        .to_owned()),
+        Err(error) if error.is::<crate::storage::QueryDeadlineExceeded>() => Ok(if irrd {
+            "F Query timed out\n"
+        } else {
+            "%% ERROR: Query timed out\n\n\n"
+        }
+        .to_owned()),
         Err(error)
             if error.is::<crate::sets::LimitExceeded>()
-                || error.is::<crate::storage::QueryMaterializationLimit>() =>
+                || error.is::<crate::storage::QueryMaterializationLimit>()
+                || error.is::<crate::storage::QueryScanLimit>() =>
         {
             Ok(if irrd {
                 "F Too many results\n"
@@ -709,11 +802,18 @@ fn execute_inner(
             Ok(frame_irrd(&normalized_public_text(&object)))
         }
         Query::Origin { class, origin } => {
-            let prefixes = store.origin_prefixes(class, &origin, sources, 4097)?;
+            let prefixes =
+                store.origin_prefixes(class, &origin, sources, crate::sets::MAX_RESULTS + 1)?;
             if prefixes.is_empty() {
                 return Ok("D\n".to_owned());
             }
-            if prefixes.len() > 4096 {
+            if prefixes.len() > crate::sets::MAX_RESULTS
+                || prefixes
+                    .iter()
+                    .map(|prefix| prefix.len() + 1)
+                    .sum::<usize>()
+                    > crate::sets::MAX_RESULT_BYTES
+            {
                 return Ok("F Too many results\n".to_owned());
             }
             Ok(frame_irrd(&prefixes.join(" ")))
@@ -862,10 +962,21 @@ fn frame_irrd(body: &str) -> String {
 
 fn frame_values(values: Vec<String>) -> String {
     if values.is_empty() {
-        "D\n".to_owned()
-    } else {
-        frame_irrd(&values.join(" "))
+        return "D\n".to_owned();
     }
+    // Consume each owned value while framing, avoiding a second full joined
+    // payload alongside the final TCP response for multi-million-prefix sets.
+    let bytes = values.iter().map(|value| value.len() + 1).sum::<usize>();
+    let mut response = String::with_capacity(bytes + 32);
+    response.push_str(&format!("A{bytes}\n"));
+    for (index, value) in values.into_iter().enumerate() {
+        if index != 0 {
+            response.push(' ');
+        }
+        response.push_str(&value);
+    }
+    response.push_str("\nC\n");
+    response
 }
 
 /// Match `str::lines().join("\n")` without a line vector or copying ordinary
@@ -1146,49 +1257,261 @@ mod tests {
     use super::*;
 
     #[test]
-    fn waiting_queries_leave_blocking_workers_free_and_cancelled_work_keeps_its_view() -> Result<()>
-    {
+    fn cancelled_lookup_keeps_its_snapshot_until_worker_exit_not_body_delivery() -> Result<()> {
         let directory = tempfile::tempdir()?;
         let store = Arc::new(Store::open(&directory.path().join("registry.redb"))?);
+        let record = |marker| {
+            crate::rpsl::parse(&format!(
+                "aut-num: AS64496\nremarks: {marker}\nsource: TEST\n"
+            ))
+            .map_err(anyhow::Error::msg)
+        };
+        store.replace_source("TEST", [record("before")])?;
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
-            .max_blocking_threads(1)
+            .max_blocking_threads(2)
             .build()?;
         runtime.block_on(async {
-            // A writer already holds the view. Waiting queries must leave the
-            // only blocking thread free, e.g. for that writer's commit work.
-            let writer = store.query_gate().clone().write_owned().await;
-            let mut pending = Box::pin(with_query_view(store.clone(), |_| 41));
-            std::future::poll_fn(|context| {
-                // Poll once explicitly to prove this query is waiting for the
-                // gate before checking the sole blocking worker is available.
-                assert!(std::future::Future::poll(pending.as_mut(), context).is_pending());
-                std::task::Poll::Ready(())
-            })
-            .await;
-            assert_eq!(
-                timeout(Duration::from_secs(2), tokio::task::spawn_blocking(|| 42)).await??,
-                42
-            );
-            drop(writer);
-            assert_eq!(timeout(Duration::from_secs(2), pending).await??, 41);
-
-            // Cancelling the async waiter does not cancel a blocking worker.
-            // Its read view must survive until the actual work has completed.
             let (started_tx, started_rx) = tokio::sync::oneshot::channel();
             let (finish_tx, finish_rx) = std::sync::mpsc::channel();
-            let pending = tokio::spawn(with_query_view(store.clone(), move |_| {
-                let _ = started_tx.send(());
-                let _ = finish_rx.recv();
-            }));
-            timeout(Duration::from_secs(2), started_rx).await??;
+            let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+            let pending =
+                tokio::spawn(with_query_view(store.clone(), move |store| -> Result<()> {
+                    let before = store.first("aut-num", "AS64496", &["TEST".into()])?;
+                    let lifetime = store
+                        .active_query_view_lifetime()
+                        .context("missing snapshot")?;
+                    let _ = started_tx.send(lifetime);
+                    finish_rx.recv_timeout(Duration::from_secs(10))?;
+                    let after = store.first("aut-num", "AS64496", &["TEST".into()])?;
+                    let _ = done_tx.send((before, after));
+                    Ok(())
+                }));
+            let lifetime = timeout(Duration::from_secs(3), started_rx).await??;
             pending.abort();
             assert!(pending.await.unwrap_err().is_cancelled());
-            assert!(store.query_gate().try_write().is_err());
+            assert!(lifetime.upgrade().is_some());
+
+            // The cancelled waiter leaves its worker's snapshot alive, but
+            // that snapshot does not prevent a writer publishing a new state.
+            let writer = store.clone();
+            timeout(
+                Duration::from_secs(3),
+                tokio::task::spawn_blocking(move || {
+                    writer.replace_source("TEST", [record("after")])
+                }),
+            )
+            .await???;
             finish_tx.send(())?;
-            let _writer = timeout(Duration::from_secs(2), store.query_gate().write()).await?;
+            let (before, after) = timeout(Duration::from_secs(3), done_rx).await??;
+            assert_eq!(before, after);
+            assert!(
+                after
+                    .context("missing original object")?
+                    .text
+                    .contains("before")
+            );
+            timeout(Duration::from_secs(3), async {
+                while lifetime.upgrade().is_some() {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await?;
+
+            let (text, lifetime) = with_query_view(store.clone(), |store| -> Result<_> {
+                let object = store
+                    .first("aut-num", "AS64496", &["TEST".into()])?
+                    .context("missing updated object")?;
+                Ok((
+                    object.text,
+                    store
+                        .active_query_view_lifetime()
+                        .context("missing snapshot")?,
+                ))
+            })
+            .await??;
+            assert!(text.contains("after"));
+            // The serialized response can wait for a slow consumer without
+            // pinning an obsolete database generation or its freed pages.
+            let response = axum::body::Body::from(text);
+            assert!(lifetime.upgrade().is_none());
+            drop(response);
             Ok::<_, anyhow::Error>(())
         })?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn tcp_and_http_queries_read_committed_snapshots_during_mirror_writes() -> Result<()> {
+        use crate::nrtm3::{Kind, Operation};
+
+        let directory = tempfile::tempdir()?;
+        let config_file = directory.path().join("irrd.toml");
+        std::fs::write(
+            &config_file,
+            "database = \"registry.redb\"\nsources = [\"TEST\"]\nlisten = \"127.0.0.1:0\"\nmax_connections = 32\nio_timeout_seconds = 5\nmax_snapshot_bytes = 4096\n",
+        )?;
+        let config = Config::load(&config_file)?;
+        let store = Arc::new(Store::open(&config.database)?);
+        let object = |text| crate::rpsl::parse(text).map_err(anyhow::Error::msg);
+        let old_v4 = object("route: 192.0.2.0/24\norigin: AS64496\nsource: TEST\n")?;
+        let new_v4 = object("route: 198.51.100.0/24\norigin: AS64496\nsource: TEST\n")?;
+        let old_v6 = object("route6: 2001:db8:1::/48\norigin: AS64496\nsource: TEST\n")?;
+        let new_v6 = object("route6: 2001:db8:2::/48\norigin: AS64496\nsource: TEST\n")?;
+        let old_asn = object("aut-num: AS64496\nremarks: before\nsource: TEST\n")?;
+        let new_asn = object("aut-num: AS64496\nremarks: after\nsource: TEST\n")?;
+        let seed = store.clone();
+        let initial = vec![
+            old_v4.clone(),
+            old_v6.clone(),
+            old_asn.clone(),
+            object("as-set: AS-TEST\nmembers: AS64496\nsource: TEST\n")?,
+        ];
+        tokio::task::spawn_blocking(move || -> Result<()> {
+            seed.replace_source("TEST", initial.into_iter().map(Ok))?;
+            seed.apply_nrtm3(
+                "TEST",
+                (10, 10),
+                Some(9),
+                [Ok(Operation {
+                    kind: Kind::Add,
+                    serial: 10,
+                    object: old_asn,
+                })],
+            )?;
+            Ok(())
+        })
+        .await??;
+
+        let tcp = TcpListener::bind("127.0.0.1:0").await?;
+        let tcp_address = tcp.local_addr()?;
+        let http = TcpListener::bind("127.0.0.1:0").await?;
+        let http_address = http.local_addr()?;
+        let (tcp_stop, stopped) = watch::channel(false);
+        let tcp_store = store.clone();
+        let tcp_server = tokio::spawn(async move { serve(tcp, &config, tcp_store, stopped).await });
+        let (http_stop, stopped) = tokio::sync::oneshot::channel();
+        let http_store = store.clone();
+        let http_server = tokio::spawn(async move {
+            axum::serve(
+                http,
+                http_router(http_store, vec!["TEST".into()], Duration::from_secs(5)),
+            )
+            .with_graceful_shutdown(async {
+                let _ = stopped.await;
+            })
+            .await
+        });
+
+        let (entered, ready) = tokio::sync::oneshot::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        let writer_store = store.clone();
+        let writer = tokio::task::spawn_blocking(move || {
+            let operations = [
+                (Kind::Delete, old_v4),
+                (Kind::Add, new_v4),
+                (Kind::Delete, old_v6),
+                (Kind::Add, new_v6),
+                (Kind::Add, new_asn),
+            ];
+            let mut entered = Some(entered);
+            writer_store.apply_nrtm3(
+                "TEST",
+                (11, 15),
+                None,
+                operations
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, (kind, object))| {
+                        if index == 1 {
+                            // The first deletion is already applied inside the
+                            // uncommitted transaction and the service write gate is held.
+                            let _ = entered.take().expect("single barrier").send(());
+                            released
+                                .recv_timeout(Duration::from_secs(15))
+                                .map_err(|error| error.to_string())?;
+                        }
+                        Ok(Operation {
+                            kind,
+                            serial: 11 + index as u64,
+                            object,
+                        })
+                    }),
+            )
+        });
+        timeout(Duration::from_secs(3), ready).await??;
+        assert!(store.query_gate().try_write().is_err());
+
+        async fn check_queries(
+            tcp: std::net::SocketAddr,
+            http: std::net::SocketAddr,
+            updated: bool,
+        ) -> Result<()> {
+            let v4 = if updated {
+                "198.51.100.0/24"
+            } else {
+                "192.0.2.0/24"
+            };
+            let v6 = if updated {
+                "2001:db8:2::/48"
+            } else {
+                "2001:db8:1::/48"
+            };
+            let marker = if updated { "after" } else { "before" };
+            let serial = if updated { 15 } else { 10 };
+            let cases = [
+                ("!gAS64496", v4.to_owned()),
+                ("!6AS64496", v6.to_owned()),
+                ("!aAS-TEST", format!("{v4} {v6}")),
+                ("!iAS-TEST,1", "AS64496".into()),
+                (
+                    "!maut-num,AS64496",
+                    format!("aut-num: AS64496\nremarks: {marker}\nsource: TEST"),
+                ),
+                ("!jTEST", format!("TEST:Y:0-{serial}")),
+            ];
+            let mut requests = JoinSet::new();
+            for (query, expected) in cases {
+                for http_mode in [false, true] {
+                    let expected = expected.clone();
+                    requests.spawn(async move {
+                        let mut socket = TcpStream::connect(if http_mode { http } else { tcp }).await?;
+                        let request = if http_mode {
+                            let encoded = query.bytes().map(|byte| format!("%{byte:02X}")).collect::<String>();
+                            format!("GET /v1/whois/?q={encoded} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+                        } else { format!("{query}\n") };
+                        socket.write_all(request.as_bytes()).await?;
+                        let mut response = String::new();
+                        timeout(Duration::from_secs(3), socket.read_to_string(&mut response)).await??;
+                        if http_mode {
+                            let (headers, body) = response.split_once("\r\n\r\n").context("malformed HTTP response")?;
+                            ensure!(headers.starts_with("HTTP/1.1 200 "), "{query}: {headers}");
+                            ensure!(body == expected, "{query}: unexpected HTTP body {body:?}");
+                        } else {
+                            ensure!(response == frame_irrd(&expected), "{query}: unexpected TCP frame {response:?}");
+                        }
+                        Ok::<_, anyhow::Error>(())
+                    });
+                }
+            }
+            while let Some(result) = requests.join_next().await {
+                result??;
+            }
+            Ok(())
+        }
+
+        let during_write = check_queries(tcp_address, http_address, false).await;
+        // Always release the barrier before propagating a failed request.
+        let _ = release.send(());
+        let committed = timeout(Duration::from_secs(3), writer).await??;
+        let after_commit = check_queries(tcp_address, http_address, true).await;
+        let _ = tcp_stop.send(true);
+        let _ = http_stop.send(());
+        timeout(Duration::from_secs(3), tcp_server).await???;
+        timeout(Duration::from_secs(3), http_server).await???;
+        during_write?;
+        assert_eq!(committed?, 15);
+        after_commit?;
         Ok(())
     }
 
@@ -1198,7 +1521,7 @@ mod tests {
         let config_file = directory.path().join("irrd.toml");
         std::fs::write(
             &config_file,
-            "database = \"registry.redb\"\nsources = [\"TEST\"]\nlisten = \"127.0.0.1:0\"\nmax_connections = 4\nio_timeout_seconds = 2\nmax_snapshot_bytes = 131072\n",
+            "database = \"registry.redb\"\nsources = [\"TEST\"]\nlisten = \"127.0.0.1:0\"\nmax_connections = 4\nio_timeout_seconds = 30\nmax_snapshot_bytes = 8388608\n",
         )?;
         let config = Config::load(&config_file)?;
         let store = Arc::new(Store::open(&config.database)?);
@@ -1206,18 +1529,21 @@ mod tests {
         tokio::task::spawn_blocking(move || -> Result<()> {
             writer.replace_source(
                 "TEST",
-                [("AS-LIMIT", 4096), ("AS-OVER", 4097)]
-                    .into_iter()
-                    .map(|(name, size)| {
-                        let members = (0..size)
-                            .map(|n| format!("AS{}", 64512 + n))
-                            .collect::<Vec<_>>()
-                            .join(",");
-                        crate::rpsl::parse(&format!(
-                            "as-set: {name}\nmembers: {members}\nsource: TEST\n"
-                        ))
-                        .map_err(anyhow::Error::msg)
-                    }),
+                [
+                    ("AS-LIMIT", crate::sets::MAX_RESULTS),
+                    ("AS-OVER", crate::sets::MAX_RESULTS + 1),
+                ]
+                .into_iter()
+                .map(|(name, size)| {
+                    let members = (0..size)
+                        .map(|n| format!("AS{}", 64512 + n))
+                        .collect::<Vec<_>>()
+                        .join(",");
+                    crate::rpsl::parse_snapshot(&format!(
+                        "as-set: {name}\nmembers: {members}\nsource: TEST\n"
+                    ))
+                    .map_err(anyhow::Error::msg)
+                }),
             )?;
             Ok(())
         })
@@ -1233,7 +1559,7 @@ mod tests {
         let http_server = tokio::spawn(async move {
             axum::serve(
                 http,
-                http_router(store, vec!["TEST".into()], Duration::from_secs(2)),
+                http_router(store, vec!["TEST".into()], Duration::from_secs(30)),
             )
             .with_graceful_shutdown(async {
                 let _ = stopped.await;
@@ -1244,24 +1570,33 @@ mod tests {
             ("!iAS-LIMIT", "%21iAS-LIMIT", false),
             ("!iAS-OVER", "%21iAS-OVER", true),
             ("!iAS-OVER,1", "%21iAS-OVER%2C1", true),
+            ("!iAS-LIMIT", "%21iAS-LIMIT", false),
         ] {
             let mut socket = TcpStream::connect(tcp_address).await?;
             socket.write_all(format!("{query}\n").as_bytes()).await?;
             let mut response = String::new();
-            timeout(Duration::from_secs(3), socket.read_to_string(&mut response)).await??;
+            timeout(
+                Duration::from_secs(40),
+                socket.read_to_string(&mut response),
+            )
+            .await??;
             if exceeds {
                 assert_eq!(response, "F Too many results\n", "{query}");
             } else {
                 let (status, values) = unframe_http(response, true)?;
                 assert_eq!(status, StatusCode::OK);
-                assert_eq!(values.split_whitespace().count(), 4096);
+                assert_eq!(values.split_whitespace().count(), crate::sets::MAX_RESULTS);
             }
             let mut socket = TcpStream::connect(http_address).await?;
             socket.write_all(format!(
                 "GET /v1/whois/?q={encoded} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
             ).as_bytes()).await?;
             let mut response = String::new();
-            timeout(Duration::from_secs(3), socket.read_to_string(&mut response)).await??;
+            timeout(
+                Duration::from_secs(40),
+                socket.read_to_string(&mut response),
+            )
+            .await??;
             let (headers, body) = response
                 .split_once("\r\n\r\n")
                 .context("invalid HTTP response")?;
@@ -1270,7 +1605,7 @@ mod tests {
                 assert_eq!(body, "Too many results");
             } else {
                 assert!(headers.starts_with("HTTP/1.1 200 "), "{headers}");
-                assert_eq!(body.split_whitespace().count(), 4096);
+                assert_eq!(body.split_whitespace().count(), crate::sets::MAX_RESULTS);
             }
         }
         tcp_stop.send(true)?;

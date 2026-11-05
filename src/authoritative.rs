@@ -66,6 +66,9 @@ pub fn authorize(
                     | "inet-rtr"
                     | "as-block"
                     | "domain"
+                    | "inetnum"
+                    | "inet6num"
+                    | "irt"
             ),
             "unsupported authoritative object class"
         );

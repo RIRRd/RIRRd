@@ -29,6 +29,31 @@ and reads every class through bounded exact-key GraphQL batches. It also checks
 public export redaction and native database integrity. These minimal mirror
 fixtures exercise storage/query coverage, not authoritative validation parity.
 
+## Beta.4 regression coverage
+
+- Each TCP WHOIS request and complete GraphQL operation shares a coherent database
+  view while NRTMv3 commits run. Tests pause writers, commit between aliases, cancel
+  requests, and verify both the old and subsequently committed answers.
+- The large-query oracle fixture expands 1,300 child sets and 5,200 origins. It
+  checks complete answers, source precedence, framing, GraphQL selections and
+  aliases, explicit resource failures and recovery. Browser tests preview bounded
+  portions while retaining the complete downloadable response.
+- A shared synthetic allocation/IRT schema corpus is read by Rust and the pinned
+  upstream parser. Normal CLI/HTTP tests exercise create/update/delete, both
+  maintainer proofs, contact references, route-parent authorization, source
+  isolation, whole-batch rollback, journal state and reopen/verify.
+- Named source groups and eleven indexed GraphQL filters have entry-point and
+  official-oracle comparisons. Sparse intersections inside broad indexes must
+  succeed within the finite query-work limit; cancellation remains bounded.
+
+The upstream workflow runs these comparisons on each development push and
+relevant PR, and is required by the tagged beta publication workflow. Deliberate
+differences from pinned upstream behavior are recorded with the fixture evidence;
+an expected difference never turns an arbitrary error into a passing comparison.
+See [source queries](compatibility/QUERY_SOURCE_PARITY.md),
+[allocations/IRT](compatibility/AUTHORITATIVE_ALLOCATIONS.md) and
+[source aliases](operations/SOURCE_ALIASES.md).
+
 ## Source coverage
 
 ```sh

@@ -72,12 +72,69 @@ jobs:
           docker compose -p irrd-454-oracle -f tools/oracle/compose.yaml exec -T reference python < tools/oracle/check_delegation_schema.py
           docker compose -p irrd-454-oracle -f tools/oracle/compose.yaml exec -T reference python < tools/oracle/check_nrtm3_filtered.py
           docker compose -p irrd-454-oracle -f tools/oracle/compose.yaml exec -T reference python < tools/oracle/check_mirror_admission.py
+          python3 tools/oracle/check_allocation_schema.py
+          python3 tools/oracle/compare_allocation_auth.py
           python3 tools/oracle/compare_policy_set_auth.py
           python3 tools/oracle/compare_organisation_graphql.py
           python3 tools/oracle/compare_policy_graphql.py
           python3 tools/oracle/compare_inverse_graphql.py
           python3 tools/differential_whois.py --reference 127.0.0.1:8043 --candidate 127.0.0.1:9043 --allow-filtered-auth-omission --normalize-attribute-padding
           python3 tools/differential_whois.py --http --reference 127.0.0.1:8000 --candidate 127.0.0.1:9080 --allow-filtered-auth-omission --normalize-attribute-padding
+      - name: Compare source precedence, full-class and large query results
+        shell: bash
+        run: |
+          config="$RUNNER_TEMP/irrd-query-scope.toml"
+          cat > "$config" <<'TOML'
+          database = "irrd-query-scope-candidate.redb"
+          sources = ["QUERY-FIRST", "QUERY-SECOND", "LARGE", "QUERY-LOOKUP"]
+          listen = "127.0.0.1:9043"
+          http_listen = "127.0.0.1:9080"
+          max_connections = 8
+          io_timeout_seconds = 5
+          max_snapshot_bytes = 10485760
+          [source_aliases]
+          QUERY-GROUP = ["QUERY-SECOND", "QUERY-FIRST", "QUERY-SECOND"]
+          QUERY-EMPTY = []
+          QUERY-SINGLE = ["QUERY-FIRST"]
+          TOML
+          bin=target/release/rust-irrd
+          for source in QUERY-FIRST QUERY-SECOND LARGE QUERY-LOOKUP; do
+            fixture="$RUNNER_TEMP/irrd-$source.rpsl"
+            if [ "$source" = LARGE ]; then
+              python3 tools/oracle/large_query_fixture.py > "$fixture"
+            elif [ "$source" = QUERY-LOOKUP ]; then
+              python3 tools/oracle/query_lookup_fixture.py > "$fixture"
+            else
+              python3 tools/oracle/query_scope_fixture.py --source "$source" > "$fixture"
+            fi
+            docker compose -p irrd-454-oracle -f tools/oracle/compose.yaml exec -T reference sh -c 'cat > /var/lib/irrd/query-scope.rpsl; irrd_load_database --config /etc/irrd.yaml --source "$1" /var/lib/irrd/query-scope.rpsl' sh "$source" < "$fixture"
+            "$bin" --config "$config" import snapshot --source "$source" --file "$fixture"
+          done
+          docker compose -p irrd-454-oracle -f tools/oracle/compose.yaml exec -T redis redis-cli PUBLISH irrd-preload-reload-channel unknown-classes-changed-preload-all
+          "$bin" --config "$config" server 2>"$RUNNER_TEMP/irrd-query-scope.log" &
+          candidate_pid=$!
+          trap 'kill "$candidate_pid" 2>/dev/null || true; wait "$candidate_pid" 2>/dev/null || true' EXIT
+          for attempt in {1..50}; do
+            if grep -q 'WHOIS listening' "$RUNNER_TEMP/irrd-query-scope.log" && grep -q 'GraphQL listening' "$RUNNER_TEMP/irrd-query-scope.log"; then
+              break
+            fi
+            kill -0 "$candidate_pid"
+            sleep 0.1
+          done
+          python3 tools/oracle/compare_source_aliases.py --report "$RUNNER_TEMP/source-aliases.json"
+          python3 tools/oracle/compare_query_scope.py --report "$RUNNER_TEMP/query-scope.json"
+          python3 tools/oracle/compare_large_queries.py --report "$RUNNER_TEMP/large-queries.json"
+      - name: Upload source comparison report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: source-query-parity
+          path: |
+            ${{ runner.temp }}/source-aliases.json
+            ${{ runner.temp }}/query-scope.json
+            ${{ runner.temp }}/large-queries.json
+          retention-days: 14
+          if-no-files-found: ignore
       - name: Print oracle logs on failure
         if: failure()
         run: docker compose -p irrd-454-oracle -f tools/oracle/compose.yaml logs --no-color

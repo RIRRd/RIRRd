@@ -1,6 +1,6 @@
 [package]
 name = "rust-irrd"
-version = "0.1.0-beta.3"
+version = "0.1.0-beta.4"
 edition = "2024"
 publish = false
 description = "A lightweight beta Rust Internet Routing Registry daemon"
@@ -17,6 +17,8 @@ bcrypt = { version = "=0.19.3", default-features = false, features = ["std", "ze
 clap = { version = "4", features = ["derive"] }
 flate2 = "1"
 futures = "0.3"
+http-body = "1"
+http-body-util = "0.1"
 md-5 = "0.11"
 p256 = { version = "0.14", default-features = false, features = ["ecdsa", "pem", "std"] }
 redb = "=2.6.3"

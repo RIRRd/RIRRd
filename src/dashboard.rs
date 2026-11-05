@@ -84,7 +84,22 @@ pub fn router(metadata: Metadata, store: std::sync::Arc<crate::storage::Store>) 
             "/ui/mirrors.json",
             get(move || {
                 let store = store.clone();
-                async move { match store.object_count() { Ok(total) => axum::Json(serde_json::json!({"sources":store.mirror_status(), "total_objects":total,"class_counts":store.class_counts().ok()})).into_response(), Err(_) => StatusCode::SERVICE_UNAVAILABLE.into_response(), } }
+                async move {
+                    let result = tokio::task::spawn_blocking(move || -> Result<_> {
+                        store.query_view()?.run(|| {
+                            Ok(serde_json::json!({
+                                "sources":store.mirror_status(),
+                                "total_objects":store.object_count()?,
+                                "class_counts":store.class_counts()?,
+                            }))
+                        })
+                    })
+                    .await;
+                    match result {
+                        Ok(Ok(value)) => axum::Json(value).into_response(),
+                        _ => StatusCode::SERVICE_UNAVAILABLE.into_response(),
+                    }
+                }
             }),
         )
         .route(
@@ -96,8 +111,24 @@ pub fn router(metadata: Metadata, store: std::sync::Arc<crate::storage::Store>) 
                 )
             }),
         )
-        .route("/ui/charts.js", get(|| async { ([(CONTENT_TYPE, "text/javascript; charset=utf-8")], include_str!("../web/dashboard/charts.js")) }))
-        .route("/ui/mark.svg", get(|| async { ([(CONTENT_TYPE, "image/svg+xml")], include_str!("../web/dashboard/mark.svg")) }))
+        .route(
+            "/ui/charts.js",
+            get(|| async {
+                (
+                    [(CONTENT_TYPE, "text/javascript; charset=utf-8")],
+                    include_str!("../web/dashboard/charts.js"),
+                )
+            }),
+        )
+        .route(
+            "/ui/mark.svg",
+            get(|| async {
+                (
+                    [(CONTENT_TYPE, "image/svg+xml")],
+                    include_str!("../web/dashboard/mark.svg"),
+                )
+            }),
+        )
         .with_state(metadata)
         .layer(middleware::from_fn(headers)))
 }

@@ -1,4 +1,4 @@
-# RIRRd 0.1.0-beta.3
+# RIRRd 0.1.0-beta.4
 
 RIRRd is beta software. It aims to reduce the resources needed for a self-hosted
 Internet Routing Registry. This beta
@@ -8,24 +8,32 @@ of full IRRd parity, security qualification or production readiness.
 ## Available for evaluation
 
 - Embedded transactional IRR storage and bounded TCP WHOIS, HTTP WHOIS and GraphQL.
-- Source selection, IPv4/IPv6 origin queries, AS-set traversal and policy object browsing.
+- Ordered source selection and named source groups, IPv4/IPv6 origin queries,
+  AS-set traversal and policy object browsing.
 - NRTMv3 mirroring with atomic updates and source serial tracking.
 - Snapshot import/export, verified backup/restore and bounded authoritative updates.
+- Authenticated updates for 18 standard classes, including IPv4/IPv6 allocations
+  and IRT contacts; `key-cert`/OpenPGP authoring remains unsupported.
+- Coherent query snapshots during mirror commits, finite large-result budgets and
+  explicit failures instead of successful partial routing lists.
 - Independent self-hosted console and separate community website at irrd.tools.
 - Source, activity, resource graphs from observed data.
 
-The public UK node currently mirrors nineteen routing sources. Seven follow
-NRTMv3 every sixty seconds; twelve use daily snapshots. Contacts, accounts and
-other non-routing classes are outside this production mirror profile.
-The development full-data profile retains all 19 standard IRRd classes and has
-its own storage and source cursors. See live telemetry for the serving profile;
-an offline import is not evidence that a generation is already serving.
-A source being loaded does not establish that its last check succeeded.
+The public UK node now retains all 19 standard IRRd classes across 21 datasets.
+Fifteen sources follow NRTMv3 every sixty seconds; six use daily snapshots.
+The full public catalog was activated on 2026-11-05 after verifying 13,984,313
+objects and their indexes. This expands the data available from beta.3; it does
+not add authoritative authentication/account parity. Development follows the
+same source profile with independent storage and cursors, and tests unreleased
+engine changes separately. See live telemetry for current counts, serials and
+freshness. A source being loaded does not establish that its last check succeeded.
 
 ## Known gaps
 
-Authentication/account workflows, remaining class/reference behavior, OpenPGP,
-mail submission and notification workflows need further parity work. NRTMv4
+Accounts, scoped API tokens, override/suspension controls, maintainer provisioning,
+`key-cert`/OpenPGP, remaining attribute/reference behavior, mail submission and
+notification workflows need further parity work. Support for a class does not
+mean every upstream attribute or lifecycle is implemented. NRTMv4
 publication, scheduling, rollover, retention, recovery and bidirectional upstream
 interoperability are incomplete. Broader WHOIS/GraphQL behavior, live scope/route-preference suppression and journal transitions remain open.
 

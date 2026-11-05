@@ -172,3 +172,28 @@ can survive that load. A repeated suite can therefore reject a synthetic contact
 name that a previous test deleted. Reset only the dedicated oracle volume (never
 an operational registry database), or create a new named test volume. The normal
 CI workflow already creates and removes its isolated volume per run.
+
+## Source precedence and all-class query corpus
+
+`query_scope_fixture.py` creates two independent synthetic sources with 27 objects
+and all 19 standard classes each. `compare_query_scope.py` compares explicit
+source order, duplicate identities, nested/cyclic AS-sets, indirect membership,
+IPv4/IPv6 prefixes, set exclusions, class inventory and malformed queries through
+TCP, HTTP and GraphQL. The workflow loads these into a separate candidate database
+after the original corpus so its unscoped default-source tests remain unchanged.
+
+The [source comparison contract](../../docs/compatibility/QUERY_SOURCE_PARITY.md)
+records the 325 assertions, fixture hashes, formatting allowances and known
+differences. Two assertions deliberately check stricter RIRRd input bounds rather
+than matching upstream acceptance. The JSON report is uploaded by CI; this corpus
+does not establish complete IRRd parity or large-query capacity.
+
+`large_query_fixture.py` adds a separate 27,562-object `LARGE` source with 1,300
+child sets, 5,200 origins, 15,600 root prefixes and authorized/unauthorized indirect
+membership. `compare_large_queries.py` checks all results against the complete
+generated expectations through TCP, HTTP and GraphQL. The 59-case comparison
+crosses the former set, origin, indirect-member and response-size limits. CI loads
+this fixture into the same isolated query candidate and preserves the small JSON
+reports even when a comparison fails. Raw generated fixtures remain outside Git.
+Two additional HTTP checks verify an aggregate GraphQL alias budget rejects the
+whole oversized response and that a subsequent valid origin query recovers.

@@ -40,9 +40,14 @@ curl --fail --get --data-urlencode 'sources=RIPE' --data-urlencode 'q=!a6AS-RIPE
 
 Results are deduplicated. Source order matters when the same set name occurs in
 multiple sources. Use an explicit source or source list for repeatable results.
-Expansion is bounded: depth 64, 1,024 set lookups, 4,096 origin lookups and
-4,096 result items / 256 KiB. An over-limit query fails; a failure is not a
-complete empty answer. Large transit sets can exceed these limits. Full IRRd
+The beta.4 candidate also supports operator-defined [ordered source aliases](SOURCE_ALIASES.md);
+alias names must be configured on the node before use.
+Beta.3 deployments use depth 64, 1,024 set lookups, 4,096 origin lookups and
+4,096 result items / 256 KiB. The beta.4 candidate supports 65,536 set lookups,
+131,072 origin lookups and 2 million scanned rows, with up to 4 million AS-set
+prefixes / 96 MiB; ASN-prefix and member lists retain separate 262,144-item
+limits. Check the node version before relying on these expanded bounds. An
+over-limit query fails; a failure is not a complete empty answer. Full IRRd
 query parity remains incomplete.
 
 ## Inspect an object or exact route
@@ -81,11 +86,13 @@ curl --fail https://dev.rirrd.net/graphql/ -H 'Content-Type: application/json' \
   --data '{"query":"{ rpslObjects(mntBy:[\"EXAMPLE-MNT\"],sources:[\"RIPE\"],objectClass:[\"as-set\"],recordLimit:8) { rpslPk source objectText } }"}'
 ```
 
-Supported inverse filters are `mntBy`, `memberOf`, `mbrsByRef`, `adminC`, `techC`
-and `zoneC`. Values within a filter are alternatives; different filters must
+Supported inverse filters in the beta.4 candidate are `mntBy`, `memberOf`,
+`mbrsByRef`, `adminC`, `techC`, `zoneC`, `members`, `mpMembers`, `person`, `role`
+and `origin`. Values within a filter are alternatives; different filters must
 all match. They can be combined with `rpslPk`, source and class filters. Reads
 use one database snapshot and existing indexes, and return at most eight objects.
-Restrictive intersections that inspect over 4,096 candidates fail as a whole;
+Bounded index-cardinality probes choose a selective filter first. Intersections
+that inspect over 4,096 candidates or exhaust their shared work budget fail as a whole;
 narrow the keys, sources or classes instead of treating that error as no match.
 An explicitly empty filter matches nothing; null means no filter. This bounded
 profile does not provide the complete upstream GraphQL filter schema.

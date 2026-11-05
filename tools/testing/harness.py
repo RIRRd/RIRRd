@@ -40,8 +40,8 @@ max_snapshot_bytes = 262144
             self.close()
             raise
 
-    def cli(self, *args, success=True, config=None):
-        result = subprocess.run([str(self.binary), '--config', str(config or self.config), *args], capture_output=True, timeout=45)
+    def cli(self, *args, success=True, config=None, timeout=45):
+        result = subprocess.run([str(self.binary), '--config', str(config or self.config), *args], capture_output=True, timeout=timeout)
         if success and result.returncode:
             raise AssertionError('Fixture CLI failed: ' + result.stderr.decode('utf-8', errors='replace'))
         return result

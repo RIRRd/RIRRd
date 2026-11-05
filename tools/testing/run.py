@@ -35,7 +35,7 @@ def main():
     if out.is_relative_to(ROOT):parser.error('Keep reports, logs and fixtures outside the source repository')
     out.mkdir(parents=True,exist_ok=True)
     # A failed rerun must not leave an earlier successful artifact in place.
-    for name in ['report.json','summary.md','junit.json','junit.xml',*[base+ext for base in ['protocol-cases','report-cases','gateway-cases','community-cases','web-cases'] for ext in ['.json','.xml']]]:
+    for name in ['report.json','summary.md','junit.json','junit.xml',*[base+ext for base in ['protocol-cases','http-load-cases','report-cases','gateway-cases','community-cases','web-cases'] for ext in ['.json','.xml']]]:
         (out/name).unlink(missing_ok=True)
     report={'schema_version':1,'profile':args.profile,'source_commit':subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip(),'source_dirty':bool(subprocess.check_output(['git','status','--porcelain'],cwd=ROOT)),'started_at':datetime.datetime.now(datetime.timezone.utc).isoformat(),'platform':platform.system()+' '+platform.machine(),'origin':'github_actions' if os.environ.get('GITHUB_ACTIONS')=='true' else 'local','run_url':None,'groups':[]}
     if report['origin']=='github_actions':
@@ -85,8 +85,10 @@ def main():
         if built:
             binary=built_binary()
             group('protocols',[python,'tools/testing/protocols.py','--binary',str(binary),'--report',str(out/'protocol-cases')],case_file=out/'protocol-cases')
+            group('http-load',[python,'tools/testing/http_load.py','--binary',str(binary),'--report',str(out/'http-load-cases')],case_file=out/'http-load-cases',timeout=300)
         else:
-            report['groups'].append({'id':'protocols','status':'blocked','tests':0,'passed':0,'failed':0,'skipped':0,'seconds':0,'exit_code':None})
+            for blocked in ['protocols', 'http-load']:
+                report['groups'].append({'id':blocked,'status':'blocked','tests':0,'passed':0,'failed':0,'skipped':0,'seconds':0,'exit_code':None})
         group('report-exporter',[python,'tools/testing/unit.py','--suite','reports','--report',str(out/'report-cases')],case_file=out/'report-cases')
     else:
         built=group('web-build',['cargo','build','--locked'])

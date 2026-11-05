@@ -52,3 +52,11 @@ regexTarget = "match"
 regexes = [
   '''^-----BEGIN PGP PRIVATE KEY BLOCK-----"\);\n    let private_end = private_marker\n        && text\n            \.lines\(\)\n            \.any\(\|line\| armor_value\(line\) == "-----END PGP PRIVATE KEY BLOCK-----$''',
 ]
+
+[[allowlists]]
+targetRules = ["generic-api-key"]
+description = "Exact synthetic public certificate ID in the query-source oracle fixture"
+condition = "AND"
+paths = ['''(^|/)tools/oracle/query_scope_fixture\.py$''']
+regexTarget = "match"
+regexes = ['''^key-cert: PGPKEY-A1B2C3D4\\n$''']

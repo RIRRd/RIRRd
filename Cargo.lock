@@ -1349,7 +1349,7 @@ dependencies = [
 
 [[package]]
 name = "rust-irrd"
-version = "0.1.0-beta.3"
+version = "0.1.0-beta.4"
 dependencies = [
  "anyhow",
  "async-graphql",
@@ -1359,6 +1359,8 @@ dependencies = [
  "clap",
  "flate2",
  "futures",
+ "http-body",
+ "http-body-util",
  "md-5",
  "p256",
  "redb",

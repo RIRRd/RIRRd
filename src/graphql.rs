@@ -5,16 +5,19 @@ use std::{
     collections::{HashMap, HashSet},
     future::Future,
     net::IpAddr,
-    sync::{Arc, OnceLock},
+    sync::{
+        Arc, Mutex, OnceLock,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::Duration,
 };
 
 use anyhow::{Context, Result};
 use async_graphql::{
-    Error, Request, Value,
+    Error, ErrorExtensions, Request, Value,
     dynamic::{
         Field, FieldFuture, FieldValue, InputValue, Interface, InterfaceField,
-        Object as GraphqlObject, ResolverContext, Scalar, Schema, TypeRef,
+        Object as GraphqlObject, ResolverContext, Scalar, Schema, SchemaBuilder, TypeRef,
     },
 };
 use axum::{
@@ -25,17 +28,14 @@ use axum::{
     response::{IntoResponse, Response},
     routing::post,
 };
-use tokio::{
-    net::TcpListener,
-    sync::{OwnedRwLockReadGuard, Semaphore},
-    task::spawn_blocking,
-};
+use tokio::{net::TcpListener, sync::Semaphore, task::spawn_blocking};
 use zeroize::Zeroize;
 
 use crate::{
+    query_sources::{self, SourceAliases},
     rpsl::Object,
-    sets::{self, recursive_members_at_root, routes_for_as_set},
-    storage::{InverseFilter, Store},
+    sets::{self, recursive_members_at_root, routes_for_as_set_with_budget},
+    storage::{InverseFilter, QueryView, Store},
 };
 
 const MAX_HTTP_BYTES: usize = 16 * 1024;
@@ -43,10 +43,10 @@ const MAX_HTTP_REQUESTS: usize = 8;
 const MAX_LOOKUPS: usize = 8;
 const MAX_RECORDS: usize = 8;
 const MAX_SET_NAMES: usize = 8;
-const MAX_PREFIXES: usize = 4096;
+const MAX_PREFIXES: usize = sets::MAX_RESULTS;
 const MAX_SET_ROOTS: usize = 32;
-const MAX_SET_MEMBERS: usize = 4096;
-const MAX_SET_MEMBER_BYTES: usize = 256 * 1024;
+const MAX_SET_MEMBERS: usize = sets::MAX_RESULTS;
+const MAX_SET_MEMBER_BYTES: usize = sets::MAX_RESULT_BYTES;
 const MAX_FILTER_VALUES: usize = 32;
 const MAX_FILTER_BYTES: usize = 512;
 const MAX_COMPLEXITY: usize = 24;
@@ -59,6 +59,11 @@ const INVERSE_FILTERS: &[(&str, &str)] = &[
     ("adminC", "admin-c"),
     ("techC", "tech-c"),
     ("zoneC", "zone-c"),
+    ("members", "members"),
+    ("mpMembers", "mp-members"),
+    ("person", "person"),
+    ("role", "role"),
+    ("origin", "origin"),
 ];
 
 const OBJECT_INTERFACE: &str = "RPSLObject";
@@ -190,8 +195,6 @@ fn camel_case(attribute: &str) -> String {
     result
 }
 
-type QueryView = Arc<OwnedRwLockReadGuard<()>>;
-
 #[derive(Clone)]
 struct Lookup {
     store: Arc<Store>,
@@ -200,31 +203,78 @@ struct Lookup {
     slots: Arc<Semaphore>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum QueryFailure {
+    Limit,
+    Capacity,
+    Deadline,
+}
+impl QueryFailure {
+    fn code(self) -> &'static str {
+        match self {
+            Self::Limit => "RIRRD_RESOURCE_LIMIT",
+            Self::Capacity => "RIRRD_CAPACITY",
+            Self::Deadline => "RIRRD_QUERY_TIMEOUT",
+        }
+    }
+}
+fn query_error(kind: QueryFailure, message: impl Into<String>) -> Error {
+    Error::new(message).extend_with(|_, extensions| extensions.set("code", kind.code()))
+}
+fn server_query_error(kind: QueryFailure, message: &str) -> async_graphql::ServerError {
+    let mut error = async_graphql::ServerError::new(message, None);
+    let mut extensions = async_graphql::ErrorExtensionValues::default();
+    extensions.set("code", kind.code());
+    error.extensions = Some(extensions);
+    error
+}
+fn query_failure(error: &async_graphql::ServerError) -> Option<QueryFailure> {
+    match error.extensions.as_ref()?.get("code")? {
+        Value::String(code) if code == QueryFailure::Limit.code() => Some(QueryFailure::Limit),
+        Value::String(code) if code == QueryFailure::Capacity.code() => {
+            Some(QueryFailure::Capacity)
+        }
+        Value::String(code) if code == QueryFailure::Deadline.code() => {
+            Some(QueryFailure::Deadline)
+        }
+        _ => None,
+    }
+}
+
 impl Lookup {
     async fn run<T: Send + 'static>(
         &self,
-        view: Option<QueryView>,
+        view: QueryView,
+        control: Option<crate::storage::QueryControl>,
         work: impl FnOnce(&Store) -> Result<T> + Send + 'static,
     ) -> async_graphql::Result<T> {
         let permit = Arc::clone(&self.slots)
             .try_acquire_owned()
-            .map_err(|_| Error::new("Too many concurrent lookups."))?;
+            .map_err(|_| query_error(QueryFailure::Capacity, "Too many concurrent lookups."))?;
         let store = Arc::clone(&self.store);
+        let control =
+            control.unwrap_or_else(|| crate::storage::QueryControl::new(Duration::from_secs(30)));
         spawn_blocking(move || {
             let _permit = permit;
-            // Keep the coherent view even if the HTTP deadline cancels its caller.
-            let _view = view;
-            work(&store)
+            // Keep the same MVCC snapshot through nested store reads, including
+            // when an HTTP deadline drops the future before its worker exits.
+            view.run(|| control.run(|| work(&store)))
         })
         .await
         .context("GraphQL lookup worker failed")
         .and_then(|result| result)
         .map_err(|error| {
+            if error.is::<crate::storage::HeavyQueryBusy>() {
+                return query_error(QueryFailure::Capacity, "Large query capacity busy; retry later.");
+            }
+            if error.is::<crate::storage::QueryDeadlineExceeded>() {
+                return query_error(QueryFailure::Deadline, "Query timed out.");
+            }
             if error.is::<crate::storage::QueryScanLimit>() {
-                return Error::new("Query exceeds the indexed scan limit; narrow the keys, sources or object classes.");
+                return query_error(QueryFailure::Limit, "Query exceeds the indexed scan limit; narrow the keys, sources or object classes.");
             }
             if error.is::<sets::LimitExceeded>() || error.is::<crate::storage::QueryMaterializationLimit>() {
-                return Error::new("Query result exceeds resource limits.");
+                return query_error(QueryFailure::Limit, "Query result exceeds resource limits.");
             }
             tracing::error!(%error, "GraphQL lookup failed");
             Error::new("Lookup failed.")
@@ -382,7 +432,10 @@ fn list_filter(
     };
     let list = value.list()?;
     if list.len() > MAX_FILTER_VALUES {
-        return Err(Error::new(format!("Too many values for {name}.")));
+        return Err(query_error(
+            QueryFailure::Limit,
+            format!("Too many values for {name}."),
+        ));
     }
     let mut values = Vec::with_capacity(list.len());
     for entry in list.iter() {
@@ -400,8 +453,18 @@ fn source_filter(
     ctx: &ResolverContext<'_>,
     configured: &[String],
 ) -> async_graphql::Result<Vec<String>> {
+    let names = source_names(ctx, configured)?;
+    query_sources::expand(&names, configured, ctx.data_unchecked::<SourceAliases>())
+        .ok_or_else(|| Error::new("Unknown source."))
+}
+
+fn source_names(
+    ctx: &ResolverContext<'_>,
+    configured: &[String],
+) -> async_graphql::Result<Vec<String>> {
+    let aliases = ctx.data_unchecked::<SourceAliases>();
     let sources = list_filter(ctx, "sources")?.map_or_else(
-        || configured.to_vec(),
+        || query_sources::available(configured, aliases),
         |mut sources| {
             sources
                 .iter_mut()
@@ -409,7 +472,10 @@ fn source_filter(
             sources
         },
     );
-    if sources.iter().any(|source| !configured.contains(source)) {
+    if sources
+        .iter()
+        .any(|source| !query_sources::known(source, configured, aliases))
+    {
         return Err(Error::new("Unknown source."));
     }
     Ok(sources)
@@ -431,7 +497,10 @@ async fn objects(ctx: ResolverContext<'_>) -> async_graphql::Result<Option<Field
         }
     }
     if keys.is_none() && filters.is_empty() {
-        return Err(Error::new("Your query must be more specific."));
+        return Err(query_error(
+            QueryFailure::Limit,
+            "Your query must be more specific.",
+        ));
     }
 
     let classes = list_filter(&ctx, "objectClass")?;
@@ -447,7 +516,12 @@ async fn objects(ctx: ResolverContext<'_>) -> async_graphql::Result<Option<Field
     let limit = usize::try_from(limit)
         .ok()
         .filter(|&limit| limit <= MAX_RECORDS)
-        .ok_or_else(|| Error::new(format!("recordLimit must be between 0 and {MAX_RECORDS}.")))?;
+        .ok_or_else(|| {
+            query_error(
+                QueryFailure::Limit,
+                format!("recordLimit must be between 0 and {MAX_RECORDS}."),
+            )
+        })?;
 
     if keys.as_ref().is_some_and(Vec::is_empty)
         || sources.is_empty()
@@ -458,14 +532,18 @@ async fn objects(ctx: ResolverContext<'_>) -> async_graphql::Result<Option<Field
     }
 
     let records = lookup
-        .run(ctx.data_opt::<QueryView>().cloned(), move |store| {
-            let classes = classes.unwrap_or_default();
-            if filters.is_empty() {
-                store.exact_objects(&keys.unwrap_or_default(), &sources, &classes, limit)
-            } else {
-                store.filtered_objects(keys.as_deref(), &sources, &classes, &filters, limit)
-            }
-        })
+        .run(
+            ctx.data::<QueryView>()?.clone(),
+            ctx.data_opt::<crate::storage::QueryControl>().cloned(),
+            move |store| {
+                let classes = classes.unwrap_or_default();
+                if filters.is_empty() {
+                    store.exact_objects(&keys.unwrap_or_default(), &sources, &classes, limit)
+                } else {
+                    store.filtered_objects(keys.as_deref(), &sources, &classes, &filters, limit)
+                }
+            },
+        )
         .await?;
 
     let objects = records
@@ -481,7 +559,146 @@ async fn objects(ctx: ResolverContext<'_>) -> async_graphql::Result<Option<Field
 
 struct Prefixes {
     key: Value,
-    prefixes: Vec<String>,
+    prefixes: Arc<Vec<String>>,
+}
+
+// Dynamic GraphQL's generic list resolver allocates one future/context per
+// scalar. Millions of already-validated IP strings need only a value list.
+// This per-request extension runs after normal document/schema validation and
+// only intercepts our indexed prefix fields; aliases/directives keep their
+// normal execution and introspection behavior.
+struct PrefixListEntry {
+    values: Arc<Vec<String>>,
+    budget: Arc<sets::ResultBudget>,
+    routes: bool,
+    renders: AtomicUsize,
+}
+#[derive(Default)]
+struct PrefixListCache(
+    Mutex<HashMap<String, Arc<PrefixListEntry>>>,
+    Arc<sets::ResultBudget>,
+);
+struct PrefixListExtension(Arc<PrefixListCache>);
+struct PrefixLists;
+impl async_graphql::extensions::ExtensionFactory for PrefixLists {
+    fn create(&self) -> Arc<dyn async_graphql::extensions::Extension> {
+        Arc::new(PrefixListExtension(Arc::new(PrefixListCache::default())))
+    }
+}
+#[async_graphql::async_trait::async_trait]
+impl async_graphql::extensions::Extension for PrefixListExtension {
+    async fn execute(
+        &self,
+        ctx: &async_graphql::extensions::ExtensionContext<'_>,
+        operation_name: Option<&str>,
+        next: async_graphql::extensions::NextExecute<'_>,
+    ) -> async_graphql::Response {
+        let mut response = next.run(ctx, operation_name).await;
+        // Never expose another alias's completed prefixes alongside a failed
+        // bounded routing result. Clients must receive a complete answer or an
+        // explicit error, not a plausible partial configuration.
+        if response
+            .errors
+            .iter()
+            .any(|error| query_failure(error).is_some())
+        {
+            response.data = Value::Null;
+        }
+        response
+    }
+
+    async fn prepare_request(
+        &self,
+        ctx: &async_graphql::extensions::ExtensionContext<'_>,
+        request: Request,
+        next: async_graphql::extensions::NextPrepareRequest<'_>,
+    ) -> async_graphql::ServerResult<Request> {
+        // Pin one committed database generation for every alias and result row.
+        // The snapshot is request data, never a response/body extension: slow
+        // downloads retain their output lease without pinning old database pages.
+        let lookup = request
+            .data
+            .get(&std::any::TypeId::of::<Lookup>())
+            .and_then(|value| value.downcast_ref::<Lookup>())
+            .unwrap_or_else(|| ctx.data_unchecked::<Lookup>());
+        let store = lookup.store.clone();
+        let view = spawn_blocking(move || store.query_view())
+            .await
+            .context("GraphQL snapshot worker failed")
+            .and_then(|result| result)
+            .map_err(|error| {
+                tracing::error!(%error, "GraphQL snapshot failed");
+                async_graphql::ServerError::new("Lookup failed.", None)
+            })?;
+        next.run(ctx, request.data(self.0.clone()).data(view)).await
+    }
+
+    async fn resolve(
+        &self,
+        ctx: &async_graphql::extensions::ExtensionContext<'_>,
+        info: async_graphql::extensions::ResolveInfo<'_>,
+        next: async_graphql::extensions::NextResolve<'_>,
+    ) -> async_graphql::ServerResult<Option<Value>> {
+        if !info.is_for_introspection
+            && info.name == "prefixes"
+            && matches!(info.parent_type, "ASNPrefixes" | "AsSetPrefixes")
+        {
+            let entry = info.path_node.parent.and_then(|parent| {
+                self.0
+                    .0
+                    .lock()
+                    .expect("prefix list cache")
+                    .get(&parent.to_string())
+                    .cloned()
+            });
+            if let Some(entry) = entry {
+                let additional = entry.renders.fetch_add(1, Ordering::Relaxed) != 0;
+                let control = ctx
+                    .data_opt::<crate::storage::QueryControl>()
+                    .cloned()
+                    .unwrap_or_else(|| crate::storage::QueryControl::new(Duration::from_secs(30)));
+                let result = spawn_blocking(move || {
+                    control.run(|| {
+                        entry
+                            .values
+                            .iter()
+                            .map(|value| {
+                                crate::storage::check_query_deadline()?;
+                                if additional {
+                                    if entry.routes {
+                                        entry.budget.charge_route(value.len() + 1)?;
+                                    } else {
+                                        entry.budget.charge(value.len() + 1)?;
+                                    }
+                                }
+                                Ok(Value::String(value.clone()))
+                            })
+                            .collect::<Result<Vec<_>>>()
+                            .map(Value::List)
+                    })
+                })
+                .await;
+                return match result {
+                    Ok(Ok(value)) => Ok(Some(value)),
+                    Ok(Err(error)) => {
+                        let (kind, message) = if error.is::<crate::storage::HeavyQueryBusy>() {
+                            (
+                                QueryFailure::Capacity,
+                                "Large query capacity busy; retry later.",
+                            )
+                        } else if error.is::<crate::storage::QueryDeadlineExceeded>() {
+                            (QueryFailure::Deadline, "Query timed out.")
+                        } else {
+                            (QueryFailure::Limit, "Query result exceeds resource limits.")
+                        };
+                        Err(server_query_error(kind, message))
+                    }
+                    Err(_) => Err(async_graphql::ServerError::new("Lookup failed.", None)),
+                };
+            }
+        }
+        next.run(ctx, info).await
+    }
 }
 
 fn prefix_type(name: &str, key: &str, key_type: &str) -> GraphqlObject {
@@ -532,20 +749,59 @@ fn ip_family(ctx: &ResolverContext<'_>) -> async_graphql::Result<Option<bool>> {
 }
 
 fn prefix_values(
+    ctx: &ResolverContext<'_>,
+    routes: bool,
     rows: Option<Vec<Prefixes>>,
 ) -> async_graphql::Result<Option<FieldValue<'static>>> {
-    let rows =
-        rows.ok_or_else(|| Error::new(format!("Result exceeds {MAX_PREFIXES} prefixes.")))?;
+    let rows = rows.ok_or_else(|| {
+        query_error(
+            QueryFailure::Limit,
+            "Query exceeds the prefix result budget.",
+        )
+    })?;
+    if let Some(cache) = ctx.data_opt::<Arc<PrefixListCache>>() {
+        let prefix = ctx
+            .path_node
+            .as_ref()
+            .map(ToString::to_string)
+            .unwrap_or_default();
+        let budget = result_budget(ctx);
+        let mut cache = cache.0.lock().expect("prefix list cache");
+        for (index, row) in rows.iter().enumerate() {
+            cache.insert(
+                format!("{prefix}.{index}"),
+                Arc::new(PrefixListEntry {
+                    values: row.prefixes.clone(),
+                    budget: budget.clone(),
+                    routes,
+                    renders: AtomicUsize::new(0),
+                }),
+            );
+        }
+    }
     Ok(Some(FieldValue::list(
         rows.into_iter().map(FieldValue::owned_any),
     )))
+}
+
+fn result_budget(ctx: &ResolverContext<'_>) -> Arc<sets::ResultBudget> {
+    ctx.data_opt::<Arc<sets::ResultBudget>>()
+        .cloned()
+        .or_else(|| {
+            ctx.data_opt::<Arc<PrefixListCache>>()
+                .map(|cache| cache.1.clone())
+        })
+        .unwrap_or_default()
 }
 
 async fn asn_prefixes(ctx: ResolverContext<'_>) -> async_graphql::Result<Option<FieldValue<'_>>> {
     let lookup = ctx.data::<Lookup>()?;
     let asns = ctx.args.try_get("asns")?.list()?;
     if asns.len() > MAX_FILTER_VALUES {
-        return Err(Error::new("Too many values for asns."));
+        return Err(query_error(
+            QueryFailure::Limit,
+            "Too many values for asns.",
+        ));
     }
     let asns = asns
         .iter()
@@ -553,39 +809,57 @@ async fn asn_prefixes(ctx: ResolverContext<'_>) -> async_graphql::Result<Option<
         .collect::<async_graphql::Result<Vec<_>>>()?;
     let sources = source_filter(&ctx, &lookup.sources)?;
     let family = ip_family(&ctx)?;
+    let budget = result_budget(&ctx);
     let rows = lookup
-        .run(ctx.data_opt::<QueryView>().cloned(), move |store| {
-            let mut remaining = MAX_PREFIXES;
-            let mut rows = Vec::with_capacity(asns.len());
-            for asn in asns {
-                let origin = format!("AS{asn}");
-                let mut prefixes = Vec::new();
-                for (class, ipv6) in [("route", false), ("route6", true)] {
-                    if family.is_none_or(|requested| requested == ipv6) {
-                        let routes =
-                            store.origin_prefixes(class, &origin, &sources, remaining + 1)?;
-                        if routes.len() > remaining {
-                            return Ok(None);
+        .run(
+            ctx.data::<QueryView>()?.clone(),
+            ctx.data_opt::<crate::storage::QueryControl>().cloned(),
+            move |store| {
+                let mut remaining = MAX_PREFIXES;
+                let mut remaining_scans = 2_000_000usize;
+                let mut rows = Vec::with_capacity(asns.len());
+                for asn in asns {
+                    let origin = format!("AS{asn}");
+                    let mut prefixes = Vec::new();
+                    let mut seen = HashSet::new();
+                    for (class, ipv6) in [("route", false), ("route6", true)] {
+                        if family.is_none_or(|requested| requested == ipv6) {
+                            store.visit_origin_prefixes(class, &origin, &sources, |prefix| {
+                                remaining_scans = remaining_scans
+                                    .checked_sub(1)
+                                    .ok_or(crate::storage::QueryScanLimit)?;
+                                let prefix = prefix.to_ascii_lowercase();
+                                if !seen.contains(&prefix) {
+                                    budget.charge(prefix.len() + 1)?;
+                                    remaining = remaining
+                                        .checked_sub(1)
+                                        .ok_or(crate::storage::QueryMaterializationLimit)?;
+                                    seen.insert(prefix.clone());
+                                    prefixes.push(prefix);
+                                }
+                                Ok(())
+                            })?;
                         }
-                        remaining -= routes.len();
-                        prefixes.extend(routes);
                     }
+                    rows.push(Prefixes {
+                        key: Value::from(asn),
+                        prefixes: Arc::new(prefixes),
+                    });
                 }
-                rows.push(Prefixes {
-                    key: Value::from(asn),
-                    prefixes,
-                });
-            }
-            Ok(Some(rows))
-        })
+                Ok(Some(rows))
+            },
+        )
         .await?;
-    prefix_values(rows)
+    prefix_values(&ctx, false, rows)
 }
 
 fn set_names(ctx: &ResolverContext<'_>) -> async_graphql::Result<Vec<String>> {
     let mut names = list_filter(ctx, "setNames")?.ok_or_else(|| Error::new("Missing setNames."))?;
     if names.len() > MAX_SET_NAMES {
-        return Err(Error::new("Too many values for setNames."));
+        return Err(query_error(
+            QueryFailure::Limit,
+            "Too many values for setNames.",
+        ));
     }
     if ctx
         .args
@@ -613,25 +887,37 @@ async fn as_set_prefixes(
     let sources = source_filter(&ctx, &lookup.sources)?;
     let family = ip_family(&ctx)?;
     let excluded = list_filter(&ctx, "excludeSets")?.unwrap_or_default();
+    let budget = result_budget(&ctx);
     let rows = lookup
-        .run(ctx.data_opt::<QueryView>().cloned(), move |store| {
-            let mut remaining = MAX_PREFIXES;
-            let mut rows = Vec::with_capacity(names.len());
-            for name in names {
-                let prefixes = routes_for_as_set(store, &sources, &name, family, &excluded)?;
-                if prefixes.len() > remaining {
-                    return Ok(None);
+        .run(
+            ctx.data::<QueryView>()?.clone(),
+            ctx.data_opt::<crate::storage::QueryControl>().cloned(),
+            move |store| {
+                let mut remaining = sets::MAX_ROUTE_RESULTS;
+                let mut rows = Vec::with_capacity(names.len());
+                for name in names {
+                    let prefixes = routes_for_as_set_with_budget(
+                        store,
+                        &sources,
+                        &name,
+                        family,
+                        &excluded,
+                        Some(budget.clone()),
+                    )?;
+                    if prefixes.len() > remaining {
+                        return Ok(None);
+                    }
+                    remaining -= prefixes.len();
+                    rows.push(Prefixes {
+                        key: Value::from(name),
+                        prefixes: Arc::new(prefixes),
+                    });
                 }
-                remaining -= prefixes.len();
-                rows.push(Prefixes {
-                    key: Value::from(name),
-                    prefixes,
-                });
-            }
-            Ok(Some(rows))
-        })
+                Ok(Some(rows))
+            },
+        )
         .await?;
-    prefix_values(rows)
+    prefix_values(&ctx, true, rows)
 }
 
 struct SetMembers {
@@ -706,46 +992,67 @@ async fn recursive_set_members(
     let depth = usize::try_from(depth)
         .ok()
         .filter(|&depth| depth <= sets::MAX_DEPTH)
-        .ok_or_else(|| Error::new(format!("depth must be between 0 and {}.", sets::MAX_DEPTH)))?;
+        .ok_or_else(|| {
+            query_error(
+                QueryFailure::Limit,
+                format!("depth must be between 0 and {}.", sets::MAX_DEPTH),
+            )
+        })?;
     let depth = (depth != 0).then_some(depth);
     let excluded = list_filter(&ctx, "excludeSets")?.unwrap_or_default();
+    let budget = result_budget(&ctx);
     let rows = lookup
-        .run(ctx.data_opt::<QueryView>().cloned(), move |store| {
-            let root_sources = root_source
-                .as_ref()
-                .map_or(sources.as_slice(), std::slice::from_ref);
-            let mut rows = Vec::new();
-            let mut members_remaining = MAX_SET_MEMBERS;
-            let mut bytes_remaining = MAX_SET_MEMBER_BYTES;
-            for name in names {
-                for source in root_sources {
-                    let members = recursive_members_at_root(
-                        store, &sources, source, &name, depth, &excluded,
-                    )?;
-                    if members.is_none() && root_source.is_none() {
-                        continue;
+        .run(
+            ctx.data::<QueryView>()?.clone(),
+            ctx.data_opt::<crate::storage::QueryControl>().cloned(),
+            move |store| {
+                let root_sources = root_source
+                    .as_ref()
+                    .map_or(sources.as_slice(), std::slice::from_ref);
+                let mut rows = Vec::new();
+                let mut members_remaining = MAX_SET_MEMBERS;
+                let mut bytes_remaining = MAX_SET_MEMBER_BYTES;
+                for name in names {
+                    for source in root_sources {
+                        let members = recursive_members_at_root(
+                            store,
+                            &sources,
+                            source,
+                            &name,
+                            depth,
+                            &excluded,
+                            Some(budget.clone()),
+                        )?;
+                        if members.is_none() && root_source.is_none() {
+                            continue;
+                        }
+                        let members = members.unwrap_or_default();
+                        let bytes = members.iter().map(|member| member.len() + 1).sum::<usize>();
+                        if rows.len() == MAX_SET_ROOTS
+                            || members.len() > members_remaining
+                            || bytes > bytes_remaining
+                        {
+                            return Ok(None);
+                        }
+                        members_remaining -= members.len();
+                        bytes_remaining -= bytes;
+                        rows.push(SetMembers {
+                            rpsl_pk: name.clone(),
+                            root_source: source.clone(),
+                            members,
+                        });
                     }
-                    let members = members.unwrap_or_default();
-                    let bytes = members.iter().map(|member| member.len() + 1).sum::<usize>();
-                    if rows.len() == MAX_SET_ROOTS
-                        || members.len() > members_remaining
-                        || bytes > bytes_remaining
-                    {
-                        return Ok(None);
-                    }
-                    members_remaining -= members.len();
-                    bytes_remaining -= bytes;
-                    rows.push(SetMembers {
-                        rpsl_pk: name.clone(),
-                        root_source: source.clone(),
-                        members,
-                    });
                 }
-            }
-            Ok(Some(rows))
-        })
+                Ok(Some(rows))
+            },
+        )
         .await?
-        .ok_or_else(|| Error::new("Set expansion result exceeds GraphQL limits."))?;
+        .ok_or_else(|| {
+            query_error(
+                QueryFailure::Limit,
+                "Set expansion result exceeds GraphQL limits.",
+            )
+        })?;
     Ok(Some(FieldValue::list(
         rows.into_iter().map(FieldValue::owned_any),
     )))
@@ -753,6 +1060,7 @@ async fn recursive_set_members(
 
 struct DatabaseStatus {
     source: String,
+    alias: Option<Vec<String>>,
     authoritative: bool,
     serial: Option<u64>,
     local_serial: Option<u64>,
@@ -774,29 +1082,40 @@ fn database_status_type() -> GraphqlObject {
     let int = TypeRef::named(TypeRef::INT);
     type StatusValue = fn(&DatabaseStatus) -> Option<Value>;
     let fields: [(&str, TypeRef, StatusValue); 12] = [
-        ("source_type", string.clone(), |_| {
-            Some(Value::from("regular"))
+        ("source_type", string.clone(), |status| {
+            Some(Value::from(if status.alias.is_some() {
+                "alias"
+            } else {
+                "regular"
+            }))
         }),
         ("source", string, |status| {
             Some(Value::from(status.source.as_str()))
         }),
         ("authoritative", boolean.clone(), |status| {
-            Some(Value::from(status.authoritative))
+            status
+                .alias
+                .is_none()
+                .then(|| Value::from(status.authoritative))
         }),
-        ("rpkiRovFilter", boolean.clone(), |_| {
-            Some(Value::from(false))
+        ("rpkiRovFilter", boolean.clone(), |status| {
+            status.alias.is_none().then(|| Value::from(false))
         }),
-        ("scopefilterEnabled", boolean.clone(), |_| {
-            Some(Value::from(false))
+        ("scopefilterEnabled", boolean.clone(), |status| {
+            status.alias.is_none().then(|| Value::from(false))
         }),
         ("localJournalKept", boolean.clone(), |status| {
-            Some(Value::from(
-                status.local_serial.is_some() || status.journal.is_some(),
-            ))
+            status
+                .alias
+                .is_none()
+                .then(|| Value::from(status.local_serial.is_some() || status.journal.is_some()))
         }),
         ("synchronisedSerials", boolean, |status| {
             let newest = status.journal.map(|(_, newest)| newest);
-            Some(Value::from(newest.is_some() && newest == status.serial))
+            status
+                .alias
+                .is_none()
+                .then(|| Value::from(newest.is_some() && newest == status.serial))
         }),
         ("serialOldestJournal", int.clone(), |status| {
             status_int(status.journal.map(|(oldest, _)| oldest))
@@ -843,12 +1162,24 @@ fn database_status_type() -> GraphqlObject {
         ("nrtm4ServerLastSnapshotVersion", int),
         ("rpslDataUpdated", TypeRef::named(TypeRef::STRING)),
         ("lastUpdate", TypeRef::named(TypeRef::STRING)),
-        ("aliased_sources", TypeRef::named_nn_list(TypeRef::STRING)),
     ] {
         object = object.field(Field::new(name, ty, |_| {
             FieldFuture::new(async { Ok(None::<FieldValue<'_>>) })
         }));
     }
+    object = object.field(Field::new(
+        "aliased_sources",
+        TypeRef::named_nn_list(TypeRef::STRING),
+        |ctx| {
+            FieldFuture::new(async move {
+                let status = ctx.parent_value.try_downcast_ref::<DatabaseStatus>()?;
+                Ok(status
+                    .alias
+                    .as_ref()
+                    .map(|sources| FieldValue::list(sources.iter().map(FieldValue::value))))
+            })
+        },
+    ));
     object
 }
 
@@ -856,11 +1187,12 @@ async fn database_status(
     ctx: ResolverContext<'_>,
 ) -> async_graphql::Result<Option<FieldValue<'_>>> {
     let lookup = ctx.data::<Lookup>()?;
-    let mut sources = source_filter(&ctx, &lookup.sources)?;
+    let mut sources = source_names(&ctx, &lookup.sources)?;
     if sources.len() > MAX_FILTER_VALUES {
-        return Err(Error::new(format!(
-            "Select at most {MAX_FILTER_VALUES} sources for databaseStatus."
-        )));
+        return Err(query_error(
+            QueryFailure::Limit,
+            format!("Select at most {MAX_FILTER_VALUES} sources for databaseStatus."),
+        ));
     }
     if sources.is_empty() {
         return Ok(Some(FieldValue::list(Vec::<FieldValue<'_>>::new())));
@@ -868,40 +1200,68 @@ async fn database_status(
     let mut seen = HashSet::new();
     sources.retain(|source| seen.insert(source.clone()));
     let authoritative_sources = Arc::clone(&lookup.authoritative_sources);
+    let aliases = ctx.data_unchecked::<SourceAliases>().clone();
     let rows = lookup
-        .run(ctx.data_opt::<QueryView>().cloned(), move |store| {
-            sources
-                .into_iter()
-                .map(|source| {
-                    let authoritative = authoritative_sources.contains(&source);
-                    let serial = store.source_serial(&source)?;
-                    let local_serial = store.source_local_serial(&source)?;
-                    let journal = store.nrtm3_journal_bounds(&source)?;
-                    let nrtm4 = store
-                        .nrtm4_state(&source)?
-                        .map(|state| (state.session_id, state.version));
-                    Ok(DatabaseStatus {
-                        source,
-                        authoritative,
-                        serial,
-                        local_serial,
-                        journal,
-                        nrtm4,
+        .run(
+            ctx.data::<QueryView>()?.clone(),
+            ctx.data_opt::<crate::storage::QueryControl>().cloned(),
+            move |store| {
+                sources
+                    .into_iter()
+                    .map(|source| {
+                        if let Some(members) = aliases.get(&source) {
+                            return Ok(DatabaseStatus {
+                                source,
+                                alias: Some(members.clone()),
+                                authoritative: false,
+                                serial: None,
+                                local_serial: None,
+                                journal: None,
+                                nrtm4: None,
+                            });
+                        }
+                        let authoritative = authoritative_sources.contains(&source);
+                        let serial = store.source_serial(&source)?;
+                        let local_serial = store.source_local_serial(&source)?;
+                        let journal = store.nrtm3_journal_bounds(&source)?;
+                        let nrtm4 = store
+                            .nrtm4_state(&source)?
+                            .map(|state| (state.session_id, state.version));
+                        Ok(DatabaseStatus {
+                            source,
+                            alias: None,
+                            authoritative,
+                            serial,
+                            local_serial,
+                            journal,
+                            nrtm4,
+                        })
                     })
-                })
-                .collect::<Result<Vec<_>>>()
-        })
+                    .collect::<Result<Vec<_>>>()
+            },
+        )
         .await?;
     Ok(Some(FieldValue::list(
         rows.into_iter().map(FieldValue::owned_any),
     )))
 }
 
+#[cfg(test)]
 fn make_schema(
     store: Arc<Store>,
     sources: Vec<String>,
     authoritative_sources: HashSet<String>,
 ) -> Result<Schema> {
+    schema_builder(store, sources, authoritative_sources)
+        .finish()
+        .context("building GraphQL schema")
+}
+
+fn schema_builder(
+    store: Arc<Store>,
+    sources: Vec<String>,
+    authoritative_sources: HashSet<String>,
+) -> SchemaBuilder {
     let list = TypeRef::named_nn_list(TypeRef::STRING);
     let ip_version = TypeRef::named(TypeRef::INT);
     let mut object_query = Field::new(
@@ -982,6 +1342,8 @@ fn make_schema(
     }
 
     let mut builder = Schema::build("Query", None, None)
+        .extension(PrefixLists)
+        .data(SourceAliases::new())
         .data(Lookup {
             store,
             sources: sources.into(),
@@ -1016,7 +1378,7 @@ fn make_schema(
         }
         builder = builder.register(object);
     }
-    builder.finish().context("building GraphQL schema")
+    builder
 }
 
 // HTTP is loopback-only. Reject arbitrary DNS names before any route (including
@@ -1063,33 +1425,79 @@ async fn bound_host(State(listen_ip): State<IpAddr>, req: HttpRequest, next: Nex
     next.run(req).await
 }
 
-async fn bound_http(State(limits): State<HttpLimits>, req: HttpRequest, next: Next) -> Response {
+async fn bound_http(
+    State(limits): State<HttpLimits>,
+    mut req: HttpRequest,
+    next: Next,
+) -> Response {
     let Ok(_permit) = limits.slots.try_acquire() else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
+    let control = crate::storage::QueryControl::new(limits.timeout);
+    let _cancel = control.cancel_on_drop();
+    req.extensions_mut().insert(control.clone());
     match tokio::time::timeout(limits.timeout, next.run(req)).await {
-        Ok(response) => response,
+        Ok(mut response) => {
+            if response
+                .extensions()
+                .get::<crate::storage::QueryControl>()
+                .is_none()
+            {
+                response.extensions_mut().insert(control);
+            }
+            crate::public_http::retain_query_control(response)
+        }
         Err(_) => StatusCode::GATEWAY_TIMEOUT.into_response(),
     }
 }
 
 async fn execute(
     State(schema): State<Schema>,
-    Extension(store): Extension<Arc<Store>>,
+    Extension(control): Extension<crate::storage::QueryControl>,
     Json(request): Json<Request>,
 ) -> impl IntoResponse {
-    let view = Arc::new(store.query_gate().clone().read_owned().await);
-    Json(schema.execute(request.data(view)).await)
+    let response = schema
+        .execute(
+            request
+                .data(Arc::new(sets::ResultBudget::default()))
+                .data(control),
+        )
+        .await;
+    let status = if response
+        .errors
+        .iter()
+        .any(|error| query_failure(error) == Some(QueryFailure::Capacity))
+    {
+        StatusCode::SERVICE_UNAVAILABLE
+    } else if response
+        .errors
+        .iter()
+        .any(|error| query_failure(error) == Some(QueryFailure::Deadline))
+    {
+        StatusCode::GATEWAY_TIMEOUT
+    } else {
+        StatusCode::OK
+    };
+    let mut response = (status, Json(response)).into_response();
+    if status == StatusCode::SERVICE_UNAVAILABLE {
+        response.headers_mut().insert(
+            axum::http::header::RETRY_AFTER,
+            axum::http::HeaderValue::from_static("1"),
+        );
+    }
+    response
 }
 
 pub struct HttpServiceConfig {
     pub sources: Vec<String>,
+    pub source_aliases: SourceAliases,
     pub authoritative_sources: HashSet<String>,
     pub update_sources: Option<HashSet<String>>,
     pub timeout: Duration,
     pub dashboard: crate::dashboard::Metadata,
     pub whois_sources: Option<Vec<String>>,
     pub public_queries: bool,
+    pub public_policy: crate::config::PublicHttpPolicy,
 }
 
 pub async fn serve(
@@ -1100,14 +1508,19 @@ pub async fn serve(
 ) -> Result<()> {
     let HttpServiceConfig {
         sources,
+        source_aliases,
         authoritative_sources,
         update_sources,
         timeout,
         dashboard,
         whois_sources,
         public_queries,
+        public_policy,
     } = config;
-    let schema = make_schema(store.clone(), sources.clone(), authoritative_sources)?;
+    let schema = schema_builder(store.clone(), sources.clone(), authoritative_sources)
+        .data(query_sources::visible(&sources, &source_aliases))
+        .finish()
+        .context("building GraphQL schema")?;
     let mut app = Router::new()
         .route("/graphql", post(execute))
         .route("/graphql/", post(execute))
@@ -1121,9 +1534,10 @@ pub async fn serve(
         ))
         .with_state(schema)
         .layer(Extension(store.clone()))
-        .merge(crate::whois::http_router(
+        .merge(crate::whois::http_router_with_aliases(
             store.clone(),
             whois_sources.unwrap_or_else(|| sources.clone()),
+            source_aliases,
             timeout,
         ));
     if let Some(update_sources) = update_sources {
@@ -1136,7 +1550,7 @@ pub async fn serve(
     app = app.merge(crate::dashboard::router(dashboard, store.clone())?);
     app = app.merge(crate::irr_api::router(store.clone(), sources, timeout));
     if public_queries {
-        app = crate::public_http::PublicHttp::new(timeout).wrap(app);
+        app = crate::public_http::PublicHttp::new(timeout, public_policy).wrap(app);
     }
     app = app.layer(middleware::from_fn_with_state(
         listener.local_addr()?.ip(),
@@ -1165,12 +1579,14 @@ mod tests {
         update_sources: Option<HashSet<String>>,
     ) -> HttpServiceConfig {
         HttpServiceConfig {
+            source_aliases: SourceAliases::new(),
             sources: vec!["TEST".into()],
             authoritative_sources: HashSet::new(),
             update_sources,
             timeout: Duration::from_secs(2),
             whois_sources: None,
             public_queries: false,
+            public_policy: Default::default(),
             dashboard: crate::dashboard::Metadata {
                 mode: "live",
                 version: env!("CARGO_PKG_VERSION"),
@@ -1187,7 +1603,15 @@ mod tests {
     async fn cancelled_graphql_worker_keeps_its_coherent_view_until_it_finishes() -> Result<()> {
         let directory = tempfile::tempdir()?;
         let store = Arc::new(Store::open(&directory.path().join("cancelled.redb"))?);
-        let view = Arc::new(store.query_gate().clone().read_owned().await);
+        store.replace_source(
+            "TEST",
+            [
+                crate::rpsl::parse("route: 192.0.2.0/24\norigin: AS64496\nsource: TEST\n")
+                    .map_err(anyhow::Error::msg),
+            ],
+        )?;
+        let view = store.query_view()?;
+        let lifetime = view.lifetime();
         let lookup = Lookup {
             store: store.clone(),
             sources: Arc::new([]),
@@ -1196,11 +1620,15 @@ mod tests {
         };
         let (started, ready) = tokio::sync::oneshot::channel();
         let (finish, wait) = std::sync::mpsc::channel();
+        let (finished, done) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {
             lookup
-                .run(Some(view), move |_| {
+                .run(view, None, move |store| {
+                    let before = store.origin_prefixes("route", "AS64496", &["TEST".into()], 8)?;
                     let _ = started.send(());
                     wait.recv_timeout(Duration::from_secs(5))?;
+                    let after = store.origin_prefixes("route", "AS64496", &["TEST".into()], 8)?;
+                    let _ = finished.send((before, after));
                     Ok(())
                 })
                 .await
@@ -1208,11 +1636,219 @@ mod tests {
         ready.await?;
         task.abort();
         assert!(task.await.unwrap_err().is_cancelled());
-        assert!(store.query_gate().try_write().is_err());
+        assert!(lifetime.upgrade().is_some());
+        // A cancelled caller does not prevent a concurrent writer committing,
+        // but its still-running worker must continue reading the original view.
+        let writer = store.clone();
+        spawn_blocking(move || {
+            writer.replace_source(
+                "TEST",
+                [
+                    crate::rpsl::parse("route: 203.0.113.0/24\norigin: AS64496\nsource: TEST\n")
+                        .map_err(anyhow::Error::msg),
+                ],
+            )
+        })
+        .await??;
         finish.send(())?;
-        let guard =
-            tokio::time::timeout(Duration::from_secs(5), store.query_gate().write()).await?;
-        drop(guard);
+        let (before, after) = tokio::time::timeout(Duration::from_secs(5), done).await??;
+        assert_eq!(before, vec!["192.0.2.0/24"]);
+        assert_eq!(after, before);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while lifetime.upgrade().is_some() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await?;
+        assert_eq!(
+            store.origin_prefixes("route", "AS64496", &["TEST".into()], 8)?,
+            vec!["203.0.113.0/24"]
+        );
+        Ok(())
+    }
+
+    struct CommitBetweenAliases {
+        store: Arc<Store>,
+        committed: Semaphore,
+        pending: std::sync::atomic::AtomicBool,
+        view_lifetime: Mutex<Option<std::sync::Weak<()>>>,
+    }
+    struct CommitBetweenAliasesFactory(Arc<CommitBetweenAliases>);
+
+    impl async_graphql::extensions::ExtensionFactory for CommitBetweenAliasesFactory {
+        fn create(&self) -> Arc<dyn async_graphql::extensions::Extension> {
+            self.0.clone()
+        }
+    }
+
+    #[async_graphql::async_trait::async_trait]
+    impl async_graphql::extensions::Extension for CommitBetweenAliases {
+        async fn prepare_request(
+            &self,
+            ctx: &async_graphql::extensions::ExtensionContext<'_>,
+            request: Request,
+            next: async_graphql::extensions::NextPrepareRequest<'_>,
+        ) -> async_graphql::ServerResult<Request> {
+            let view = request
+                .data
+                .get(&std::any::TypeId::of::<QueryView>())
+                .and_then(|value| value.downcast_ref::<QueryView>())
+                .unwrap();
+            *self.view_lifetime.lock().unwrap() = Some(view.lifetime());
+            next.run(ctx, request).await
+        }
+
+        async fn resolve(
+            &self,
+            ctx: &async_graphql::extensions::ExtensionContext<'_>,
+            info: async_graphql::extensions::ResolveInfo<'_>,
+            next: async_graphql::extensions::NextResolve<'_>,
+        ) -> async_graphql::ServerResult<Option<Value>> {
+            if info.parent_type != "Query" || !self.pending.load(Ordering::Acquire) {
+                return next.run(ctx, info).await;
+            }
+            if info.path_node.to_string() != "first" {
+                self.committed.acquire().await.unwrap().forget();
+                return next.run(ctx, info).await;
+            }
+            let first = next.run(ctx, info).await;
+            let store = self.store.clone();
+            let update = spawn_blocking(move || -> Result<()> {
+                use crate::nrtm3::{Kind, Operation};
+                let records = [
+                    (
+                        Kind::Delete,
+                        "route: 192.0.2.0/24\norigin: AS64496\nsource: TEST\n",
+                    ),
+                    (
+                        Kind::Add,
+                        "route: 203.0.113.0/24\norigin: AS64496\nsource: TEST\n",
+                    ),
+                    (
+                        Kind::Delete,
+                        "route: 198.51.100.0/24\norigin: AS64497\nsource: TEST\n",
+                    ),
+                    (
+                        Kind::Add,
+                        "route6: 2001:db8::/32\norigin: AS64497\nsource: TEST\n",
+                    ),
+                    (
+                        Kind::Add,
+                        "as-set: AS-COHERENT\nmembers: AS64497\nsource: TEST\n",
+                    ),
+                ];
+                let operations = records
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, (kind, text))| {
+                        Ok(Operation {
+                            kind,
+                            serial: index as u64 + 1,
+                            object: crate::rpsl::parse(text)?,
+                        })
+                    });
+                store.apply_nrtm3("TEST", (1, 5), Some(0), operations)?;
+                Ok(())
+            })
+            .await;
+            self.pending.store(false, Ordering::Release);
+            self.committed.add_permits(32);
+            update
+                .map_err(|error| async_graphql::ServerError::new(error.to_string(), None))?
+                .map_err(|error| async_graphql::ServerError::new(error.to_string(), None))?;
+            first
+        }
+    }
+
+    #[tokio::test]
+    async fn graphql_aliases_rows_sets_and_serials_share_one_snapshot_across_commit() -> Result<()>
+    {
+        let directory = tempfile::tempdir()?;
+        let store = Arc::new(Store::open(&directory.path().join("coherent.redb"))?);
+        store.replace_source(
+            "TEST",
+            [
+                "route: 192.0.2.0/24\norigin: AS64496\nsource: TEST\n",
+                "route: 198.51.100.0/24\norigin: AS64497\nsource: TEST\n",
+                "as-set: AS-COHERENT\nmembers: AS64496\nsource: TEST\n",
+            ]
+            .into_iter()
+            .map(|text| crate::rpsl::parse(text).map_err(anyhow::Error::msg)),
+        )?;
+        let extension = Arc::new(CommitBetweenAliases {
+            store: store.clone(),
+            committed: Semaphore::new(0),
+            pending: std::sync::atomic::AtomicBool::new(true),
+            view_lifetime: Mutex::new(None),
+        });
+        let schema = schema_builder(store, vec!["TEST".into()], HashSet::new())
+            .extension(CommitBetweenAliasesFactory(extension.clone()))
+            .finish()?;
+        let query = r#"{
+            first: asnPrefixes(asns:[64496,64497]) { asn prefixes }
+            second: asnPrefixes(asns:[64496,64497]) { asn prefixes }
+            sets: asSetPrefixes(setNames:["AS-COHERENT"]) { prefixes }
+            members: recursiveSetMembers(setNames:["AS-COHERENT"]) { members }
+            objects: rpslObjects(rpslPk:["AS-COHERENT"]) { ... on RPSLAsSet { members } }
+            state: databaseStatus(sources:["TEST"]) { serialNewestMirror serialOldestJournal serialNewestJournal }
+        }"#;
+        let response = tokio::time::timeout(Duration::from_secs(5), schema.execute(query)).await?;
+        assert!(response.errors.is_empty(), "{:?}", response.errors);
+        let old = json!([
+            {"asn":64496,"prefixes":["192.0.2.0/24"]},
+            {"asn":64497,"prefixes":["198.51.100.0/24"]}
+        ]);
+        assert_eq!(
+            response.data.into_json()?,
+            json!({
+                "first":old,"second":old,
+                "sets":[{"prefixes":["192.0.2.0/24"]}],
+                "members":[{"members":["AS64496"]}],
+                "objects":[{"members":["AS64496"]}],
+                "state":[{"serialNewestMirror":null,"serialOldestJournal":null,"serialNewestJournal":null}]
+            })
+        );
+        let response = schema.execute(query).await;
+        assert!(response.errors.is_empty(), "{:?}", response.errors);
+        let new = json!([
+            {"asn":64496,"prefixes":["203.0.113.0/24"]},
+            {"asn":64497,"prefixes":["2001:db8::/32"]}
+        ]);
+        assert_eq!(
+            response.data.into_json()?,
+            json!({
+                "first":new,"second":new,
+                "sets":[{"prefixes":["2001:db8::/32"]}],
+                "members":[{"members":["AS64497"]}],
+                "objects":[{"members":["AS64497"]}],
+                "state":[{"serialNewestMirror":5,"serialOldestJournal":1,"serialNewestJournal":5}]
+            })
+        );
+        // Keep the HTTP response body unconsumed. Its output lease may live on,
+        // but its completed calculation must no longer retain database pages.
+        let response = execute(
+            State(schema),
+            Extension(crate::storage::QueryControl::new(Duration::from_secs(5))),
+            Json(Request::new(query)),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(
+            extension
+                .view_lifetime
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .upgrade()
+                .is_none()
+        );
+        let body = axum::body::to_bytes(response.into_body(), 16 * 1024).await?;
+        assert_eq!(
+            serde_json::from_slice::<JsonValue>(&body)?["data"]["first"],
+            new
+        );
         Ok(())
     }
 
@@ -1642,6 +2278,118 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn graph_query_failures_use_typed_codes_and_discard_all_alias_data() -> Result<()> {
+        let (_directory, schema) = test_schema()?;
+        let query = "{ first: asnPrefixes(asns:[64496]) { prefixes } second: asnPrefixes(asns:[64496]) { prefixes } }";
+        let limited = schema
+            .execute(Request::new(query).data(Arc::new(sets::ResultBudget::new(3, 4096))))
+            .await;
+        assert_eq!(limited.data, Value::Null);
+        assert!(
+            limited
+                .errors
+                .iter()
+                .any(|error| query_failure(error) == Some(QueryFailure::Limit))
+        );
+        let expired = schema
+            .execute(Request::new(query).data(crate::storage::QueryControl::new(Duration::ZERO)))
+            .await;
+        assert_eq!(expired.data, Value::Null);
+        assert!(
+            expired
+                .errors
+                .iter()
+                .any(|error| query_failure(error) == Some(QueryFailure::Deadline))
+        );
+        let directory = tempfile::tempdir()?;
+        let saturated = Lookup {
+            store: Arc::new(Store::open(&directory.path().join("registry.redb"))?),
+            sources: Arc::new(["TEST".into()]),
+            authoritative_sources: Arc::new(HashSet::new()),
+            slots: Arc::new(Semaphore::new(0)),
+        };
+        let busy = schema.execute(Request::new(query).data(saturated)).await;
+        assert_eq!(busy.data, Value::Null);
+        assert!(
+            busy.errors
+                .iter()
+                .any(|error| query_failure(error) == Some(QueryFailure::Capacity))
+        );
+        let recovery = schema.execute(query).await;
+        assert!(recovery.errors.is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn prefix_scalar_fast_path_preserves_fragments_directives_and_alias_budgets() -> Result<()>
+    {
+        let (_directory, schema) = test_schema()?;
+        let query = r#"query($skip: Boolean!) {
+            origin: asnPrefixes(asns:[64496]) { asn ...PrefixFields }
+        }
+        fragment PrefixFields on ASNPrefixes {
+            first: prefixes
+            second: prefixes @skip(if:$skip)
+        }"#;
+        for (skip, budget, valid) in [(false, 6, true), (false, 5, false), (true, 3, true)] {
+            let response = schema
+                .execute(
+                    Request::new(query)
+                        .variables(async_graphql::Variables::from_json(json!({"skip":skip})))
+                        .data(Arc::new(sets::ResultBudget::new(budget, 4096))),
+                )
+                .await;
+            assert_eq!(response.errors.is_empty(), valid, "{:?}", response.errors);
+            if valid {
+                let value = serde_json::to_value(response.data)?;
+                assert_eq!(value["origin"][0]["first"].as_array().unwrap().len(), 3);
+                if skip {
+                    assert!(value["origin"][0].get("second").is_none());
+                } else {
+                    assert_eq!(value["origin"][0]["first"], value["origin"][0]["second"]);
+                }
+            } else {
+                assert_eq!(response.data, Value::Null);
+            }
+        }
+        // Invalid scalar selections are rejected by the ordinary GraphQL
+        // validator before the specialized value executor can run.
+        let invalid = schema
+            .execute("{ asnPrefixes(asns:[64496]) { prefixes { bogus } } }")
+            .await;
+        assert!(!invalid.errors.is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn prefix_aliases_share_one_output_budget_and_recover() -> Result<()> {
+        let (_directory, schema) = test_schema()?;
+        let query = r#"{
+            first: asnPrefixes(asns:[64496]) { prefixes }
+            second: asSetPrefixes(setNames:["AS-EXAMPLE"]) { prefixes }
+        }"#;
+        let response = schema
+            .execute(Request::new(query).data(Arc::new(sets::ResultBudget::new(4, 1024))))
+            .await;
+        assert!(
+            response
+                .errors
+                .iter()
+                .any(|error| error.message.contains("resource limits")),
+            "{:?}",
+            response.errors
+        );
+        let recovery = schema
+            .execute(
+                Request::new(r#"{ asnPrefixes(asns:[64496]) { prefixes } }"#)
+                    .data(Arc::new(sets::ResultBudget::new(3, 1024))),
+            )
+            .await;
+        assert!(recovery.errors.is_empty(), "{:?}", recovery.errors);
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn rejects_unbounded_queries_and_large_alias_sets() -> Result<()> {
         let (_directory, schema) = test_schema()?;
         for query in [
@@ -1781,7 +2529,7 @@ mod tests {
         let (stop, stopped) = oneshot::channel();
         let server = tokio::spawn(serve(
             listener,
-            store,
+            store.clone(),
             test_http_config(address, None),
             async move {
                 let _ = stopped.await;
@@ -1807,7 +2555,11 @@ mod tests {
         }
 
         let body = json!({"query":"{ rpslObjects(rpslPk:[\"AS64496\"]) { rpslPk } }"}).to_string();
+        // A mirror writer's mutation gate must not stop an unrelated GraphQL
+        // read from serving the latest committed MVCC snapshot over HTTP.
+        let writer = store.query_gate().clone().write_owned().await;
         let reply = request(address, &body).await?;
+        drop(writer);
         assert!(reply.starts_with("HTTP/1.1 200 "), "{reply}");
         assert!(reply.contains(r#""rpslObjects":[]"#), "{reply}");
         let reply = request(address, &" ".repeat(MAX_HTTP_BYTES + 1)).await?;

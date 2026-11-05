@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Download a tagged beta package and verify its published SHA-256 checksum.
 set -euo pipefail
-version=0.1.0-beta.3
+version=0.1.0-beta.4
 format=auto
 destination=
 usage() { printf '%s\n' 'Usage: bash tools/install.sh [--version X.Y.Z-beta.N] [--format deb|rpm] [--download-only DIRECTORY]'; }

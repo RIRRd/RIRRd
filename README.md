@@ -1,6 +1,6 @@
 # RIRRd
 
-**Beta 0.1.0-beta.3** · [MIT license](LICENSE) · [Project website](https://rirrd.net/)
+**Beta 0.1.0-beta.4** · [MIT license](LICENSE) · [Project website](https://rirrd.net/)
 · [Community tools](https://irrd.tools/) · [Beta status](docs/BETA_STATUS.md)
 
 A Rust Internet Routing Registry daemon with embedded storage, bounded WHOIS,
@@ -149,11 +149,40 @@ printf '!mroute,192.0.2.0/24AS64496\n' | nc 127.0.0.1 4343
 
 Bare, route and inverse lookups return at most 16 objects. Object lookups also have
 a 2 MiB budget for raw text and identities, checked before copying database values.
-A single-AS origin lookup returns at most 4,096 distinct prefixes. Set expansion
-has separate traversal limits. Requests exceeding a limit fail as a whole with
-a query-limit error. Large mirrored records remain stored and exportable.
-The mirror parser validates record structure and identity. Indexing retains valid
-optional lookup values and reports malformed values that it skipped.
+Single-AS origin lookups and set-member queries allow up to 262,144 values and
+16 MiB of unframed output. AS-set **prefix** expansion has a separate finite
+budget of 4,000,000 distinct prefixes and 96 MiB, so large transit sets can return
+complete routing lists. GraphQL aliases share these request-wide budgets.
+Set traversal is bounded to 65,536 sets, 131,072 origins and depth 64; route
+expansion scans at most 16,000,000 values and 256 MiB of indexed work. Member
+expansion retains the smaller 2,000,000-value /64 MiB work budget. Indexed
+indirect membership and set text remain bounded independently to 2,000,000 rows
+and 64 MiB. Lookup extraction checks at most 262,144 tokens per set before
+allocating member vectors. Prefixes and indirect members use indexes without
+copying full RPSL records.
+
+Only one query above 262,144 collected prefixes may run at a time, across TCP,
+HTTP and GraphQL. Its lease remains held through serialization and response
+consumption, including slow readers; competing large queries receive an explicit
+capacity error and no partial answer. Smaller queries retain their ordinary
+concurrency. Absolute deadlines and cancellation stop index/traversal work.
+Operators serving very large transit sets may need a longer finite
+`io_timeout_seconds`; this does not change the result or memory limits.
+
+Each WHOIS or GraphQL request reads one committed database snapshot. Mirror
+updates can commit concurrently; recursive expansion and GraphQL aliases retain
+the same view throughout a response. The read snapshot is released when query
+calculation finishes, before a slow client consumes the prepared response.
+Writer ordering and authoritative-update transactions remain serialized.
+
+GraphQL resolver resource failures return `data: null` with a stable `extensions.code`:
+`RIRRD_RESOURCE_LIMIT`, `RIRRD_CAPACITY`, or `RIRRD_QUERY_TIMEOUT`. Capacity
+responses use HTTP 503 with `Retry-After: 1`; deadlines use HTTP 504. HTTP
+admission or an outer timeout can reject before a GraphQL body is available. Query
+validation and ordinary GraphQL errors retain their normal response behavior.
+A source filter limits both set definitions and routes. To prefer one source's
+set definition while including routes from other registries, pass the complete
+source list in the desired priority order rather than selecting that source alone.
 
 | Configuration | Purpose |
 |---|---|
