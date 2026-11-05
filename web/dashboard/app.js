@@ -6,6 +6,8 @@
   const bytes = n => Number.isFinite(n) ? n >= 1073741824 ? (n / 1073741824).toFixed(2) + ' GiB' : (n / 1048576).toFixed(1) + ' MiB' : 'Not reported';
   const pages = ['overview', 'query', 'sources', 'api', 'connect', 'system'];
   let metadata, latest, loading = false, currentResult = '', command = '', cursor = null, queryController;
+  let resultBlob = null, downloadUrl = null;
+  const PREVIEW_BYTES = 64 * 1024, PREVIEW_ITEMS = 1000, RESPONSE_BYTES = 96 * 1024 * 1024;
   let historyData, historyFetched = 0, historyScope = 'run', historyWindow = 3600;
   const publicMode = () => metadata?.public_service === true;
   const selectedPage = () => pages.includes(location.hash.slice(1)) ? location.hash.slice(1) : 'overview';
@@ -232,6 +234,10 @@
   function requestPath(q) { const p = new URLSearchParams({q}); if (el('query-source').value) p.set('sources', el('query-source').value); return '/v1/whois/?' + p; }
   function updateCommand() {
     const kind=el('query-kind').value,family=el('query-family').value;
+    const sources=metadata?.http_sources || metadata?.sources || [],source=el('query-source').value;
+    const order=(source ? 'Using ' + source + ' only. ' : 'Using all configured sources. ') +
+      (sources.length ? 'Default source order: ' + sources.join(' → ') + '.' : 'Source order is unavailable.');
+    if(el('query-source-order').textContent!==order)text('query-source-order',order);
     document.querySelectorAll('[data-task]').forEach(button=>{
       const active=button.dataset.task===(kind==='origin'?'origin'+family:kind==='set'?'set'+family:kind);
       button.setAttribute('aria-pressed',String(active));
@@ -251,20 +257,107 @@
     try { command = "curl --fail '" + location.origin + requestPath(queryText()) + "'"; } catch { command = 'Choose a query above.'; }
     text('query-command', command);
   }
+  function clearResult() {
+    currentResult = ''; resultBlob = null;
+    if (downloadUrl) URL.revokeObjectURL(downloadUrl);
+    downloadUrl = null;
+    el('copy-result').disabled = true; el('download-result').disabled = true;
+    text('copy-result', 'Copy results'); text('result-count', '');
+    text('result-preview-note', ''); el('result-preview-note').hidden = true;
+  }
+  async function receiveResult(response, list, signal) {
+    let received = 0, items = 0, inside = false, preview = '', yielded = 0;
+    const decoder = new TextDecoder(), previewDecoder = new TextDecoder();
+    const checkSize = size => { if (size > RESPONSE_BYTES) throw new Error('Response exceeds the console’s 96 MiB download limit. No usable result was retained; use the equivalent HTTP command.'); };
+    checkSize(Number(response.headers.get('Content-Length')) || 0);
+    const tokens = value => {
+      for (let index = 0; index < value.length; index++) {
+        const code = value.charCodeAt(index), space = code === 32 || (code >= 9 && code <= 13) || (code > 127 && /\s/.test(value[index]));
+        if (!space && !inside) items++;
+        inside = !space;
+      }
+    };
+    const stream = response.body?.pipeThrough(new TransformStream({
+      async transform(chunk, sink) {
+        if (signal.aborted) throw new DOMException('Query cancelled', 'AbortError');
+        const previous = received; received += chunk.byteLength; checkSize(received);
+        for (let offset = 0; offset < chunk.byteLength; offset += 256 * 1024) {
+          if (signal.aborted) throw new DOMException('Query cancelled', 'AbortError');
+          const part = chunk.subarray(offset, Math.min(offset + 256 * 1024, chunk.byteLength));
+          if (list) tokens(decoder.decode(part, {stream: true}));
+          if (previous + offset < PREVIEW_BYTES) preview += previewDecoder.decode(part.subarray(0, PREVIEW_BYTES - previous - offset), {stream: true});
+          // Yield between bounded chunks so cancel and navigation stay responsive.
+          if (previous + offset + part.byteLength - yielded >= 1024 * 1024) {
+            yielded = previous + offset + part.byteLength; text('query-status', 'Receiving complete response · ' + bytes(yielded) + '.');
+            await new Promise(resolve => setTimeout(resolve, 0));
+          }
+        }
+        sink.enqueue(chunk);
+      }
+    }));
+    // Blob storage keeps the full payload out of JS token arrays and DOM text.
+    const blob = stream ? await new Response(stream).blob() : new Blob([]);
+    if (signal.aborted) throw new DOMException('Query cancelled', 'AbortError');
+    if (list) tokens(decoder.decode());
+    if (received <= PREVIEW_BYTES) preview += previewDecoder.decode();
+    const large = received > PREVIEW_BYTES || (list && items > PREVIEW_ITEMS);
+    if (list && large && received > PREVIEW_BYTES && /\S$/.test(preview)) preview = preview.replace(/\S+$/, '');
+    if (list && large) {
+      const matcher = /\S+/g; let match, shown = 0, bounded = '';
+      while (shown < PREVIEW_ITEMS && (match = matcher.exec(preview))) { bounded += (shown ? '\n' : '') + match[0]; shown++; }
+      return {blob, preview: bounded, items, large, shown};
+    }
+    const formatted = list ? [...new Set(preview.trim().split(/\s+/).filter(Boolean))].join('\n') : preview.trim();
+    return {blob, preview: formatted, items: list && formatted ? formatted.split('\n').length : 0, large};
+  }
+  async function copyResult() {
+    const blob = resultBlob; if (!blob) return;
+    try {
+      const complete = currentResult || await blob.text();
+      if (resultBlob !== blob) return;
+      await navigator.clipboard.writeText(complete);
+      if (resultBlob === blob) text('query-status', 'Copied the complete result.');
+    } catch {
+      if (resultBlob === blob) text('query-status', 'The clipboard could not copy the complete result. Use Download complete; the displayed preview may be incomplete.');
+    }
+  }
+  function downloadResult() {
+    if (!resultBlob) return;
+    if (!downloadUrl) downloadUrl = URL.createObjectURL(resultBlob);
+    const link = document.createElement('a'); link.href = downloadUrl; link.download = 'rirrd-query-result.txt';
+    document.body.append(link); link.click(); link.remove();
+  }
   async function query(event) {
     event.preventDefault(); queryController?.abort(); const controller = new AbortController(); queryController = controller;
-    const timeout = setTimeout(() => controller.abort(), 15000); el('query-submit').disabled = true; el('copy-result').disabled = true; text('query-status', 'Querying…'); text('result-count', '');
+    const kind = el('query-kind').value, setQuery = ['set','members','recursive'].includes(kind);
+    const timeout = setTimeout(() => controller.abort('timeout'), setQuery ? 120000 : 30000);
+    clearResult(); text('query-result', 'Waiting for a complete response…');
+    el('query-submit').disabled = true; el('query-cancel').hidden = false; el('query-cancel').disabled = false;
+    text('query-status', setQuery ? 'Querying… Large set queries have a two-minute time limit. You can cancel.' : 'Querying… You can cancel.');
     try {
-      const q = queryText(), kind = el('query-kind').value, source = el('query-source').value; updateCommand(); const response = await fetch(requestPath(q), {cache: 'no-store', signal: controller.signal});
+      const q = queryText(), source = el('query-source').value; updateCommand(); const response = await fetch(requestPath(q), {cache: 'no-store', signal: controller.signal});
       if (!response.ok) throw new Error(httpFailure(response.status));
-      const raw = response.status === 204 ? '' : await response.text(); if (raw.length > 2097152) throw new Error('Result exceeds the display limit. Narrow the source or set.');
-      if (queryController !== controller) return;
       const list = ['origin', 'set', 'members', 'recursive'].includes(kind);
-      currentResult = list ? [...new Set(raw.trim().split(/\s+/).filter(Boolean))].join('\n') : raw.trim();
-      text('query-result', currentResult || 'No matching records.'); text('result-count', currentResult ? list ? currentResult.split('\n').length + ' items' : 'RPSL response' : '0 items');
-      text('query-status', currentResult ? 'Returned by ' + (source || 'configured source order') + '. Ready to copy.' : 'No matching records in this scope.'); el('copy-result').disabled = !currentResult;
-    } catch (error) { if (queryController !== controller) return; currentResult = ''; text('query-result', 'No usable response was returned.'); text('query-status', error.name === 'AbortError' ? 'The query timed out or was cancelled. Try a narrower query.' : error.message); }
-    finally { clearTimeout(timeout); if (queryController === controller) el('query-submit').disabled = false; }
+      const result = await receiveResult(response, list, controller.signal);
+      if (queryController !== controller) return;
+      const nonempty = list ? result.items > 0 : result.blob.size > 0;
+      if (nonempty) { resultBlob = result.blob; if (!result.large) currentResult = result.preview; }
+      const empty=setQuery ? 'No ' + (kind==='set'?'prefixes':'members') + ' were returned. An empty list does not prove that the set is missing: its first matching definition may be empty or have no usable members in this scope. Select another IRR source to compare its definition.' :
+        kind==='origin' ? 'No prefixes were returned for this ASN in the selected sources.' : 'No matching records were returned for this query.';
+      text('query-result', nonempty ? result.preview || 'No complete item fits in the preview. Download the complete response.' : empty);
+      text('result-count', nonempty ? list ? count(result.items) + ' items' : 'RPSL response' : '0 items');
+      if (result.large) {
+        text('result-preview-note', 'Preview only — ' + (list ? count(result.shown) + ' of ' + count(result.items) + ' items shown. ' : 'The first 64 KiB of text is shown. ') + 'Download or copy the complete response (' + bytes(result.blob.size) + '). Do not use this preview as a routing policy.');
+        el('result-preview-note').hidden = false; text('copy-result', 'Copy complete');
+      }
+      text('query-status', nonempty ? 'Complete response received from ' + (source || 'configured source order') + (result.large ? '. Preview shown below.' : '. Ready to copy.') : setQuery ? 'Empty list returned. Check source selection before using this as a routing policy.' : 'No results returned in this scope.');
+      el('copy-result').disabled = !nonempty; el('download-result').disabled = !nonempty;
+    } catch (error) {
+      if (queryController !== controller) return;
+      controller.abort(controller.signal.reason); clearResult(); text('query-result', 'No usable response was returned.');
+      text('query-status', controller.signal.reason === 'user' ? 'Query cancelled. No partial result was retained.' : controller.signal.reason === 'timeout' ? 'The query timed out. No partial result was retained; use the equivalent HTTP command or a narrower query.' : error.name === 'AbortError' ? 'The query was interrupted. No partial result was retained.' : error.message);
+    }
+    finally { clearTimeout(timeout); if (queryController === controller) { el('query-submit').disabled = false; el('query-cancel').hidden = true; el('query-cancel').disabled = true; } }
   }
   function task(name, run = false) {
     const origin = name.startsWith('origin'), set = name.startsWith('set');
@@ -359,7 +452,10 @@
   document.querySelectorAll('[data-task]').forEach(button => button.addEventListener('click', () => task(button.dataset.task)));
   ['query-value', 'query-kind', 'query-source', 'query-family'].forEach(id => el(id).addEventListener(id === 'query-value' ? 'input' : 'change', updateCommand));
   el('query-form').addEventListener('submit', query); el('refresh').addEventListener('click', () => refresh(true));
-  el('copy-result').addEventListener('click', event => copy(currentResult, event.currentTarget)); el('copy-command').addEventListener('click', event => copy(command, event.currentTarget));
+  el('copy-result').addEventListener('click', copyResult); el('copy-command').addEventListener('click', event => copy(command, event.currentTarget));
+  el('download-result').addEventListener('click', downloadResult);
+  el('query-cancel').addEventListener('click', () => queryController?.abort('user'));
+  window.addEventListener('pagehide', () => { queryController?.abort('user'); clearResult(); });
   el('source-search').addEventListener('input', renderSources); el('source-detail').addEventListener('change', renderDetail);
   ['browse-source', 'browse-class'].forEach(id => el(id).addEventListener('change', () => { cursor = null; el('browse-next').disabled = true; el('browse-results').replaceChildren(); text('browse-status', 'Choose Browse to load this selection.'); }));
   el('browse-form').addEventListener('submit', event => { event.preventDefault(); cursor = null; browse(); }); el('browse-next').addEventListener('click', () => browse(true));

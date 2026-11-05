@@ -14,13 +14,14 @@ of full IRRd parity, security qualification or production readiness.
 - Independent self-hosted console and separate community website at irrd.tools.
 - Source, activity, resource graphs from observed data.
 
-The public UK node currently mirrors nineteen routing sources. Seven follow
-NRTMv3 every sixty seconds; twelve use daily snapshots. Contacts, accounts and
-other non-routing classes are outside this production mirror profile.
-The development full-data profile retains all 19 standard IRRd classes and has
-its own storage and source cursors. See live telemetry for the serving profile;
-an offline import is not evidence that a generation is already serving.
-A source being loaded does not establish that its last check succeeded.
+The public UK node now retains all 19 standard IRRd classes across 21 datasets.
+Fifteen sources follow NRTMv3 every sixty seconds; six use daily snapshots.
+The full public catalog was activated on 2026-11-05 after verifying 13,984,313
+objects and their indexes. This expands the data available from beta.3; it does
+not add authoritative authentication/account parity. Development follows the
+same source profile with independent storage and cursors, and tests unreleased
+engine changes separately. See live telemetry for current counts, serials and
+freshness. A source being loaded does not establish that its last check succeeded.
 
 ## Known gaps
 
