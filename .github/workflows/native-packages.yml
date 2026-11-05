@@ -21,6 +21,7 @@ permissions:
 
 jobs:
   packages:
+    if: github.ref != 'refs/heads/dev' && !startsWith(github.ref, 'refs/heads/dev/')
     strategy:
       fail-fast: false
       matrix:

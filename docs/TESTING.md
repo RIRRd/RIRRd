@@ -1,95 +1,35 @@
 # Testing RIRRd
 
-Run the same gates locally and in GitHub Actions. These checks exercise the
-implemented beta; they do not establish full IRRd parity. The
-[compatibility inventory](compatibility/IRRD_FEATURE_MATRIX.md) remains the
-list of open behavior and release requirements.
-
-## Standard build checks
+Run the same daemon and self-hosted console checks locally and in CI:
 
 ```sh
 python3 tools/testing/run.py --profile core --out /tmp/rirrd-core
-python3 tools/testing/run.py --profile web --out /tmp/rirrd-web
+python3 tools/testing/run.py --profile web --out /tmp/rirrd-console
 ```
 
-Use a new or existing output directory **outside the repository**. Each run
-produces `report.json`, `junit.xml`, `summary.md`, individual case JSON/JUnit
-files and gate logs. A failed command, failed case, absent case results or
-blocked protocol gate causes a failing exit status. Gates continue where safe
-so one failure does not hide unrelated results. The GitHub job summary shows
-the same results; artifacts are retained for 14 days, including failed runs.
-Do not put generated databases, queues, logs or corpora in Git.
+Keep generated databases, logs, browser profiles, corpora and reports outside Git.
+Core runs formatting, strict Clippy, locked Rust unit/integration tests, independent
+TCP/HTTP/GraphQL and recovery contracts, and reporting/installer integrity checks.
+The browser profile uses the normal Rust binary and a private synthetic two-source
+registry, checks queries, sources, schema introspection, accessibility and six
+responsive console views. Its network is restricted to loopback. No public
+registry updates, live routers or storage servers are involved.
 
-Core requires Git, Python 3.11+ and stable Rust with rustfmt/Clippy. The Rust
-TLS dependencies need the usual native C compiler/linker. Linux additionally
-runs the public gateway and private community service tests. Windows executes
-Rust, native protocol/recovery contracts and the report-integrity suite; a
-POSIX executable-fixture reporting test is explicitly skipped there.
+Reports include JSON, JUnit, gate logs and summaries. Skips are not passes; a
+fixture failure or a successful runner without case records fails the gate.
+GitHub Actions retains results from failed and successful jobs for 14 days.
+Linux x86-64, native ARM64 and Windows run core checks. Browser and coverage
+jobs run separately. The pinned upstream oracle and real BIRD/FRR parsers have
+dedicated workflows. RPSL/NRTMv3 fuzzing and deployment smoke checks run on pushes.
+Development branches do not publish packages or releases.
 
-Web also requires Chromium or Chrome and Python Markdown. On Debian/Ubuntu,
-install the supported `python3-markdown` package and run the driver with
-`/usr/bin/python3` if a separate Python installation cannot see that package.
-The suite uses the repository's static builders and the normal binary. There
-is no JavaScript package install or external font/script dependency.
-
-## Coverage map
-
-| Area | Main evidence | Normal entry point exercised |
-| --- | --- | --- |
-| Authoritative authentication and RPSL references | `tests/smoke.rs`, submission/storage/RPSL unit suites | CLI and loopback HTTP; mixed-batch rollback, source denial, maintainer rotation |
-| Exact, covering, recursive and inverse queries | Rust WHOIS/GraphQL tests plus `tools/testing/protocols.py` | TCP, HTTP WHOIS, GraphQL, both address families |
-| Wire behavior and isolation | Protocol contracts | Byte lengths including UTF-8, persistent pipelines, isolated source sessions, concurrent readers, malformed and oversized inputs |
-| Credential redaction and API errors | Core and protocol suites, gateway suite | WHOIS/GraphQL, invalid Host, disabled submission, retired validator endpoints returning 404, key pagination |
-| Restart and recovery | Core and protocol suites | Real process restart, failed import preserving data, verified backup restore, corruption/overwrite rejection |
-| NRTMv3 and NRTMv4 | Rust unit/integration suites; pinned oracle workflow | CLI/TCP, scheduled retries, filtered replay, source serials, signed snapshot/delta verification |
-| Websites and standalone console | `tools/testing/web.py`; existing console/router workflow | Built project/community sites, real browser queries, mobile pages, metadata, schema workbench, private-only node submission |
-| Gateway and node review queue | `tools/live-service/test_gateway.py`, `site/community/test_service.py` | Read-only allowlists, framing, rate limits, history persistence, validation, private queue and retention |
-| Reporting integrity | `tools/testing/test_*.py` | Setup failure, subtest failure, expected failures/skips, deliberate build failure, dirty/inflated result rejection |
-| BIRD/FRR, pinned upstream and packages | Dedicated workflows | Real bgpq4 and router parsers, official IRRd oracle, DEB/RPM install/bootstrap and systemd |
-
-The protocol corpus adds 56 separately reported contracts against a fresh
-synthetic two-source registry. Browser cases use 14 actual fixture objects,
-not the production database. Both address families and two sources allow
-explicit checks for incorrect covering results and source leakage.
-
-## Isolation and cleanup
-
-Fixtures use RFC documentation prefixes/ASNs and the existing synthetic router
-fixture. Registry listeners bind **127.0.0.1 on ephemeral ports**. The fixture
-process reports its allocated addresses before a client connects, avoiding
-fixed-port races. Test databases and a fresh submission queue are private and
-removed in cleanup. Browser traffic uses a closed external proxy with loopback
-bypass; checks reject non-loopback HTTP requests. Websites query the real
-fixture daemon through the actual read-only gateway. No public registry update,
-production queue submission, production source import
-is needed for these gates.
-
-Removed validator endpoints are checked for HTTP 404. Retired validator configuration
-is rejected before opening a database.
-
-## CI cadence
-
-`.github/workflows/ci.yml` runs on every push and pull request, plus manual
-runs. It covers Linux x86-64, native Linux ARM64 and Windows core checks;
-independent browser and coverage jobs; and the locked dependency audit.
-`deployment-smoke.yml` also runs on every push/PR. `fuzz.yml` runs 15 seconds
-per RPSL and NRTMv3 target per push/PR, with 120 seconds each in the weekly
-run. Reproducing crash inputs are retained on failure, outside Git.
-
-The existing pinned upstream, real router tools, native DEB/RPM and source
-publication workflows retain their dedicated triggers. Beta publication remains
-an explicit tag workflow and calls the same complete CI suite before package
-verification and publication. The CI concurrency key includes its caller so
-tag-triggered and reusable verification cannot cancel each other. Tests do not push to main, merge a PR, change the
-repository's visibility or deploy a public registry.
-
-All third-party Actions are pinned to reviewed commit hashes. Runtime/build
-packages follow their existing pinned or distribution-supported profiles.
-Concurrent obsolete runs can be cancelled; cancellation is not a passing build.
+The full-class smoke test imports synthetic objects from all 19 standard IRRd
+classes, performs typed TCP lookups and HTTP key browsing after daemon restarts,
+and reads every class through bounded exact-key GraphQL batches. It also checks
+public export redaction and native database integrity. These minimal mirror
+fixtures exercise storage/query coverage, not authoritative validation parity.
 
 ## Source coverage
-
-Install the pinned development tool and LLVM tools, then run:
 
 ```sh
 cargo install --locked --version 0.9.1 cargo-llvm-cov
@@ -97,34 +37,9 @@ rustup component add llvm-tools-preview
 bash tools/testing/coverage.sh /tmp/rirrd-coverage
 ```
 
-The script follows the tool's [external-test recipe](https://github.com/taiki-e/cargo-llvm-cov/tree/v0.9.1#get-coverage-of-external-tests).
-It instruments Rust builds, runs the locked Rust suite and the independent
-protocol corpus, then exports JSON, LCOV and an HTML source drilldown. Only
-project `src/*.rs` files enter the summary; dependency, external fixture and
-harness files are excluded. Test modules within `src` are included in the line
-coverage definition. The first measured baseline was 93.13%; CI enforces a 92% source-line floor.
-Line coverage records execution; it does not prove correct
-authorization, interoperability, timing or every input combination.
+The enforced source-line floor is 92%. Test modules within src are included;
+dependency, fixture and harness code is excluded. Coverage is execution evidence,
+not proof of authorization, interoperability or production readiness.
 
-## Public verification snapshot
-
-The project page at <https://rirrd.co.uk/testing/> shows a recorded snapshot.
-The snapshot identifies the exact tested revision and whether results came from
-local execution or GitHub Actions. It does not label an unauthenticated private
-Actions run green. CI-generated JSON/JUnit and HTML coverage artifacts are
-available from the workflow run to authorized repository users.
-
-To publish a new snapshot after testing a clean committed revision:
-
-```sh
-python3 tools/testing/publish.py --core /tmp/rirrd-core/report.json \
-  --web /tmp/rirrd-web/report.json --coverage /tmp/rirrd-coverage/summary.json \
-  --output site/project/verification.json
-```
-
-Reports must refer to the same clean, reachable source commit. Counts and gate
-exit codes must agree. Skips are never counted as passes. JSON omits raw failure
-traces, visitor addresses, operator contacts, credentials and runtime paths.
-Full diagnostic traces remain in private local/CI artifacts. Commit the snapshot
-and use the existing static deployment script. Formatting-only or evidence
-commits after the tested revision are distinguished by the site's build manifest.
+Website/community-platform and operator tests live in the private website repo.
+The public daemon and bundled console do not require that repo to build or test.

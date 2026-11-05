@@ -4,7 +4,7 @@ RIRRd is a Rust Internet Routing Registry daemon with embedded storage, a bundle
 console. It runs independently of the
 community service at [irrd.tools](https://irrd.tools/).
 
-Version **0.1.0-beta.2** is for evaluation. Full IRRd parity and production
+Version **0.1.0-beta.3** is for evaluation. Full IRRd parity and production
 qualification are incomplete. Read [beta status](/docs/beta/) before deployment.
 The project is MIT licensed. The canonical repository is RIRRd/RIRRd on GitHub.
 Use a tagged beta release for a reproducible evaluation.
@@ -16,14 +16,18 @@ Download the matching x86-64 or ARM64 DEB/RPM from
 workflow builds on Debian 12, tests native packages and publishes `SHA256SUMS`.
 Packages preserve the operator configuration and require explicit service startup.
 
-From a checked-out release, the optional installer selects the architecture and
-verifies the archive against that release's checksum manifest:
+Download **install.sh** and **SHA256SUMS** from the
+[beta.3 release assets](https://github.com/RIRRd/RIRRd/releases/tag/v0.1.0-beta.3)
+into a new directory. Use the installer attached to the selected release.
+It selects the architecture and checks the package before installation.
 
 ```sh
-# Download and verify only; no root access or service change.
-bash tools/install.sh --version 0.1.0-beta.2 --download-only /tmp/rirrd-package
+# Verify the downloaded installer; missing package files are ignored here.
+sha256sum --ignore-missing --check SHA256SUMS
+# Continue after checksum verification succeeds.
+bash install.sh --version 0.1.0-beta.3 --download-only /tmp/rirrd-package
 # Or install with your distribution package manager.
-sudo bash tools/install.sh --version 0.1.0-beta.2
+sudo bash install.sh --version 0.1.0-beta.3
 ```
 
 Configure `/etc/rust-irrd/irrd.toml`, import a source snapshot while the daemon is

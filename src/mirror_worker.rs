@@ -7,7 +7,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, ensure};
-use tokio::sync::watch;
+use tokio::sync::{Semaphore, watch};
 
 use crate::{config::MirrorConfig, nrtm_client, nrtm3::Reader, storage::Store};
 
@@ -38,6 +38,7 @@ pub async fn run(
     config: MirrorConfig,
     max_bytes: u64,
     timeout: Duration,
+    peer_slots: Arc<Semaphore>,
     mut shutdown: watch::Receiver<bool>,
 ) -> Result<()> {
     ensure!(
@@ -64,18 +65,81 @@ pub async fn run(
     status.object_class_filter.sort_unstable();
     store.set_mirror_status(source.clone(), status.clone());
     while !stopped(&shutdown) {
+        // Several sources can share one upstream server. Queue before taking
+        // a blocking worker so peer connection limits do not starve queries.
+        let permit = tokio::select! {
+            biased;
+            _ = shutdown.wait_for(|stopped| *stopped) => break,
+            permit = peer_slots.clone().acquire_owned() => permit.context("NRTMv3 peer admission closed")?,
+        };
         let attempt = {
             let store = store.clone();
             let source = source.clone();
             let shutdown = shutdown.clone();
             let config = config.clone();
             tokio::task::spawn_blocking(move || {
-                sync_once(&store, &source, &config, max_bytes, timeout, &shutdown)
+                let result = fetch_once(&store, &source, &config, max_bytes, timeout, &shutdown);
+                (result, permit)
             })
         };
-        // Once an apply starts, wait for its commit or rollback. Before then
-        // the blocking fetch has an absolute deadline and checks shutdown.
-        let result = attempt.await.context("scheduled NRTMv3 task failed")?;
+        // Network fetching never holds the query gate. Keep the peer permit
+        // through commit so a delayed writer cannot accumulate staged batches.
+        let (prepared, peer_permit) = attempt.await.context("scheduled NRTMv3 fetch failed")?;
+        if stopped(&shutdown) {
+            break;
+        }
+        let result = match prepared {
+            Ok(Prepared::Idle) => Ok(None),
+            Ok(prepared) => {
+                // A blocking writer must never wait for a read view owned by a
+                // query queued in the same blocking pool. Acquire asynchronously.
+                let gate = tokio::select! {
+                    biased;
+                    _ = shutdown.wait_for(|stopped| *stopped) => break,
+                    gate = store.query_gate().clone().write_owned() => gate,
+                };
+                let store = store.clone();
+                let source = source.clone();
+                let config = config.clone();
+                let shutdown = shutdown.clone();
+                // Once applying starts, wait for commit/rollback on shutdown.
+                tokio::task::spawn_blocking(move || {
+                    if stopped(&shutdown) {
+                        return Ok(None);
+                    }
+                    match prepared {
+                        Prepared::Idle => Ok(None),
+                        Prepared::ConfirmBase(base) => {
+                            store.confirm_mirror_base_with_guard(
+                                &source,
+                                base,
+                                &config.object_class_filter,
+                                &gate,
+                            )?;
+                            Ok(None)
+                        }
+                        Prepared::Updates {
+                            transcript,
+                            initial_base,
+                        } => store
+                            .apply_nrtm3_filtered_with_guard(
+                                &source,
+                                transcript.range(),
+                                initial_base,
+                                transcript,
+                                (!config.object_class_filter.is_empty())
+                                    .then_some(&config.object_class_filter),
+                                &gate,
+                            )
+                            .map(Some),
+                    }
+                })
+                .await
+                .context("scheduled NRTMv3 apply failed")?
+            }
+            Err(error) => Err(error),
+        };
+        drop(peer_permit);
         if stopped(&shutdown) {
             break;
         }
@@ -106,16 +170,25 @@ pub async fn run(
     Ok(())
 }
 
-fn sync_once(
+enum Prepared {
+    Idle,
+    ConfirmBase(u64),
+    Updates {
+        transcript: Reader<BufReader<std::fs::File>>,
+        initial_base: Option<u64>,
+    },
+}
+
+fn fetch_once(
     store: &Store,
     source: &str,
     config: &MirrorConfig,
     max_bytes: u64,
     timeout: Duration,
     shutdown: &watch::Receiver<bool>,
-) -> Result<Option<u64>> {
+) -> Result<Prepared> {
     if stopped(shutdown) {
-        return Ok(None);
+        return Ok(Prepared::Idle);
     }
     ensure!(
         store.nrtm4_state(source)?.is_none(),
@@ -134,17 +207,20 @@ fn sync_once(
     let Some(mut response) =
         nrtm_client::fetch(config.endpoint, source, start, timeout, max_bytes)?
     else {
-        if !config.object_class_filter.is_empty() && !stopped(shutdown) {
-            store.confirm_mirror_base(source, base, &config.object_class_filter)?;
-        }
-        return Ok(None);
+        return Ok(
+            if !config.object_class_filter.is_empty() && !stopped(shutdown) {
+                Prepared::ConfirmBase(base)
+            } else {
+                Prepared::Idle
+            },
+        );
     };
     let mut stage = tempfile::tempfile().context("creating private NRTMv3 staging file")?;
     let mut remaining = max_bytes;
     let mut buffer = [0; 16 * 1024];
     loop {
         if stopped(shutdown) {
-            return Ok(None);
+            return Ok(Prepared::Idle);
         }
         if remaining == 0 {
             ensure!(
@@ -169,30 +245,59 @@ fn sync_once(
     }
 
     if stopped(shutdown) {
-        return Ok(None);
+        return Ok(Prepared::Idle);
     }
     stage.seek(SeekFrom::Start(0))?;
-    let transcript = if config.object_class_filter.is_empty() {
-        Reader::new(BufReader::new(stage), source, max_bytes)
-    } else {
-        Reader::filtered(BufReader::new(stage), source, max_bytes)
-    }
+    let transcript = Reader::with_encoding(
+        BufReader::new(stage),
+        source,
+        max_bytes,
+        config.encoding,
+        !config.object_class_filter.is_empty(),
+    )
     .map_err(anyhow::Error::msg)?;
     let range = transcript.range();
     ensure!(
         range.0 == start,
         "NRTMv3 mirror response starts at an unexpected serial"
     );
-    store
-        .apply_nrtm3_filtered_if(
-            source,
-            range,
-            initial_base,
+    Ok(Prepared::Updates {
+        transcript,
+        initial_base,
+    })
+}
+
+#[cfg(test)]
+fn sync_once(
+    store: &Store,
+    source: &str,
+    config: &MirrorConfig,
+    max_bytes: u64,
+    timeout: Duration,
+    shutdown: &watch::Receiver<bool>,
+) -> Result<Option<u64>> {
+    match fetch_once(store, source, config, max_bytes, timeout, shutdown)? {
+        Prepared::Idle => Ok(None),
+        Prepared::ConfirmBase(base) => {
+            if !stopped(shutdown) {
+                store.confirm_mirror_base(source, base, &config.object_class_filter)?;
+            }
+            Ok(None)
+        }
+        Prepared::Updates {
             transcript,
-            (!config.object_class_filter.is_empty()).then_some(&config.object_class_filter),
-            || !stopped(shutdown),
-        )
-        .map(Some)
+            initial_base,
+        } => store
+            .apply_nrtm3_filtered_if(
+                source,
+                transcript.range(),
+                initial_base,
+                transcript,
+                (!config.object_class_filter.is_empty()).then_some(&config.object_class_filter),
+                || !stopped(shutdown),
+            )
+            .map(Some),
+    }
 }
 
 fn stopped(shutdown: &watch::Receiver<bool>) -> bool {
@@ -254,6 +359,122 @@ mod tests {
         Ok(stream.into_inner())
     }
 
+    #[test]
+    fn mirror_fetch_yields_the_only_blocking_worker_before_waiting_for_a_query_view() -> Result<()>
+    {
+        let dir = tempfile::tempdir()?;
+        let store = registry(dir.path())?;
+        let listener = listener()?;
+        let endpoint = listener.local_addr()?;
+        let (started, observed) = tokio::sync::oneshot::channel();
+        let (send_reply, continue_reply) = std::sync::mpsc::channel();
+        let peer = thread::spawn(move || -> Result<()> {
+            let mut socket = request(&listener, "-g TEST:3:10-LAST\n")?;
+            let _ = started.send(());
+            continue_reply.recv_timeout(Duration::from_secs(5))?;
+            socket.write_all(VALID)?;
+            Ok(())
+        });
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .max_blocking_threads(1)
+            .build()?;
+        runtime.block_on(async {
+            let (stop, shutdown) = watch::channel(false);
+            let worker = tokio::spawn(run(
+                store.clone(),
+                "TEST".into(),
+                MirrorConfig {
+                    encoding: Default::default(),
+                    endpoint,
+                    interval_seconds: 60,
+                    base_serial: Some(9),
+                    object_class_filter: Default::default(),
+                },
+                4096,
+                Duration::from_secs(3),
+                Arc::new(Semaphore::new(1)),
+                shutdown,
+            ));
+            tokio::time::timeout(Duration::from_secs(3), observed).await??;
+            // The only blocking thread is fetching. Queue a reader that already
+            // owns its view, exactly like WHOIS/GraphQL admission. The fetch must
+            // release its thread before waiting for the writer gate.
+            let view = store.query_gate().clone().read_owned().await;
+            let held = Arc::new(std::sync::Mutex::new(Some(view)));
+            let queued = held.clone();
+            let query = tokio::task::spawn_blocking(move || {
+                let _view = queued.lock().unwrap().take();
+                42
+            });
+            send_reply.send(())?;
+            let progress = tokio::time::timeout(Duration::from_secs(3), query).await;
+            if progress.is_err() {
+                // Release the test-owned view on regression so runtime teardown
+                // cannot itself hang behind the blocked writer under test.
+                held.lock().unwrap().take();
+            }
+            let applied = if progress.is_ok() {
+                tokio::time::timeout(Duration::from_secs(3), async {
+                    while store.source_serial("TEST")? != Some(10) {
+                        tokio::task::yield_now().await;
+                    }
+                    Ok::<_, anyhow::Error>(())
+                })
+                .await
+            } else {
+                Ok(Ok(()))
+            };
+            stop.send(true)?;
+            tokio::time::timeout(Duration::from_secs(3), worker).await???;
+            assert_eq!(progress??, 42);
+            applied??;
+            Ok::<_, anyhow::Error>(())
+        })?;
+        peer.join().expect("peer thread")?;
+        assert_eq!(store.source_serial("TEST")?, Some(10));
+        assert_eq!(store.verify()?, 2);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn shutdown_cancels_peer_admission_without_connecting_or_changing_state() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = registry(dir.path())?;
+        let listener = listener()?;
+        let (stop, shutdown) = watch::channel(false);
+        let worker = tokio::spawn(run(
+            store.clone(),
+            "TEST".into(),
+            MirrorConfig {
+                encoding: Default::default(),
+                endpoint: listener.local_addr()?,
+                interval_seconds: 1,
+                base_serial: Some(9),
+                object_class_filter: Default::default(),
+            },
+            4096,
+            Duration::from_secs(3),
+            Arc::new(Semaphore::new(0)),
+            shutdown,
+        ));
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !store.mirror_status().contains_key("TEST") {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await?;
+        stop.send(true)?;
+        tokio::time::timeout(Duration::from_secs(2), worker).await???;
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            io::ErrorKind::WouldBlock
+        );
+        assert_eq!(store.source_serial("TEST")?, None);
+        assert_eq!(store.verify()?, 1);
+        Ok(())
+    }
+
     #[tokio::test]
     async fn worker_retries_failed_batch_and_uses_the_committed_cursor() -> Result<()> {
         let dir = tempfile::tempdir()?;
@@ -274,6 +495,7 @@ mod tests {
             store.clone(),
             String::from("TEST"),
             MirrorConfig {
+                encoding: Default::default(),
                 endpoint,
                 interval_seconds: 1,
                 base_serial: Some(9),
@@ -281,6 +503,7 @@ mod tests {
             },
             4096,
             Duration::from_secs(3),
+            Arc::new(Semaphore::new(2)),
             shutdown,
         ));
         tokio::time::timeout(Duration::from_secs(8), completed).await??;
@@ -324,6 +547,7 @@ mod tests {
                 Ok(())
             });
         let config = MirrorConfig {
+            encoding: Default::default(),
             endpoint,
             interval_seconds: 1,
             base_serial: Some(9),
@@ -336,6 +560,7 @@ mod tests {
             config.clone(),
             4096,
             Duration::from_secs(3),
+            Arc::new(Semaphore::new(2)),
             shutdown,
         ));
         tokio::time::timeout(Duration::from_secs(8), completed).await??;
@@ -406,6 +631,7 @@ mod tests {
             &store,
             "TEST",
             &MirrorConfig {
+                encoding: Default::default(),
                 endpoint,
                 base_serial: Some(9),
                 interval_seconds: 1,
@@ -438,6 +664,7 @@ mod tests {
         });
         let (_stop, shutdown) = watch::channel(false);
         let mut config = MirrorConfig {
+            encoding: Default::default(),
             endpoint,
             base_serial: Some(9),
             interval_seconds: 60,
@@ -492,6 +719,7 @@ mod tests {
             store.clone(),
             String::from("TEST"),
             MirrorConfig {
+                encoding: Default::default(),
                 endpoint,
                 interval_seconds: 1,
                 base_serial: Some(9),
@@ -499,6 +727,7 @@ mod tests {
             },
             4096,
             Duration::from_secs(3),
+            Arc::new(Semaphore::new(2)),
             shutdown,
         ));
         tokio::time::timeout(Duration::from_secs(5), async {

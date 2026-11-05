@@ -88,9 +88,6 @@ def main():
         else:
             report['groups'].append({'id':'protocols','status':'blocked','tests':0,'passed':0,'failed':0,'skipped':0,'seconds':0,'exit_code':None})
         group('report-exporter',[python,'tools/testing/unit.py','--suite','reports','--report',str(out/'report-cases')],case_file=out/'report-cases')
-        if sys.platform.startswith('linux'):
-            for suite in ['gateway','community']:
-                group(suite,[python,'tools/testing/unit.py','--suite',suite,'--report',str(out/(suite+'-cases'))],case_file=out/(suite+'-cases'))
     else:
         built=group('web-build',['cargo','build','--locked'])
         if built:

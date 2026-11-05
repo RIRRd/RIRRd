@@ -1,6 +1,6 @@
 # RIRRd
 
-**Beta 0.1.0-beta.2** · [MIT license](LICENSE) · [Project website](https://rirrd.co.uk/)
+**Beta 0.1.0-beta.3** · [MIT license](LICENSE) · [Project website](https://rirrd.net/)
 · [Community tools](https://irrd.tools/) · [Beta status](docs/BETA_STATUS.md)
 
 A Rust Internet Routing Registry daemon with embedded storage, bounded WHOIS,
@@ -11,14 +11,44 @@ to make running an IRR service practical on smaller Linux hosts.
 incomplete.** The baseline is official IRRd v4.5.4 at
 `8e8080dab744a348b7d0e6efcb53f403301dd075`. Check the
 [compatibility matrix](docs/compatibility/IRRD_FEATURE_MATRIX.md),
-[known gaps](docs/BETA_STATUS.md) and [progress record](AUTONOMOUS_PROGRESS.md).
+[known gaps](docs/BETA_STATUS.md) and [development status](docs/STATUS.md).
 The MIT-licensed source and public issue tracker are hosted at
 [RIRRd/RIRRd](https://github.com/RIRRd/RIRRd).
 Release artifacts are published only after the release checks pass.
 
+## Project background and disclaimer
+
+RIRRd is a passion project by **Lostepic (AaranCloud)**. Development began in a
+personal repository, with roughly three months of work before the project was
+shared publicly. It is now open source for the community to use, learn from,
+modify and contribute to. Development and maintenance happen as time allows.
+
+RIRRd is one of several Rust IRR implementations. The idea of writing an IRR
+daemon in Rust is not unique, and this project does not claim otherwise. It is
+not intended to take credit from, undermine or detract from other projects.
+We respect their work and welcome different approaches to the same problem.
+
+RIRRd is an independent implementation. No code was copied from another Rust
+IRR project. Protocol compatibility work uses official IRRd as its reference;
+compatibility claims are limited to the documented tests and evidence.
+
+**Use RIRRd at your own risk and do your own testing.** It remains beta software
+with incomplete IRRd parity. Validate its behaviour, data and generated routing
+policies in your own environment before relying on it. The MIT license provides
+the software as is, without warranty; ongoing support and development schedules
+are not guaranteed.
+
+## Development
+
+Active changes are made on `dev`; `main` and release tags stay unchanged until
+reviewed release work. Development does not trigger package/release publication.
+The public repository contains the Rust daemon, self-hosted dashboard, tests and
+user documentation. Project/community websites and sponsored-node operations are
+maintained separately in a private repository.
+
 ## Software and community network
 
-- **rirrd.co.uk** showcases the project, measured benchmarks and beta documentation.
+- **rirrd.net** showcases the project, measured benchmarks and beta documentation.
 - **irrd.tools** hosts public routing tools, the reviewed node directory and
   private node submissions. The first node is in the UK, hosted by HYEHOST LLC.
 - The Rust daemon and `web/dashboard/` run independently. Running your own instance
@@ -59,7 +89,15 @@ Every push/PR runs the core matrix, independent protocol/recovery contracts,
 isolated website checks, source coverage and dependency audit. Reports include
 individual JSON/JUnit outcomes and retained failure logs. Short RPSL/NRTMv3 fuzz
 runs and container smoke checks also run per push/PR. Read [the testing guide](docs/TESTING.md)
-or inspect [the recorded verification page](https://rirrd.co.uk/testing/).
+or inspect [the recorded verification page](https://rirrd.net/testing/).
+The [latest optimization checkpoint](docs/benchmarks/OPTIMIZATION_2026_11_04.md)
+records exact artifacts, constrained-host measurements and observed trade-offs.
+The [current development review](docs/compatibility/DEVELOPMENT_REVIEW_2026_11_05.md)
+records query memory bounds, authorization/concurrency fixes, indexed API additions
+and before/after measurements, including unchanged or lower normal-query rates.
+The [full-catalog storage checkpoint](docs/benchmarks/STORAGE_FULL_2026_11_05.md)
+records a verified 28-to-20 GiB development database repack, preserving all
+21 sources and 19 retained object classes.
 
 ```sh
 python3 tools/testing/run.py --profile core --out /tmp/rirrd-core
@@ -107,8 +145,15 @@ printf '!mroute,192.0.2.0/24AS64496\n' | nc 127.0.0.1 4343
 | `-s <source-list>`, `-a`, `-V <client>` | RIPE-style source selection, source reset and client identification. |
 | `-q sources` | List configured sources, retained NRTMv3 journal bounds and whether the peer may mirror each source. |
 | `!v`, `!n<client>` | Report version or acknowledge client identification. |
+| `!j<source-list>`, `!j-*` | Report retained journal availability and serial bounds, or unknown-source status. Export serials are omitted because they are not persisted. |
 
-Bare, route and inverse lookups return at most 16 objects. A single-AS origin lookup returns at most 4,096 distinct prefixes. Set expansion has separate traversal limits. Requests exceeding a limit fail as a whole. The mirror parser validates record structure and identity. Indexing retains valid optional lookup values and reports malformed values that it skipped.
+Bare, route and inverse lookups return at most 16 objects. Object lookups also have
+a 2 MiB budget for raw text and identities, checked before copying database values.
+A single-AS origin lookup returns at most 4,096 distinct prefixes. Set expansion
+has separate traversal limits. Requests exceeding a limit fail as a whole with
+a query-limit error. Large mirrored records remain stored and exportable.
+The mirror parser validates record structure and identity. Indexing retains valid
+optional lookup values and reports malformed values that it skipped.
 
 | Configuration | Purpose |
 |---|---|
@@ -123,7 +168,7 @@ Bare, route and inverse lookups return at most 16 objects. A single-AS origin lo
 | `max_connections_per_ip` | Optional concurrent WHOIS limit per client IP, at most the global limit. |
 | `connection_limit_exempt_ips` | Optional list of up to 256 exact IPv4 or IPv6 addresses exempt from the per-IP limit. The global limit still applies. |
 | `io_timeout_seconds` | Deadline per read, lookup or write, 1–300 seconds. |
-| `max_snapshot_bytes` | Uncompressed input byte limit, 1 byte–64 GiB. Individual records are limited to 64 KiB. |
+| `max_snapshot_bytes` | Uncompressed input byte limit, 1 byte–64 GiB. Authoritative submission records are limited to 64 KiB; mirror snapshot records can be up to 8 MiB. Public object lookups have a separate 2 MiB materialization budget. |
 
 Import accepts local UTF-8 RPSL in plain text or gzip. Each successful import replaces the named source atomically. Empty, malformed, duplicate or wrong-source input fails the import. Stop the local daemon before running import, export or verification commands because redb takes exclusive process ownership of the database file. The verifier checks stored identities against both indexes.
 
@@ -157,7 +202,7 @@ With `http_listen` enabled, send a URL-encoded WHOIS command in the `q` paramete
 
 ## GraphQL
 
-Set `http_listen = "127.0.0.1:8080"` in TOML. Send JSON by POST to `/graphql/` with a `query` field. The implemented subset accepts bounded exact-key queries through `rpslObjects`, prefix queries through `asnPrefixes` and `asSetPrefixes`, set expansion through `recursiveSetMembers`, and configured-source and replication metadata through `databaseStatus`. The optional `rootSource` argument selects the root independently of the source order used for nested set lookups. For example:
+Set `http_listen = "127.0.0.1:8080"` in TOML. Send JSON by POST to `/graphql/` with a `query` field. The implemented subset accepts bounded exact-key and indexed inverse queries through `rpslObjects`, prefix queries through `asnPrefixes` and `asSetPrefixes`, set expansion through `recursiveSetMembers`, and configured-source and replication metadata through `databaseStatus`. The optional `rootSource` argument selects the root independently of the source order used for nested set lookups. For example:
 
 ```graphql
 {
@@ -178,6 +223,11 @@ On opening an existing registry database, the server adds missing lookup indexes
 Stop the daemon before purging a source. Use `source purge --source EXAMPLE --yes` with the same configuration to remove that source's objects and their index entries. A repeated purge succeeds. Remove the source from configuration separately if it should no longer be selectable. Purge is logical removal from the registry and database indexes.
 
 Run `database compact --yes` with the daemon stopped to reclaim free storage where the database engine can do so. The command verifies application indexes and journal history before and after compaction and prints the before and after file lengths.
+
+Use `database stats` to inspect offline table costs and `database repack --file NEW_PATH`
+to build a separately verified, denser database while retaining the original.
+See [storage maintenance](docs/operations/STORAGE_MAINTENANCE.md) for disk accounting,
+metadata preservation, limits and measured results.
 
 ## Offline NRTMv3 mirroring
 
@@ -291,7 +341,7 @@ uses `irrd.tools:43`. Inspect the dashboard's loaded sources, missing feeds and
 snapshot times before testing. Seven sources follow NRTMv3 every sixty seconds; the remaining sources use daily snapshots.
 Submissions and administration are not public; full parity and production
 qualification remain incomplete. See the [router guide](docs/operations/ROUTER_INTEGRATION.md)
-and [live deployment guide](docs/operations/LIVE_SERVICE.md). Public IPv4/IPv6 and AS-set commands are in the [public query guide](docs/operations/PUBLIC_ROUTER_QUERIES.md).
+and [live deployment guide](docs/STATUS.md). Public IPv4/IPv6 and AS-set commands are in the [public query guide](docs/operations/PUBLIC_ROUTER_QUERIES.md).
 
 `http_sources` optionally restricts HTTP WHOIS/GraphQL to a nonempty subset of
 `sources`. TCP uses the full source list. This supports per-source distribution

@@ -15,7 +15,8 @@ checks = 0
 
 def check(method, text, passwords, expected):
     global checks
-    payload = {'objects': [{'object_text': text}], 'passwords': passwords}
+    objects = [text] if isinstance(text, str) else text
+    payload = {'objects': [{'object_text': item} for item in objects], 'passwords': passwords}
     if method == 'DELETE':
         payload['delete_reason'] = 'synthetic oracle cleanup'
     data = json.dumps(payload).encode()
@@ -27,7 +28,7 @@ def check(method, text, passwords, expected):
         assert len(body) <= 262144
         assert all(secret.encode() not in body for secret in [owner, parent, 'wrong proof', SYNTHETIC_HASH])
         report = json.loads(body)
-        assert report['summary'][expected] == 1, f'{label}: case {checks+1} expected {expected}'
+        assert report['summary'][expected] == len(objects), f'{label}: case {checks+1} expected {expected}'
     checks += 1
 
 for cls, prefix, attributes in [
@@ -83,4 +84,22 @@ for head in ['as-block: AS64496 - AS64511\n', 'domain: 2.0.192.in-addr.arpa\nzon
     check('DELETE',text,[parent],'failed')
     check('DELETE',text,[owner],'successful_delete')
 check('DELETE',zone,[owner],'successful_delete')
+# Protected names include dangling inbound references, not just tombstones.
+for kind in ['person', 'role']:
+    claimed = (f'{kind}: Claimed Contact\naddress: Example Road\nphone: +1 202 555 0100\n'
+               'e-mail: contact@example.invalid\nnic-hdl: DANGLING-AUTH\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\n')
+    check('POST', claimed, [owner], 'failed')
+# Batch deletions may remove a contact and all of its referring objects together.
+for kind, handle in [('person', 'BATCH-PERSON-AUTH'), ('role', 'BATCH-ROLE-AUTH')]:
+    contact = (f'{kind}: Batch Contact\naddress: Example Road\nphone: +1 202 555 0100\n'
+               f'e-mail: contact@example.invalid\nnic-hdl: {handle}\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\n')
+    domain = (f'domain: batch-{kind}.example\nadmin-c: CT1-AUTH\ntech-c: CT1-AUTH\n'
+              f'zone-c: {handle}\nmnt-by: OWNER-MNT\nsource: AUTH-TEST\n')
+    extra = domain.replace(f'batch-{kind}.example', f'extra-{kind}.example')
+    check('POST', [contact, domain, extra], [owner], 'successful_create')
+    check('DELETE', contact, [owner], 'failed')
+    check('DELETE', [contact, domain, extra], ['wrong proof'], 'failed')
+    check('DELETE', extra, [owner], 'successful_delete')
+    check('DELETE', [contact, domain], [owner], 'successful_delete')
+    check('POST', contact, [owner], 'failed')
 print(f'{checks} authoritative HTTP authorization cases match pinned IRRd (both implementations checked)')

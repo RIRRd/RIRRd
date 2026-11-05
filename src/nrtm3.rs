@@ -4,6 +4,15 @@ use std::io::{BufRead, Read};
 
 use crate::rpsl::{MAX_OBJECT_BYTES, MAX_SNAPSHOT_OBJECT_BYTES, Object, parse_snapshot};
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize)]
+pub enum Encoding {
+    #[default]
+    #[serde(rename = "utf-8", alias = "utf8")]
+    Utf8,
+    #[serde(rename = "iso-8859-1", alias = "latin-1")]
+    Latin1,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     Add,
@@ -30,13 +39,31 @@ pub struct Reader<R> {
 
 impl<R: BufRead> Reader<R> {
     pub fn new(reader: R, expected_source: &str, max_bytes: u64) -> Result<Self, String> {
-        Self::with_profile(reader, expected_source, max_bytes, false)
+        Self::with_profile(reader, expected_source, max_bytes, false, Encoding::Utf8)
     }
 
     /// Published v3 feeds may omit serials for withheld classes. Retain their
     /// advertised cursor, without exposing an incomplete downstream journal.
     pub fn filtered(reader: R, expected_source: &str, max_bytes: u64) -> Result<Self, String> {
-        Self::with_profile(reader, expected_source, max_bytes, true)
+        Self::with_profile(reader, expected_source, max_bytes, true, Encoding::Utf8)
+    }
+
+    /// Decode only the encoding explicitly configured for this peer. Never
+    /// repair malformed UTF-8 by silently guessing a different character set.
+    pub fn with_encoding(
+        reader: R,
+        expected_source: &str,
+        max_bytes: u64,
+        encoding: Encoding,
+        allow_gaps: bool,
+    ) -> Result<Self, String> {
+        match encoding {
+            Encoding::Utf8 if allow_gaps => Self::filtered(reader, expected_source, max_bytes),
+            Encoding::Utf8 => Self::new(reader, expected_source, max_bytes),
+            Encoding::Latin1 => {
+                Self::with_profile(reader, expected_source, max_bytes, allow_gaps, encoding)
+            }
+        }
     }
 
     fn with_profile(
@@ -44,11 +71,13 @@ impl<R: BufRead> Reader<R> {
         expected_source: &str,
         max_bytes: u64,
         allow_gaps: bool,
+        encoding: Encoding,
     ) -> Result<Self, String> {
         let mut lines = Lines {
             reader,
             remaining: max_bytes,
             number: 0,
+            encoding,
             max_object_bytes: if allow_gaps {
                 MAX_SNAPSHOT_OBJECT_BYTES
             } else {
@@ -251,16 +280,17 @@ struct Lines<R> {
     remaining: u64,
     number: u64,
     max_object_bytes: usize,
+    encoding: Encoding,
 }
 
 impl<R: BufRead> Lines<R> {
     fn next(&mut self) -> Result<Option<String>, String> {
-        let mut line = String::new();
+        let mut bytes = Vec::new();
         let limit = ((self.max_object_bytes + 1) as u64).min(self.remaining.saturating_add(1));
         let count = (&mut self.reader)
             .take(limit)
-            .read_line(&mut line)
-            .map_err(|_| format!("could not read UTF-8 NRTMv3 line {}", self.number + 1))?;
+            .read_until(b'\n', &mut bytes)
+            .map_err(|_| format!("could not read NRTMv3 line {}", self.number + 1))?;
         if count == 0 {
             return Ok(None);
         }
@@ -272,6 +302,17 @@ impl<R: BufRead> Lines<R> {
         if count > self.max_object_bytes {
             return Err(format!(
                 "NRTMv3 line {} exceeds {} bytes",
+                self.number, self.max_object_bytes
+            ));
+        }
+        let line = match self.encoding {
+            Encoding::Utf8 => String::from_utf8(bytes)
+                .map_err(|_| format!("could not read UTF-8 NRTMv3 line {}", self.number))?,
+            Encoding::Latin1 => bytes.into_iter().map(char::from).collect(),
+        };
+        if line.len() > self.max_object_bytes {
+            return Err(format!(
+                "decoded NRTMv3 line {} exceeds {} bytes",
                 self.number, self.max_object_bytes
             ));
         }
@@ -545,5 +586,76 @@ mod tests {
                 .unwrap()
                 .collect();
         assert!(result.unwrap_err().contains("UTF-8"));
+    }
+    #[test]
+    fn explicit_latin1_decoding_preserves_text_and_strict_utf8_default() {
+        let raw = b"%START Version: 3 TEST 10-10
+
+ADD 10
+
+aut-num: AS64496
+descr: Andr\xe9
+source: TEST
+
+%END TEST
+";
+        assert!(
+            Reader::new(&raw[..], "TEST", 4096)
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .is_err()
+        );
+        for filtered in [false, true] {
+            let operations = Reader::with_encoding(
+                &raw[..],
+                "TEST",
+                raw.len() as u64,
+                Encoding::Latin1,
+                filtered,
+            )
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+            assert_eq!(operations.len(), 1);
+            assert!(operations[0].object.text.contains("André"));
+            assert!(
+                Reader::with_encoding(
+                    &raw[..],
+                    "TEST",
+                    raw.len() as u64 - 1,
+                    Encoding::Latin1,
+                    filtered
+                )
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn decoded_latin1_lines_stay_within_object_bounds() {
+        let mut raw = b"%START Version: 3 TEST 10-10
+
+ADD 10
+
+aut-num: AS64496
+descr: "
+            .to_vec();
+        raw.extend(std::iter::repeat_n(0xe9, MAX_OBJECT_BYTES / 2 + 1));
+        raw.extend_from_slice(
+            b"
+source: TEST
+
+%END TEST
+",
+        );
+        assert!(
+            Reader::with_encoding(&raw[..], "TEST", raw.len() as u64, Encoding::Latin1, false)
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap_err()
+                .contains("decoded NRTMv3 line")
+        );
     }
 }

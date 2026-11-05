@@ -58,8 +58,11 @@ DEFAULT_CASES = (
     ("A", "!mdomain,2.0.192.in-addr.arpa"),
     ("A", "!mdomain,2.0.192.IN-ADDR.ARPA"),
     ("D", "!mdomain,absent.example.invalid"),
+    ("A", "!jDIFFERENTIAL"),
+    ("A", "!jMISSING"),
+    ("A", "!jdifferential,missing"),
 )
-QUERY_PREFIXES = ("!m", "!r", "!g", "!6")
+QUERY_PREFIXES = ("!m", "!r", "!g", "!6", "!j")
 MAX_RESPONSE_BYTES = 256 * 1024
 ATTRIBUTE_PADDING = re.compile(rb"^([a-zA-Z][a-zA-Z0-9-]*:)[ \t]*")
 AUTH_PLACEHOLDER = re.compile(
@@ -103,7 +106,7 @@ def read_cases(path):
             or not 2 <= len(query) <= 510
             or any(not 32 <= ord(char) <= 126 for char in query)
         ):
-            raise ValueError(f"corpus line {number}: expected STATUS<TAB>!m/!r/!g/!6 query")
+            raise ValueError(f"corpus line {number}: expected STATUS<TAB>!m/!r/!g/!6/!j query")
         cases.append((expected, query))
     if not cases:
         raise ValueError("corpus contains no queries")
@@ -191,7 +194,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--reference", type=endpoint, required=True, help="pinned upstream HOST:PORT")
     parser.add_argument("--candidate", type=endpoint, required=True, help="Rust daemon HOST:PORT")
-    parser.add_argument("--corpus", type=Path, help="ASCII STATUS<TAB>!m/!r/!g/!6 query file")
+    parser.add_argument("--corpus", type=Path, help="ASCII STATUS<TAB>!m/!r/!g/!6/!j query file")
     parser.add_argument("--http", action="store_true", help="compare HTTP WHOIS status and body")
     parser.add_argument("--timeout", type=timeout_seconds, default=5.0, help="seconds per endpoint and case")
     parser.add_argument(

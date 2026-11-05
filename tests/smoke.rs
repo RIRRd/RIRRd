@@ -906,6 +906,287 @@ max_snapshot_bytes = 4096
 }
 
 #[test]
+fn nrtm3_cli_decodes_only_the_configured_peer_and_rolls_back_bad_utf8() {
+    let work = tempfile::tempdir().unwrap();
+    let config = work.path().join("irrd.toml");
+    let basic = "database = \"registry.redb\"
+sources = [\"TEST\"]
+listen = \"127.0.0.1:0\"
+max_connections = 4
+io_timeout_seconds = 2
+max_snapshot_bytes = 8192
+";
+    fs::write(&config, basic).unwrap();
+    let snapshot = work.path().join("base.rpsl");
+    fs::write(
+        &snapshot,
+        "aut-num: AS64496
+source: TEST
+",
+    )
+    .unwrap();
+    successful(
+        cli(&config)
+            .args(["import", "snapshot", "--source", "TEST", "--file"])
+            .arg(&snapshot)
+            .output()
+            .unwrap(),
+    );
+    for encoding in [None, Some("iso-8859-1")] {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = listener.local_addr().unwrap().to_string();
+        fs::write(
+            &config,
+            format!(
+                "{basic}
+[nrtm3_sync.TEST]
+endpoint = {endpoint:?}
+interval_seconds = 60
+object_class_filter = [\"aut-num\"]
+{}",
+                encoding
+                    .map(|value| format!(
+                        "encoding = {value:?}
+"
+                    ))
+                    .unwrap_or_default()
+            ),
+        )
+        .unwrap();
+        let peer = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket.set_read_timeout(Some(IO_DEADLINE)).unwrap();
+            let mut query = String::new();
+            BufReader::new(&mut socket).read_line(&mut query).unwrap();
+            assert_eq!(
+                query,
+                "-g TEST:3:10-LAST
+"
+            );
+            socket
+                .write_all(
+                    b"%START Version: 3 TEST 10-11
+
+ADD 10
+
+aut-num: AS64497
+source: TEST
+
+ADD 11
+
+aut-num: AS64498
+descr: Andr\xe9
+source: TEST
+
+%END TEST
+",
+                )
+                .unwrap();
+        });
+        let result = cli(&config)
+            .args([
+                "source",
+                "sync-nrtm3",
+                "--source",
+                "TEST",
+                "--endpoint",
+                &endpoint,
+                "--base-serial",
+                "9",
+            ])
+            .output()
+            .unwrap();
+        assert_eq!(result.status.success(), encoding.is_some());
+        peer.join().unwrap();
+        let status: Value = serde_json::from_slice(&successful(
+            cli(&config)
+                .args(["source", "status", "--source", "TEST"])
+                .output()
+                .unwrap(),
+        ))
+        .unwrap();
+        let count: Value = serde_json::from_slice(&successful(
+            cli(&config).args(["database", "count"]).output().unwrap(),
+        ))
+        .unwrap();
+        if encoding.is_some() {
+            assert_eq!(status["serial"], 11);
+            assert_eq!(count["objects"], 3);
+            let export = work.path().join("public.rpsl");
+            successful(
+                cli(&config)
+                    .args([
+                        "export", "snapshot", "--source", "TEST", "--public", "--file",
+                    ])
+                    .arg(&export)
+                    .output()
+                    .unwrap(),
+            );
+            assert!(fs::read_to_string(export).unwrap().contains("André"));
+        } else {
+            assert!(status["serial"].is_null());
+            assert_eq!(count["objects"], 1);
+            assert!(String::from_utf8_lossy(&result.stderr).contains("UTF-8"));
+        }
+    }
+}
+
+#[test]
+fn quiet_range_cli_pins_only_the_current_cursor_and_rejects_real_gaps() {
+    let workspace = tempfile::tempdir().unwrap();
+    let config = workspace.path().join("irrd.toml");
+    let snapshot = workspace.path().join("synthetic.rpsl");
+    fs::write(&snapshot, "aut-num: AS64496\nsource: TEST\n").unwrap();
+    for (index, response) in [
+        "%ERROR:401: invalid range: Not within 1-41\n\n",
+        "%ERROR:401: invalid range: Not within 1-40\n",
+        "%ERROR:401: invalid range: Not within 43-50\n",
+        "%ERROR:401: access denied\n",
+        "%ERROR:401: invalid range: Not within 1-41\n%START Version: 3 TEST 42-42\n",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let upstream = TcpListener::bind("127.0.0.1:0").unwrap();
+        upstream.set_nonblocking(true).unwrap();
+        let endpoint = upstream.local_addr().unwrap();
+        fs::write(&config, format!("database = \"registry.redb\"\nsources = [\"TEST\"]\nlisten = \"127.0.0.1:0\"\nmax_connections = 4\nio_timeout_seconds = 2\nmax_snapshot_bytes = 4096\n[nrtm3_sync.TEST]\nendpoint = \"{endpoint}\"\ninterval_seconds = 60\nbase_serial = 41\nobject_class_filter = [\"aut-num\"]\n")).unwrap();
+        if index == 0 {
+            successful(
+                cli(&config)
+                    .args(["import", "snapshot", "--source", "TEST", "--file"])
+                    .arg(&snapshot)
+                    .output()
+                    .unwrap(),
+            );
+        }
+        let peer = thread::spawn(move || {
+            let deadline = Instant::now() + IO_DEADLINE;
+            let mut stream = loop {
+                match upstream.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(Instant::now() < deadline, "CLI did not contact its peer");
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(error) => panic!("accepting CLI mirror request: {error}"),
+                }
+            };
+            stream.set_nonblocking(false).unwrap();
+            stream.set_read_timeout(Some(IO_DEADLINE)).unwrap();
+            let mut request = String::new();
+            BufReader::new(&mut stream).read_line(&mut request).unwrap();
+            assert_eq!(request, "-g TEST:3:42-LAST\n");
+            stream.write_all(response.as_bytes()).unwrap();
+        });
+        let mut command = cli(&config);
+        command.args([
+            "source",
+            "sync-nrtm3",
+            "--source",
+            "TEST",
+            "--endpoint",
+            &endpoint.to_string(),
+        ]);
+        if index == 0 {
+            command.args(["--base-serial", "41"]);
+        }
+        let result = command.output().unwrap();
+        peer.join().unwrap();
+        assert_eq!(result.status.success(), index == 0, "{result:?}");
+        let status = successful(
+            cli(&config)
+                .args(["source", "status", "--source", "TEST"])
+                .output()
+                .unwrap(),
+        );
+        assert_eq!(
+            serde_json::from_slice::<Value>(&status).unwrap()["serial"],
+            41
+        );
+    }
+    successful(cli(&config).args(["database", "verify"]).output().unwrap());
+}
+
+#[test]
+fn bounded_nrtm3_cli_rejects_a_peer_that_exceeds_the_requested_range() {
+    let workspace = tempfile::tempdir().unwrap();
+    let config = workspace.path().join("irrd.toml");
+    fs::write(&config, "database = \"registry.redb\"\nsources = [\"TEST\"]\nlisten = \"127.0.0.1:0\"\nmax_connections = 4\nio_timeout_seconds = 2\nmax_snapshot_bytes = 8192\n").unwrap();
+    let snapshot = workspace.path().join("snapshot.rpsl");
+    fs::write(&snapshot, "aut-num: AS64496\nsource: TEST\n").unwrap();
+    successful(
+        cli(&config)
+            .args(["import", "snapshot", "--source", "TEST", "--file"])
+            .arg(snapshot)
+            .output()
+            .unwrap(),
+    );
+    for (request, response, initial, succeeds) in [
+        (
+            "-g TEST:3:10-10\n",
+            "%START Version: 3 TEST 10-10\n\nADD 10\n\naut-num: AS64497\nsource: TEST\n\n%END TEST\n",
+            true,
+            true,
+        ),
+        (
+            "-g TEST:3:11-11\n",
+            "%START Version: 3 TEST 11-12\n\nADD 11\n\naut-num: AS64498\nsource: TEST\n\nADD 12\n\naut-num: AS64499\nsource: TEST\n\n%END TEST\n",
+            false,
+            false,
+        ),
+    ] {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = listener.local_addr().unwrap().to_string();
+        let peer = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket.set_read_timeout(Some(IO_DEADLINE)).unwrap();
+            let mut query = String::new();
+            BufReader::new(&mut socket).read_line(&mut query).unwrap();
+            assert_eq!(query, request);
+            socket.write_all(response.as_bytes()).unwrap();
+        });
+        let mut command = cli(&config);
+        command.args([
+            "source",
+            "sync-nrtm3",
+            "--source",
+            "TEST",
+            "--endpoint",
+            &endpoint,
+            "--end-serial",
+            if initial { "10" } else { "11" },
+        ]);
+        if initial {
+            command.args(["--base-serial", "9"]);
+        }
+        let result = command.output().unwrap();
+        assert_eq!(result.status.success(), succeeds);
+        if !succeeds {
+            assert!(
+                String::from_utf8_lossy(&result.stderr).contains("exceeds requested end serial")
+            );
+        }
+        peer.join().unwrap();
+        let status = successful(
+            cli(&config)
+                .args(["source", "status", "--source", "TEST"])
+                .output()
+                .unwrap(),
+        );
+        assert_eq!(
+            serde_json::from_slice::<Value>(&status).unwrap()["serial"],
+            10
+        );
+        let count = successful(cli(&config).args(["database", "count"]).output().unwrap());
+        assert_eq!(
+            serde_json::from_slice::<Value>(&count).unwrap()["objects"],
+            2
+        );
+    }
+}
+
+#[test]
 fn nrtm3_commits_objects_and_serial_together_over_file_and_tcp() {
     let workspace = tempfile::tempdir().unwrap();
     let config = workspace.path().join("irrd.toml");
@@ -1087,6 +1368,113 @@ TEST = ["127.0.0.1"]
     let unchanged: Value = serde_json::from_slice(&unchanged).unwrap();
     assert_eq!(unchanged["serial"], 44);
     assert_eq!(unchanged["up_to_date"], true);
+}
+
+#[test]
+fn shared_mirror_peer_is_bounded_without_exhausting_query_workers() {
+    let workspace = tempfile::tempdir().unwrap();
+    let upstream = TcpListener::bind("127.0.0.1:0").unwrap();
+    upstream.set_nonblocking(true).unwrap();
+    let endpoint = upstream.local_addr().unwrap();
+    let sources = (0..7).map(|i| format!("TEST{i}")).collect::<Vec<_>>();
+    let config = workspace.path().join("irrd.toml");
+    let mut text = format!(
+        "database = \"registry.redb\"\nsources = {}\nlisten = \"127.0.0.1:0\"\nhttp_listen = \"127.0.0.1:0\"\nworker_threads = 2\nmax_blocking_threads = 4\ndatabase_cache_mib = 8\nmax_connections = 8\nio_timeout_seconds = 15\nmax_snapshot_bytes = 4096\n",
+        serde_json::to_string(&sources).unwrap()
+    );
+    for source in &sources {
+        text.push_str(&format!("\n[nrtm3_sync.{source}]\nendpoint = \"{endpoint}\"\ninterval_seconds = 60\nbase_serial = 0\nobject_class_filter = [\"aut-num\"]\n"));
+    }
+    fs::write(&config, text).unwrap();
+    let snapshot = workspace.path().join("synthetic.rpsl");
+    for source in &sources {
+        fs::write(&snapshot, format!("aut-num: AS64496\nsource: {source}\n")).unwrap();
+        successful(
+            cli(&config)
+                .args(["import", "snapshot", "--source", source, "--file"])
+                .arg(&snapshot)
+                .output()
+                .unwrap(),
+        );
+    }
+    let (observed, ready) = mpsc::channel();
+    let (release, released) = mpsc::channel();
+    let peer = thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let accept = || loop {
+            match upstream.accept() {
+                Ok((mut stream, _)) => {
+                    stream.set_nonblocking(false).unwrap();
+                    stream.set_read_timeout(Some(IO_DEADLINE)).unwrap();
+                    let mut line = String::new();
+                    BufReader::new(&mut stream).read_line(&mut line).unwrap();
+                    assert!(line.starts_with("-g TEST") && line.ends_with(":3:1-LAST\n"));
+                    break stream;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(Instant::now() < deadline, "mirror was not contacted");
+                    thread::sleep(Duration::from_millis(5));
+                }
+                Err(error) => panic!("accepting test mirror: {error}"),
+            }
+        };
+        let first = accept();
+        let second = accept();
+        observed.send(()).unwrap();
+        // Keep both network reads blocked while the real HTTP query completes.
+        released.recv_timeout(IO_DEADLINE).unwrap();
+        assert_eq!(
+            upstream.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+        for mut stream in [first, second] {
+            stream
+                .write_all(b"%ERROR:401: invalid range: Not within 0-0\n")
+                .unwrap();
+        }
+        for _ in 2..7 {
+            accept()
+                .write_all(b"%ERROR:401: invalid range: Not within 0-0\n")
+                .unwrap();
+        }
+    });
+    let (server, http) = Server::start_listener(&config, "GraphQL listening");
+    ready.recv_timeout(IO_DEADLINE).unwrap();
+    let reply = whois(
+        http,
+        b"GET /v1/whois/?q=AS64496 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+    );
+    assert!(
+        reply.starts_with("HTTP/1.1 200 ") && reply.contains("aut-num: AS64496"),
+        "{reply}"
+    );
+    release.send(()).unwrap();
+    peer.join().unwrap();
+    let deadline = Instant::now() + IO_DEADLINE;
+    loop {
+        let reply = whois(
+            http,
+            b"GET /ui/mirrors.json HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+        );
+        let value: Value = serde_json::from_str(reply.split_once("\r\n\r\n").unwrap().1).unwrap();
+        if value["sources"]
+            .as_object()
+            .unwrap()
+            .values()
+            .all(|row| row["state"] == "following")
+        {
+            assert_eq!(value["sources"].as_object().unwrap().len(), 7);
+            assert_eq!(value["total_objects"], 7);
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "queued mirrors failed to complete"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+    drop(server);
+    successful(cli(&config).args(["database", "verify"]).output().unwrap());
 }
 
 #[test]
@@ -2138,13 +2526,203 @@ fn snapshot_policies_survive_restart_and_http_source_subset_is_enforced() {
 }
 
 #[test]
+fn full_standard_class_profile_is_queryable_after_restart() {
+    let workspace = tempfile::tempdir().unwrap();
+    let config = workspace.path().join("irrd.toml");
+    fs::write(&config, "database = \"registry.redb\"\nsources = [\"TEST\"]\nlisten = \"127.0.0.1:0\"\nhttp_listen = \"127.0.0.1:0\"\nmax_connections = 8\ndatabase_cache_mib = 8\nio_timeout_seconds = 2\nmax_snapshot_bytes = 65536\n").unwrap();
+    // Synthetic identities cover the full pinned IRRd class inventory, including
+    // classes absent from a routing-only snapshot. This tests mirror/query
+    // coverage; these deliberately minimal objects are not update-validation fixtures.
+    let cases = [
+        (
+            "as-block",
+            "AS64496 - AS64511",
+            "as-block: AS64496 - AS64511",
+        ),
+        (
+            "as-set",
+            "AS64496:AS-EXAMPLE",
+            "as-set: AS64496:AS-EXAMPLE\nmembers: AS64497",
+        ),
+        ("aut-num", "AS64496", "aut-num: AS64496"),
+        (
+            "domain",
+            "2.0.192.IN-ADDR.ARPA",
+            "domain: 2.0.192.in-addr.arpa",
+        ),
+        (
+            "filter-set",
+            "FLTR-EXAMPLE",
+            "filter-set: FLTR-EXAMPLE\nfilter: AS64496",
+        ),
+        (
+            "inet-rtr",
+            "R1.EXAMPLE.INVALID",
+            "inet-rtr: r1.example.invalid",
+        ),
+        ("inet6num", "2001:DB8::/32", "inet6num: 2001:db8::/32"),
+        (
+            "inetnum",
+            "192.0.2.0 - 192.0.2.255",
+            "inetnum: 192.0.2.0 - 192.0.2.255",
+        ),
+        ("irt", "IRT-EXAMPLE", "irt: IRT-EXAMPLE"),
+        ("key-cert", "PGPKEY-A1B2C3D4", "key-cert: PGPKEY-A1B2C3D4"),
+        (
+            "mntner",
+            "EXAMPLE-MNT",
+            "mntner: EXAMPLE-MNT\nauth: BCRYPT-PW synthetic-full-profile-proof",
+        ),
+        ("organisation", "ORG-EX1-TEST", "organisation: ORG-EX1-TEST"),
+        (
+            "peering-set",
+            "PRNG-EXAMPLE",
+            "peering-set: PRNG-EXAMPLE\npeering: AS64496",
+        ),
+        ("person", "EX1-TEST", "person:\nnic-hdl: EX1-TEST"),
+        ("role", "NOC1-TEST", "role:\nnic-hdl: NOC1-TEST"),
+        (
+            "route",
+            "192.0.2.0/24AS64496",
+            "route: 192.0.2.0/24\norigin: AS64496",
+        ),
+        (
+            "route-set",
+            "RS-EXAMPLE",
+            "route-set: RS-EXAMPLE\nmembers: 192.0.2.0/24",
+        ),
+        (
+            "route6",
+            "2001:DB8::/32AS64496",
+            "route6: 2001:db8::/32\norigin: AS64496",
+        ),
+        (
+            "rtr-set",
+            "RTRS-EXAMPLE",
+            "rtr-set: RTRS-EXAMPLE\nmembers: r1.example.invalid",
+        ),
+    ];
+    let fixture = workspace.path().join("full.rpsl");
+    fs::write(
+        &fixture,
+        cases
+            .iter()
+            .map(|(_, _, text)| format!("{text}\nsource: TEST\n\n"))
+            .collect::<String>(),
+    )
+    .unwrap();
+    successful(
+        cli(&config)
+            .args(["import", "snapshot", "--source", "TEST", "--file"])
+            .arg(&fixture)
+            .output()
+            .unwrap(),
+    );
+    for iteration in 0..2 {
+        if iteration == 1 {
+            let packed = workspace.path().join("packed.redb");
+            let report: Value = serde_json::from_slice(&successful(
+                cli(&config)
+                    .args(["database", "repack", "--file"])
+                    .arg(&packed)
+                    .output()
+                    .unwrap(),
+            ))
+            .unwrap();
+            assert_eq!(report["objects"], 19);
+            let original = fs::read_to_string(&config).unwrap();
+            fs::write(&config, original.replace("registry.redb", "packed.redb")).unwrap();
+        }
+        let (server, tcp) = Server::start_listener(&config, "WHOIS listening");
+        if iteration == 0 {
+            let busy_output = workspace.path().join("busy-output.redb");
+            let refused = cli(&config)
+                .args(["database", "repack", "--file"])
+                .arg(&busy_output)
+                .output()
+                .unwrap();
+            assert!(!refused.status.success());
+            assert!(!busy_output.exists());
+        }
+
+        for (class, key, text) in cases {
+            let answer = whois(tcp, format!("!m{class},{key}\n").as_bytes());
+            assert!(
+                answer.contains(text.lines().next().unwrap()),
+                "{class}: {answer}"
+            );
+            assert!(!answer.contains("synthetic-full-profile-proof"));
+        }
+        drop(server);
+        let (server, http) = Server::start_listener(&config, "GraphQL listening");
+        for (class, key, _) in cases {
+            let response = whois(http, format!("GET /v1/irr/objects?source=TEST&class={class} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").as_bytes());
+            assert!(response.starts_with("HTTP/1.1 200 "), "{response}");
+            let value: Value =
+                serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap();
+            assert_eq!(value["keys"], serde_json::json!([key]), "{class}");
+        }
+        for batch in cases.chunks(8) {
+            let body = serde_json::json!({
+            "query": "query($keys:[String!]) { rpslObjects(sources:[\"TEST\"],rpslPk:$keys) { objectClass rpslPk objectText ... on RPSLPerson { person } ... on RPSLRole { role } } }",
+            "variables": {"keys": batch.iter().map(|(_, key, _)| key).collect::<Vec<_>>()}
+        }).to_string();
+            let response = whois(http, format!("POST /graphql/ HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes());
+            let value: Value =
+                serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap();
+            assert!(value.get("errors").is_none(), "{value}");
+            let rows = value["data"]["rpslObjects"].as_array().unwrap();
+            assert_eq!(rows.len(), batch.len());
+            for (class, key, text) in batch {
+                let row = rows
+                    .iter()
+                    .find(|row| row["objectClass"] == *class)
+                    .unwrap();
+                assert_eq!(row["rpslPk"], *key);
+                if matches!(*class, "person" | "role") {
+                    assert_eq!(row[*class], "");
+                }
+                assert!(
+                    row["objectText"]
+                        .as_str()
+                        .unwrap()
+                        .contains(text.lines().next().unwrap())
+                );
+            }
+            assert!(!response.contains("synthetic-full-profile-proof"));
+        }
+        drop(server);
+    }
+    let checked: Value = serde_json::from_slice(&successful(
+        cli(&config).args(["database", "verify"]).output().unwrap(),
+    ))
+    .unwrap();
+    assert_eq!(checked["objects"], 19);
+    let exported = workspace.path().join("public.rpsl");
+    successful(
+        cli(&config)
+            .args([
+                "export", "snapshot", "--source", "TEST", "--public", "--file",
+            ])
+            .arg(&exported)
+            .output()
+            .unwrap(),
+    );
+    let public = fs::read_to_string(exported).unwrap();
+    assert!(!public.contains("synthetic-full-profile-proof"));
+    for (_, _, text) in cases {
+        assert!(public.contains(text.lines().next().unwrap()));
+    }
+}
+
+#[test]
 fn raw_http_whois_scope_is_independent_of_structured_queries_and_browse() {
     let workspace = tempfile::tempdir().unwrap();
     let config = workspace.path().join("irrd.toml");
     fs::write(&config, "database = \"registry.redb\"\nsources = [\"TEST\", \"OTHER\"]\nhttp_sources = [\"TEST\"]\nhttp_whois_sources = [\"TEST\", \"OTHER\"]\nlisten = \"127.0.0.1:0\"\nhttp_listen = \"127.0.0.1:0\"\nmax_connections = 8\nio_timeout_seconds = 2\nmax_snapshot_bytes = 65536\n").unwrap();
     let fixture = workspace.path().join("fixture.rpsl");
     for source in ["TEST", "OTHER"] {
-        fs::write(&fixture, format!("as-set: AS-A\nmembers: AS64496\nsource: {source}\n\nas-set: AS-B\nmembers: AS64497\nsource: {source}\n")).unwrap();
+        fs::write(&fixture, format!("as-set: AS-A\nmembers: AS64496\nsource: {source}\n\nas-set: AS-B\nmembers: AS64497\nsource: {source}\n\nmntner: PROFILE-MNT\nauth: BCRYPT-PW private-index-proof\nsource: {source}\n")).unwrap();
         successful(
             cli(&config)
                 .args(["import", "snapshot", "--source", source, "--file"])
@@ -2165,7 +2743,7 @@ fn raw_http_whois_scope_is_independent_of_structured_queries_and_browse() {
     assert!(raw.starts_with("HTTP/1.1 200 ") && raw.contains("source: OTHER"));
     for path in [
         "/v1/irr/objects?source=OTHER&class=as-set",
-        "/v1/irr/objects?source=TEST&class=mntner",
+        "/v1/irr/objects?source=TEST&class=auth",
         "/v1/irr/objects?source=TEST&class=as-set&limit=101",
         "/v1/irr/objects?source=TEST&class=as-set&after=%00",
     ] {
@@ -2179,6 +2757,10 @@ fn raw_http_whois_scope_is_independent_of_structured_queries_and_browse() {
         assert!(raw.starts_with("HTTP/1.1 200 "), "{raw}");
         serde_json::from_str(raw.split_once("\r\n\r\n").unwrap().1).unwrap()
     };
+    let maintainers = json_get("/v1/irr/objects?source=TEST&class=mntner");
+    assert_eq!(maintainers["keys"], serde_json::json!(["PROFILE-MNT"]));
+    assert!(!maintainers.to_string().contains("private-index-proof"));
+    assert!(get("/v1/irr/objects?source=OTHER&class=mntner").starts_with("HTTP/1.1 400 "));
     let first = json_get("/v1/irr/objects?source=TEST&class=as-set&limit=1");
     assert_eq!(first["keys"], serde_json::json!(["AS-A"]));
     assert_eq!(first["next_cursor"], "AS-A");
@@ -2422,4 +3004,213 @@ object_class_filter = ["aut-num", "route"]
     assert!(whois(tcp, b"!r198.51.100.0/24\n").contains("198.51.100.0/24"));
     assert_eq!(whois(tcp, b"!mmntner,PRIVATE-MNT\n"), "D\n");
     drop(server);
+}
+
+#[test]
+fn public_http_admission_preserves_queries_and_rejects_writes() {
+    let workspace = tempfile::tempdir().unwrap();
+    let config = workspace.path().join("irrd.toml");
+    let base = r#"database = "registry.redb"
+sources = ["TEST"]
+listen = "127.0.0.1:0"
+http_listen = "127.0.0.1:0"
+http_public_queries = true
+max_connections = 4
+io_timeout_seconds = 2
+max_snapshot_bytes = 65536
+"#;
+    fs::write(&config, base).unwrap();
+    let fixture = workspace.path().join("fixture.rpsl");
+    fs::write(
+        &fixture,
+        (0..54)
+            .map(|n| format!("route6: 2001:db8:{n:x}::/48\norigin: AS64496\nsource: TEST\n\n"))
+            .collect::<String>(),
+    )
+    .unwrap();
+    successful(
+        cli(&config)
+            .args(["import", "snapshot", "--source", "TEST", "--file"])
+            .arg(&fixture)
+            .output()
+            .unwrap(),
+    );
+    let (server, address) = Server::start_listener(&config, "GraphQL listening");
+    let get = |path: &str, extra: &str| {
+        whois(
+            address,
+            format!("GET {path} HTTP/1.1\r\nHost: localhost\r\n{extra}Connection: close\r\n\r\n")
+                .as_bytes(),
+        )
+    };
+    let forwarded = "X-RIRRd-Client: 192.0.2.1\r\n";
+    let mut limited = 0;
+    for _ in 0..40 {
+        let reply = get("/v1/whois/?q=%216AS64496", forwarded);
+        if reply.starts_with("HTTP/1.1 200") {
+            assert_eq!(
+                reply
+                    .split_once("\r\n\r\n")
+                    .unwrap()
+                    .1
+                    .split_whitespace()
+                    .count(),
+                54
+            );
+            assert!(reply.to_lowercase().contains("server-timing: rirrd;dur="));
+        } else {
+            assert!(reply.starts_with("HTTP/1.1 429"), "{reply}");
+            limited += 1;
+        }
+    }
+    assert!(limited > 0);
+    assert!(get("/v1/whois/?q=%216AS64496", "").starts_with("HTTP/1.1 200"));
+    assert!(
+        get("/v1/whois/?q=%216AS64496", "X-RIRRd-Client: malformed\r\n")
+            .starts_with("HTTP/1.1 400")
+    );
+    assert!(get("/ui/http-stats.json", forwarded).starts_with("HTTP/1.1 404"));
+    assert!(get("/v1/submit/", forwarded).starts_with("HTTP/1.1 404"));
+    let metrics = get("/ui/http-stats.json", "");
+    let report: Value = serde_json::from_str(metrics.split_once("\r\n\r\n").unwrap().1).unwrap();
+    assert_eq!(report["requests"], 43);
+    assert_eq!(report["rate_limited"], limited);
+    assert_eq!(report["successful_sample_count"], 40 - limited);
+    drop(server);
+    fs::write(
+        &config,
+        format!("{base}http_authoritative_updates = true\n"),
+    )
+    .unwrap();
+    let output = cli(&config).args(["config", "check"]).output().unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("http_public_queries"));
+}
+
+#[test]
+fn authoritative_references_reject_name_takeover_and_allow_atomic_deletion() {
+    let workspace = tempfile::tempdir().unwrap();
+    let config = workspace.path().join("irrd.toml");
+    fs::write(&config, "database = \"registry.redb\"\nsources = [\"TEST\"]\nauthoritative_sources = [\"TEST\"]\nlisten = \"127.0.0.1:0\"\nhttp_listen = \"127.0.0.1:0\"\nhttp_authoritative_updates = true\nmax_connections = 4\nio_timeout_seconds = 2\nmax_snapshot_bytes = 65536\n").unwrap();
+    let password = "reference fixture proof";
+    let hash = bcrypt::hash_with_salt(password, 4, [19; 16]).unwrap();
+    let contact = |name: &str, kind: &str| {
+        format!(
+            "{kind}: Synthetic Contact\naddress: Example Road\nphone: +1 202 555 0100\ne-mail: contact@example.invalid\nnic-hdl: {name}\nmnt-by: OWNER-MNT\nsource: TEST\n"
+        )
+    };
+    let domain = |name: &str, handle: &str| {
+        format!(
+            "domain: {name}.example\nadmin-c: {handle}\ntech-c: {handle}\nzone-c: {handle}\nmnt-by: OWNER-MNT\nsource: TEST\n"
+        )
+    };
+    let cli_contact = contact("CLI-TEST", "person");
+    let http_contact = contact("HTTP-TEST", "role");
+    let cli_domain = domain("cli", "CLI-TEST");
+    let cli_extra = domain("cli-extra", "CLI-TEST");
+    let http_domain = domain("http", "HTTP-TEST");
+    let snapshot = workspace.path().join("fixture.rpsl");
+    fs::write(&snapshot, format!("mntner: OWNER-MNT\nauth: BCRYPT-PW {hash}\nmnt-by: OWNER-MNT\nsource: TEST\n\n{}\n{cli_contact}\n{cli_domain}\n{cli_extra}\n{http_contact}\n{http_domain}", domain("dangling", "MISSING-TEST"))).unwrap();
+    successful(
+        cli(&config)
+            .args([
+                "import",
+                "snapshot",
+                "--source",
+                "TEST",
+                "--authoritative-restore",
+                "--file",
+            ])
+            .arg(&snapshot)
+            .output()
+            .unwrap(),
+    );
+    let path = workspace.path().join("submission.rpsl");
+    let submit = |text: &str, delete: bool| {
+        fs::write(&path, text).unwrap();
+        let mut command = cli(&config);
+        command
+            .args(["update", "--source", "TEST", "--file"])
+            .arg(&path)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        if delete {
+            command.arg("--delete");
+        }
+        let mut child = command.spawn().unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(format!("{password}\n").as_bytes())
+            .unwrap();
+        child.wait_with_output().unwrap()
+    };
+    for kind in ["person", "role"] {
+        let denied = submit(&contact("MISSING-TEST", kind), false);
+        assert!(!denied.status.success());
+        let error = String::from_utf8_lossy(&denied.stderr);
+        assert!(error.contains("protected by existing references"));
+        assert!(!error.contains(password) && !error.contains("$2b$"));
+    }
+    assert!(
+        !submit(&format!("{cli_contact}\n{cli_domain}"), true)
+            .status
+            .success()
+    );
+    let report = successful(cli(&config).args(["database", "verify"]).output().unwrap());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&report).unwrap()["objects"],
+        7
+    );
+    successful(submit(
+        &format!("{cli_contact}\n{cli_domain}\n{cli_extra}"),
+        true,
+    ));
+    let (server, http) = Server::start_listener(&config, "GraphQL listening");
+    let request = |method: &str, objects: &[&str], proof: &str| {
+        let objects: Vec<_> = objects
+            .iter()
+            .map(|text| serde_json::json!({"object_text":text}))
+            .collect();
+        let body = serde_json::json!({"objects":objects,"passwords":[proof],"delete_reason":"synthetic cleanup"}).to_string();
+        let raw = whois(http, format!("{method} /v1/submit/ HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes());
+        assert!(raw.starts_with("HTTP/1.1 200 "));
+        assert!(!raw.contains(proof) && !raw.contains("$2b$"));
+        serde_json::from_str::<Value>(raw.split_once("\r\n\r\n").unwrap().1).unwrap()
+    };
+    for kind in ["person", "role"] {
+        assert_eq!(
+            request("POST", &[&contact("MISSING-TEST", kind)], password)["summary"]["failed"],
+            1
+        );
+    }
+    assert_eq!(
+        request("DELETE", &[&http_contact], password)["summary"]["failed"],
+        1
+    );
+    assert_eq!(
+        request(
+            "DELETE",
+            &[&http_contact, &http_domain],
+            "wrong fixture proof"
+        )["summary"]["failed"],
+        2
+    );
+    assert_eq!(
+        request("DELETE", &[&http_contact, &http_domain], password)["summary"]["successful_delete"],
+        2
+    );
+    // Atomic deletion does not remove the protected-name tombstone.
+    assert_eq!(
+        request("POST", &[&http_contact], password)["summary"]["failed"],
+        1
+    );
+    drop(server);
+    let report = successful(cli(&config).args(["database", "verify"]).output().unwrap());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&report).unwrap()["objects"],
+        2
+    );
 }

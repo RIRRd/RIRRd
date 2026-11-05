@@ -1,5 +1,7 @@
 # IRRd 4 compatibility inventory
 
+Current removal, migration and test evidence: [IRR-only beta.2 checkpoint](../STATUS.md).
+
 > Current scope (4 November 2026): RIRRd is an IRR-only daemon. Embedded RPKI,
 > RTR, origin-validation APIs and ROA-file admission were removed for beta.2.
 > Earlier RPKI sections are historical evidence, not current features or backlog.
@@ -31,110 +33,143 @@ oracle results or protocol interop evidence as appropriate. Release
 extensions are tracked separately from upstream behaviour. Each row stays
 open until the stated behaviour and safety checks are demonstrated.
 
-## Beta 0.1.0-beta.1
+## Current development
 
-The [beta launch checkpoint](BETA_LAUNCH_CHECKPOINT.md) records the two-domain
-products, measured SVG graphs, RPKI covering/batch/status additions, native and
-ARM64 QEMU tests, 45+45 WHOIS / 71 authorization oracle matches and RPKI fuzzing.
-These additions do not establish live filtering, full mirroring/authentication
-parity or release qualification. Public GitHub release/CI evidence remains
-pending authenticated repository access.
+The 5 November development review adds bounded indexed GraphQL inverse filters,
+WHOIS `!j` serial discovery, protected-name checks for dangling contact references,
+and atomic deletion of an object with its referrers. Public lookup materialization
+is bounded before copying database values. Queries and service writers acquire
+coherency guards without holding blocked worker threads; deterministic tests
+exercise single-worker lock ordering and cancellation. See the
+[review and measurements](DEVELOPMENT_REVIEW_2026_11_05.md). These corrections do
+not close the remaining account, four authoritative-class, NRTMv4 server,
+live-policy or release-qualification gaps.
 
-## Continuous build verification
 
-The [continuous-testing checkpoint](CONTINUOUS_TESTING_CHECKPOINT.md) records
-native protocol/recovery contracts, isolated browsers, report integrity, Linux
-and ARM evidence, measured source coverage and per-push/PR automation. The public
-testing page reports the tested revision and execution origin. These gates
-exercise the implemented beta; they do not close the remaining parity rows.
+The [full-catalog checkpoint](../benchmarks/STORAGE_FULL_2026_11_05.md) records
+activation of a verified 28-to-20 GiB development database: about 14 million
+objects, all 21 sources, 19 retained classes and 14 incremental feeds.
+Post-restart TCP/HTTP/GraphQL, redaction, framing and mirror polls passed.
+This is storage preservation evidence, not full feature parity.
 
-## Compact ROV index and search efficiency
+Offline table accounting and a schema-preserving new-file repack are described
+in the [storage checkpoint](../benchmarks/STORAGE_2026_11_04.md). All application
+rows, serials, journals, signed-client state and authoritative metadata are
+preserved and hashed; unknown tables/savepoints are refused. The 19-class normal
+CLI/TCP/HTTP/GraphQL test reopens a repacked database. The earlier synthetic
+measurements are separate from the full-catalog validation above; neither
+expands the remaining feature-parity claims.
 
-The [resource/search checkpoint](../benchmarks/COMPACT_ROV_AND_SEARCH.md) records
-family-specific indexes, streamed feed parsing, bounded explanation invariants,
-full-scan/reference and CLI/API checks, Linux/ARM/fuzz evidence, paired kernel
-measurements and direct browser search. The UI/API exposes index allocation
-separately from process memory. This does not close live RPKI suppression,
-full validation coverage, authentication or release qualification gaps.
+The [4 November allocation/release checkpoint](../benchmarks/OPTIMIZATION_2026_11_04.md)
+records smaller executables, bounded import/query allocation changes, complete
+before/after repetitions and the snapshot-import timing trade-off. Runtime
+`d1d91ca` passes the linked native, oracle, deployment, fuzz and router CI suites.
+The final binary matches 45 TCP and 45 HTTP oracle cases; 274 local checks pass
+with one optional skip. Protocol limits, credential redaction, data retention and
+database format are preserved. This is evidence for those changes and exercised
+behaviors, without extending the parity status of the remaining features.
 
-## Community website and independent console
+See [development status](../STATUS.md) and the per-commit CI reports. Historical
+host/operator checkpoints are maintained separately from the public daemon.
 
-The [community UX checkpoint](COMMUNITY_UX_CHECKPOINT.md) records separate
-community and self-hosted interfaces, private reviewed node submissions and
-browser-tested live prefix/set/ASN queries, source counts/browsing, API commands,
-router examples and RPKI state. These are usability and operational checks;
-they do not add upstream protocol parity or establish release readiness.
+Full-class ingestion/query coverage is exercised for all 19 standard classes by
+the restart smoke test, including bounded HTTP browsing, exact-key GraphQL and
+public exports. Contacts with an empty display name retain their non-empty
+`nic-hdl` identity and original text. The
+[synthetic pinned parser check](../../tools/oracle/check_contact_names.py)
+compares eight accepted/rejected cases in strict and mirror modes; it does not
+establish complete contact/account or authentication parity.
 
-## Continuous mirror and console checkpoint
+## Full-class mirror evidence — 4 November 2026
 
-The [continuous-mirroring checkpoint](CONTINUOUS_MIRROR_CHECKPOINT.md) records
-serial-aligned filtered NRTMv3 scheduling, ordered upstream omissions, bounded
-large policy records, persistent class policy and quiet-source cursors. The
-console exposes per-source checks/coverage and the running GraphQL schema.
-Five source feeds are configured for 60-second incremental polling; other feeds
-remain explicitly snapshots or pending access. This does not establish signed
-NRTMv4 scheduling, downstream re-export or full mirroring parity.
+Runtime `eaed8fb81f16b44ae069816ed27a83b6c3310b86` exercises all
+19 standard classes through snapshot import, persistent storage, a real daemon
+restart, typed TCP and HTTP WHOIS queries, bounded object-key browsing,
+exact-key GraphQL and redacted public export in
+[`full_standard_class_profile_is_queryable_after_restart`](../../tests/smoke.rs).
+The synthetic pinned IRRd 4.5.4 oracle also checks eight blank-contact and
+missing-identity cases in strict and mirror modes. Empty display names are
+retained when their required NIC handle exists; this is distinct from accepting
+a missing contact identity.
 
-## Expanded source and authoritative checkpoint
+Initial incremental synchronization validates the actual stored class scope
+with indexed seeks, including an empty baseline, similar class prefixes and
+neighbouring source names. It does not rely on cached class totals. The same
+invariant remains part of the complete logical database verifier. This removes
+a scan of every source object from the first-sync write transaction while
+retaining filter mismatch rejection.
 
-The [expanded checkpoint](EXPANDED_SOURCES_CHECKPOINT.md) records twelve real
-routing sources, verified resume after a failed candidate, disclosed record
-quarantine and source transport policy. AS-block/domain writes add maintainer
-and contact/zone-reference checks: 15 bounded profiles, 71 pinned HTTP decisions,
-45 cases per WHOIS transport and 16 additional schema cases. Native Linux and
-ARM64 QEMU pass 139 unit/17 integration/two client tests. The remaining four
-class profiles, cryptographic/account workflows and other parity gates stay open.
+Passing CI for that exact runtime:
 
-## Live public test registry
+- [Native Linux x86-64/ARM64 and Windows, strict Clippy, locked tests, coverage,
+  browser checks and dependency audit](https://github.com/RIRRd/RIRRd/actions/runs/41873375424).
+- [Pinned upstream parser, authorization, schema and protocol oracle](https://github.com/RIRRd/RIRRd/actions/runs/41873375308).
+- [Deployment smoke](https://github.com/RIRRd/RIRRd/actions/runs/41873375247),
+  [fuzz smoke](https://github.com/RIRRd/RIRRd/actions/runs/41873375416),
+  [source publication hygiene](https://github.com/RIRRd/RIRRd/actions/runs/41873375263)
+  and [router/browser integration](https://github.com/RIRRd/RIRRd/actions/runs/41873375262).
 
-The [live checkpoint](LIVE_IRR_CHECKPOINT.md) records read-only WHOIS/HTTPS queries
-on five routing snapshots, source-permission isolation, measured telemetry and
-real bgpq4-generated BIRD/FRR candidates. Larger published policies are bounded
-at 4 MiB for snapshot imports; submission admission stays 64 KiB. Daily snapshot
-refresh is a deployment extension, not proof of continuous NRTM parity. Twelve
-tracked sources remain pending. Native Linux and ARM64 QEMU pass 138 unit/16
-integration/two client tests; full parity and new CI verification remain open.
+Local Linux validation passed format checking, strict Clippy, 179 Rust tests
+(one optional test skipped), 56 protocol cases and 32 report cases. A fresh
+official RustSec database at `965bf9ad083b58e6340d65829d85217b18be9290`
+reported no vulnerable dependencies or advisory warnings. The full isolated
+PostgreSQL/Redis oracle rerun passed the additional parser/schema/authentication
+checks and the existing 25 TCP plus 25 HTTP comparisons. It sends no updates to
+public registries.
 
-## Dashboard and small-host checkpoint
+These checks establish the exercised mirror and query behavior. They do not
+establish full authoritative attribute/reference validation, account workflows,
+OpenPGP or scoped-token authorization, notifications, NRTMv4 server scheduling,
+event streams, complete query parity or sustained-load release qualification.
+RPKI remains deliberately outside the current IRR-only scope.
 
-The bundled read-only console uses the same loopback query API, with explicit
-synthetic-preview mode for static demos. The [small-host checkpoint](../benchmarks/SMALL_HOST_CHECKPOINT.md)
-records 64/16 MiB cache budgets, one-worker profiles, bounded imports and a separate
-per-file cache-eviction test. Real bgpq4 1.12 results matched the pinned oracle on
-12 original synthetic profiles, with BIRD 2.17.5 and FRR 10.3 syntax checks.
-Native Linux and ARM64 QEMU release checks pass 137 unit/15 integration/two client
-tests. This establishes neither full schema/authentication/mirroring parity nor
-production qualification. Source publication now has MIT/AI contribution guidance
-and file/history secret-scan checks; those are separate from release readiness.
+## Scheduled mirror peer admission — 4 November 2026
 
-## GraphQL and 100k-object checkpoint
+Runtime `312be7ea2998df928db02e7b898f28877f99ce50` queues scheduled jobs
+asynchronously before acquiring a blocking worker and allows at most two
+simultaneous jobs per upstream endpoint. Multiple databases sharing a peer no
+longer create one concurrent connection per source. Queued jobs cancel on
+shutdown before connecting or changing a cursor.
 
-The [synthetic scale checkpoint](../benchmarks/LINUX_SYNTHETIC_100K.md) records
-100,000-object import, memory, storage and normal TCP/HTTP request measurements.
-GraphQL policy/router values and 32 field types across four classes now have
-pinned-oracle coverage, alongside the nine supported organisation fields.
-Identity-only queries avoid eager text copies and attribute parsing. A matched
-before/after workload is reported separately; reduced allocations do not by
-themselves establish a throughput gain. Local Linux checks pass 137 application
-unit tests, 13 integration tests and two validating-client tests. New Actions
-run evidence still needs authenticated access. Full parity remains open.
+The normal-daemon regression
+`shared_mirror_peer_is_bounded_without_exhausting_query_workers` holds peer
+replies for seven sources sharing an endpoint. An HTTP query completes with
+only four blocking workers, then all seven feeds complete their idle polls.
+Local format, strict Clippy and locked checks passed: 181 Rust cases, one
+optional skip, 56 protocol cases and 32 report cases. The pinned oracle rerun
+passed, and the unchanged dependency set has no reported RustSec advisories.
 
-## Upgraded VM checkpoint
+Passing CI for that commit: [native/core](https://github.com/RIRRd/RIRRd/actions/runs/41889077425),
+[pinned upstream oracle](https://github.com/RIRRd/RIRRd/actions/runs/41889078119),
+[deployment](https://github.com/RIRRd/RIRRd/actions/runs/41889077438),
+[router/browser](https://github.com/RIRRd/RIRRd/actions/runs/41889077218),
+[fuzz](https://github.com/RIRRd/RIRRd/actions/runs/41889077594) and
+[publication hygiene](https://github.com/RIRRd/RIRRd/actions/runs/41889077915).
+This establishes bounded peer admission and the exercised query/shutdown
+behavior; it does not establish complete replication or sustained-load parity.
 
-See [the 24-CPU checkpoint](UPGRADED_VM_CHECKPOINT.md) for four additional
-bounded authoritative profiles (filter-set, peering-set, rtr-set and inet-rtr),
-maintainer dummy-hash replacement, 47 upstream HTTP decision cases, 25 policy
-schema cases, 134 unit/13 integration checks on native Linux and ARM64 QEMU
-release builds, and package/runtime measurements. No broad capability row is
-marked fully verified from these limited corpora. Native CI and full parity
-remain open.
+## Quiet primary-feed polling — 4 November 2026
 
-## Linux VM checkpoint
+Runtime `e16b0ce4103a33ce010b3a33522ce125640b348e` handles a RIPE-style
+`%ERROR:401: invalid range` response as idle only when its complete numeric
+available range ends at exactly the requested start minus one. Bounds must be
+ordered, and only blank lines may follow. A cursor outside retention, a larger
+gap, an access error, overflow or trailing transcript remains an error. This
+adds an explicit peer-transport case without advancing the committed cursor or
+changing RPSL parsing or storage.
 
-The [3 November Linux evidence](LINUX_VM_CHECKPOINT.md) records authoritative
-organisation support, Linux checks and expanded pinned-oracle coverage. These
-checks establish only the listed behaviors. Full parity and production readiness
-remain open; historical CI links below are not new-run evidence.
+TCP response cases, the normal CLI cursor-pinning/rollback test and the shared
+peer daemon test exercise this behavior. Local strict checks passed 183 Rust
+cases (one optional skip), 56 protocol cases and 32 reporting cases. The pinned
+upstream oracle and fresh pinned RustSec audit passed as well.
+
+Passing CI: [native/core](https://github.com/RIRRd/RIRRd/actions/runs/41891705220),
+[pinned oracle](https://github.com/RIRRd/RIRRd/actions/runs/41891704789),
+[deployment](https://github.com/RIRRd/RIRRd/actions/runs/41891704506),
+[router/browser](https://github.com/RIRRd/RIRRd/actions/runs/41891704737),
+[fuzz](https://github.com/RIRRd/RIRRd/actions/runs/41891704595) and
+[publication hygiene](https://github.com/RIRRd/RIRRd/actions/runs/41891704734).
+These are bounded transport regressions, not complete replication qualification.
 
 ## RPSL and storage
 
@@ -197,7 +232,7 @@ includes cases for each behavior. [WHOIS manual][whois] ·
 | Capability | Reference and specification | Rust implementation and compatibility target | Security requirement | Required evidence | Status |
 | --- | --- | --- | --- | --- | --- |
 | Submission and reports | [Database changes manual][changes], [HTTP routes][http], [RFC 2725][2725] | Create/update/delete via HTTPS, CLI, web and inbound mail. Match validation, per-object outcomes and notification semantics for multi-object batches. Keep authoritative flags and separate source policy. | Explicit authorization on every object, safe dry-run semantics and no plaintext secrets in feedback. | Differential validation and multi-object cases for success, rejection, references between objects and transaction failure. | Partial. Atomic contact, organisation, existing-maintainer, aut-num, route and set updates through CLI and opt-in loopback HTTP. Local tests cover rollback, redacted reports and GraphQL visibility. |
-| Maintainer authorization | [Database changes manual][changes], [object validation][validation], [RFC 2725][2725], [RFC 9580][9580] | Match old/new `mnt-by`, parent and route requirements, overrides, PGP signatures and key-certs, legacy password formats and their configured policy, API key scope and account authentication. | Bound total verification work and hash cost, including legacy stored hashes. Prevent cross-source authorization and strip credentials. | Permission matrix, known hashes, invalid signatures and UUIDs, source isolation and bounded-work tests from v4.5.4 security fixes. | Partial. Bounded bcrypt, old/new maintainer proofs and source isolation are tested locally. Route creation verifies the selected same-source parent and rejects ambiguity. AS-set and route-set creation requires a leading ASN and authenticates against a same-source parent when present. New aut-num creation requires the same-source covering AS-block maintainer and rejects ambiguous or missing allocations. AS-block provisioning is operator-managed. Other authentication schemes remain open. |
+| Maintainer authorization | [Database changes manual][changes], [object validation][validation], [RFC 2725][2725], [RFC 9580][9580] | Match old/new `mnt-by`, parent and route requirements, overrides, PGP signatures and key-certs, legacy password formats and their configured policy, API key scope and account authentication. | Bound total verification work and hash cost, including legacy stored hashes. Prevent cross-source authorization and strip credentials. | Permission matrix, known hashes, invalid signatures and UUIDs, source isolation and bounded-work tests from v4.5.4 security fixes. | Partial. Bounded bcrypt, old/new maintainer proofs and source isolation are tested locally. Route creation verifies the selected same-source parent and rejects ambiguity. AS-set and route-set creation requires a leading ASN and authenticates against a same-source parent when present. New aut-num creation requires the same-source covering AS-block maintainer and rejects ambiguous or missing allocations. AS-block allocation trust remains operator-configured. Other authentication schemes remain open. |
 | Protected names, references and suspension | [Object validation][validation], [suspension][suspension] | Validate strong and weak references. Protect deleted person, role and maintainer names. Support protected-name override, maintainer suspension and reactivation with status/journal handling. | Enforce operator-only controls and preserve audit history. | Oracle cases for attempted name takeover, in-use deletes, overrides and suspension/reactivation. | Partial. Strong-reference checks protect in-use contacts and maintainers in the supported classes. Deleted contact and maintainer names remain protected across reopen and purge. Suspension remains open. |
 | Notifications and history | [Database changes manual][changes], [web UI][ui], [RFC 5322][5322] | Match submission result format, contact discovery, notification reason, auth redaction and source-scoped change history. | Validate and unfold email headers safely, scope historical access and bound deliveries. | Recipient, malformed mail, multi-address header, cross-source history and repeat-notification tests. | Partial. Offline bounded source-scoped audit history records committed actions and identities. Notifications remain open. |
 | ROA ingestion and ROV | [RPKI integration][rpki], [RFC 6811][6811], [RFC 8481][8481], [RFC 9582][9582] | Periodically ingest validator JSON, atomically recompute valid/invalid/not-found and handle maxLength and ASN 0. Apply source exceptions, pseudo-source `RPKI`, `rpki-ov-state`, update checks and optional notifications. | Validate input and preserve last coherent dataset on fetch or parse failure. Reject a conflicting real `RPKI` source when enabled. | Compare overlaps, IP families, no covering ROA, AS mismatch, ASN 0, maxLength, exclusions, pseudo-objects and outage/recovery. | Deliberately outside the current IRR-only scope. Experimental validator, ROA-file CLI/admission, APIs and RTR were removed in beta.2. `rpkiRovFilter` remains false for schema compatibility; untrusted derived metadata is redacted. Use a separate RPKI validator. Historical validation evidence below predates this scope change. |

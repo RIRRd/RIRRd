@@ -8,6 +8,7 @@ use std::{
     net::{Ipv4Addr, Ipv6Addr},
     ops::RangeInclusive,
     path::Path,
+    sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -17,7 +18,7 @@ use redb::{
     ReadTransaction, ReadableMultimapTable, ReadableTable, ReadableTableMetadata, Table,
     TableDefinition, TableHandle, WriteTransaction,
 };
-use tokio::sync::RwLock;
+use tokio::sync::{OwnedRwLockWriteGuard, RwLock};
 
 use crate::{
     authoritative::{Change, authorize},
@@ -27,6 +28,13 @@ use crate::{
     route_policy::RoutePolicy,
     rpsl::{Object, lookup_attributes},
 };
+
+#[path = "storage_maintenance.rs"]
+mod maintenance;
+
+#[path = "storage_queries.rs"]
+mod queries;
+pub(crate) use queries::{InverseFilter, QueryScanLimit};
 
 type Identity<'a> = (&'a str, &'a str, &'a str);
 type ExactKey = (&'static str, &'static str);
@@ -100,7 +108,7 @@ pub struct AuditEntry {
 
 pub struct Store {
     db: Database,
-    query_gate: RwLock<()>,
+    query_gate: Arc<RwLock<()>>,
     legacy_md5_sources: HashSet<String>,
     route_policy: RoutePolicy,
     mirror_status:
@@ -275,7 +283,7 @@ impl Store {
     pub(crate) fn from_database(db: Database) -> Self {
         Self {
             db,
-            query_gate: RwLock::new(()),
+            query_gate: Arc::new(RwLock::new(())),
             legacy_md5_sources: HashSet::new(),
             route_policy: RoutePolicy::default(),
             mirror_status: std::sync::Mutex::new(std::collections::BTreeMap::new()),
@@ -283,7 +291,7 @@ impl Store {
     }
 
     /// Hold a read guard across a service query that performs multiple reads.
-    pub fn query_gate(&self) -> &RwLock<()> {
+    pub fn query_gate(&self) -> &Arc<RwLock<()>> {
         &self.query_gate
     }
 
@@ -364,6 +372,35 @@ impl Store {
         base: u64,
         classes: &HashSet<String>,
     ) -> Result<()> {
+        let _gate = self.query_gate.blocking_write();
+        self.confirm_mirror_base_inner(source, base, classes)
+    }
+
+    pub(crate) fn confirm_mirror_base_with_guard(
+        &self,
+        source: &str,
+        base: u64,
+        classes: &HashSet<String>,
+        guard: &OwnedRwLockWriteGuard<()>,
+    ) -> Result<()> {
+        self.require_write_guard(guard)?;
+        self.confirm_mirror_base_inner(source, base, classes)
+    }
+
+    fn require_write_guard(&self, guard: &OwnedRwLockWriteGuard<()>) -> Result<()> {
+        ensure!(
+            Arc::ptr_eq(OwnedRwLockWriteGuard::rwlock(guard), &self.query_gate),
+            "write guard belongs to a different registry"
+        );
+        Ok(())
+    }
+
+    fn confirm_mirror_base_inner(
+        &self,
+        source: &str,
+        base: u64,
+        classes: &HashSet<String>,
+    ) -> Result<()> {
         let source = canonical_source(source)?;
         ensure!(
             !classes.is_empty()
@@ -375,7 +412,6 @@ impl Store {
         let mut policy = classes.iter().map(String::as_str).collect::<Vec<_>>();
         policy.sort_unstable();
         let policy = policy.join(",");
-        let _gate = self.query_gate.blocking_write();
         let mut write = self.db.begin_write()?;
         write.set_durability(Durability::Immediate);
         {
@@ -394,17 +430,13 @@ impl Store {
                 return Ok(());
             }
             let records = write.open_table(OBJECTS)?;
-            let upper = format!("{source}\0");
-            let mut count = 0;
-            for entry in records.range((source.as_str(), "", "")..(upper.as_str(), "", ""))? {
-                let (identity, _) = entry?;
-                ensure!(
-                    classes.contains(identity.value().1),
-                    "snapshot contains an excluded mirror class"
-                );
-                count += 1;
-            }
-            ensure!(count > 0, "mirror bootstrap requires a nonempty snapshot");
+            let nonempty = check_source_classes(
+                &records,
+                &source,
+                |class| classes.contains(class),
+                "snapshot contains an excluded mirror class",
+            )?;
+            ensure!(nonempty, "mirror bootstrap requires a nonempty snapshot");
             serials.insert(source.as_str(), base)?;
             filters.insert(source.as_str(), policy.as_str())?;
         }
@@ -562,10 +594,44 @@ impl Store {
         classes: Option<&HashSet<String>>,
         should_start: impl FnOnce() -> bool,
     ) -> Result<u64> {
+        let _gate = self.query_gate.blocking_write();
+        self.apply_nrtm3_filtered_inner(
+            source,
+            declared,
+            initial_base,
+            operations,
+            classes,
+            should_start,
+        )
+    }
+
+    pub(crate) fn apply_nrtm3_filtered_with_guard(
+        &self,
+        source: &str,
+        declared: (u64, u64),
+        initial_base: Option<u64>,
+        operations: impl IntoIterator<Item = Result<Operation, String>>,
+        classes: Option<&HashSet<String>>,
+        guard: &OwnedRwLockWriteGuard<()>,
+    ) -> Result<u64> {
+        self.require_write_guard(guard)?;
+        self.apply_nrtm3_filtered_inner(source, declared, initial_base, operations, classes, || {
+            true
+        })
+    }
+
+    fn apply_nrtm3_filtered_inner(
+        &self,
+        source: &str,
+        declared: (u64, u64),
+        initial_base: Option<u64>,
+        operations: impl IntoIterator<Item = Result<Operation, String>>,
+        classes: Option<&HashSet<String>>,
+        should_start: impl FnOnce() -> bool,
+    ) -> Result<u64> {
         let source = canonical_source(source)?;
         let (start, end) = declared;
         ensure!(start > 0 && end >= start, "invalid NRTMv3 serial range");
-        let _gate = self.query_gate.blocking_write();
         ensure!(should_start(), "NRTMv3 apply cancelled before write");
         let mut write = self.db.begin_write()?;
         write.set_durability(Durability::Immediate);
@@ -595,16 +661,14 @@ impl Store {
                 );
             } else if let Some(policy) = &policy {
                 ensure!(!policy.is_empty(), "empty NRTMv3 class filter");
-                filters.insert(source.as_str(), policy.as_str())?;
                 // Refuse a bootstrap that already contains excluded classes.
-                let upper = format!("{source}\0");
-                for entry in records.range((source.as_str(), "", "")..(upper.as_str(), "", ""))? {
-                    let (identity, _) = entry?;
-                    ensure!(
-                        classes.is_some_and(|classes| classes.contains(identity.value().1)),
-                        "snapshot contains objects outside the mirror class filter"
-                    );
-                }
+                check_source_classes(
+                    &records,
+                    &source,
+                    |class| classes.is_some_and(|classes| classes.contains(class)),
+                    "snapshot contains objects outside the mirror class filter",
+                )?;
+                filters.insert(source.as_str(), policy.as_str())?;
             }
             let mut last = if let Some(recorded) = recorded {
                 ensure!(
@@ -857,11 +921,31 @@ impl Store {
     pub fn apply_authoritative_report(
         &self,
         source: &str,
+        changes: Vec<Change>,
+        passwords: &[String],
+    ) -> Result<Vec<&'static str>> {
+        let _gate = self.query_gate.blocking_write();
+        self.apply_authoritative_report_inner(source, changes, passwords)
+    }
+
+    pub(crate) fn apply_authoritative_report_with_guard(
+        &self,
+        source: &str,
+        changes: Vec<Change>,
+        passwords: &[String],
+        guard: &OwnedRwLockWriteGuard<()>,
+    ) -> Result<Vec<&'static str>> {
+        self.require_write_guard(guard)?;
+        self.apply_authoritative_report_inner(source, changes, passwords)
+    }
+
+    fn apply_authoritative_report_inner(
+        &self,
+        source: &str,
         mut changes: Vec<Change>,
         passwords: &[String],
     ) -> Result<Vec<&'static str>> {
         let source = canonical_source(source)?;
-        let _gate = self.query_gate.blocking_write();
         let mut write = self.db.begin_write()?;
         write.set_durability(Durability::Immediate);
         let mut actions = Vec::new();
@@ -874,12 +958,21 @@ impl Store {
             );
             let mut records = write.open_table(OBJECTS)?;
             let mut indexes = WriteIndexes::open(&write)?;
+            let deleted_identities: HashSet<_> = changes
+                .iter()
+                .filter_map(|change| match change {
+                    Change::Delete(object) => Some((object.class.as_str(), object.key.as_str())),
+                    Change::Upsert(_) => None,
+                })
+                .collect();
             authorize(
                 &source,
                 &changes,
                 passwords,
                 |class, key| read_object(&records, &source, class, key),
-                |class, key| indexes.has_strong_reference(&source, class, key),
+                |class, key| {
+                    indexes.has_strong_reference_excluding(&source, class, key, &deleted_identities)
+                },
                 |object| indexes.allocation_parent(&records, object),
                 self.legacy_md5_sources.contains(&source),
             )?;
@@ -1160,14 +1253,16 @@ impl Store {
         let exact = read.open_multimap_table(EXACT)?;
         let records = read.open_table(OBJECTS)?;
         let mut objects = Vec::new();
+        let mut remaining_bytes = MAX_QUERY_OBJECT_BYTES;
         for key in keys {
             for source in sources {
                 for entry in exact.get((source.as_str(), key.as_str()))? {
                     let entry = entry?;
                     let class = entry.value();
                     if classes.is_empty() || classes.iter().any(|filter| filter == class) {
-                        let object = read_object(&records, source, class, &key)?
-                            .context("exact lookup index points to a missing object")?;
+                        let object =
+                            read_query_object(&records, source, class, &key, &mut remaining_bytes)?
+                                .context("exact lookup index points to a missing object")?;
                         objects.push(object);
                         if objects.len() == limit {
                             return Ok(objects);
@@ -1200,6 +1295,7 @@ impl Store {
         let records = read.open_table(OBJECTS)?;
         let inverse = read.open_table(INVERSE)?;
         let mut objects = Vec::new();
+        let mut remaining_bytes = MAX_QUERY_OBJECT_BYTES;
         for source in sources {
             let source = source.as_str();
             let lower = (source, field.as_str(), value.as_str(), "", "");
@@ -1207,7 +1303,7 @@ impl Store {
             for entry in inverse.range(lower..upper)?.take(limit - objects.len()) {
                 let (identity, _) = entry?;
                 let (source, _, _, class, key) = identity.value();
-                let object = read_object(&records, source, class, key)?
+                let object = read_query_object(&records, source, class, key, &mut remaining_bytes)?
                     .context("inverse lookup index points to a missing object")?;
                 objects.push(object);
             }
@@ -1228,6 +1324,7 @@ impl Store {
         let records = read.open_table(OBJECTS)?;
         let origins = read.open_multimap_table(ORIGINS)?;
         let mut routes = Vec::new();
+        let mut remaining_bytes = MAX_QUERY_OBJECT_BYTES;
         for source in sources {
             for class in ["route", "route6"] {
                 for prefix in origins
@@ -1236,8 +1333,9 @@ impl Store {
                 {
                     let prefix = prefix?;
                     let key = format!("{}{origin}", prefix.value());
-                    let route = read_object(&records, source, class, &key)?
-                        .context("route origin index points to a missing route")?;
+                    let route =
+                        read_query_object(&records, source, class, &key, &mut remaining_bytes)?
+                            .context("route origin index points to a missing route")?;
                     routes.push(route);
                 }
                 if routes.len() == limit {
@@ -1252,8 +1350,11 @@ impl Store {
     pub fn first(&self, class: &str, key: &str, sources: &[String]) -> Result<Option<Object>> {
         let read = self.db.begin_read()?;
         let records = read.open_table(OBJECTS)?;
+        let mut remaining_bytes = MAX_QUERY_OBJECT_BYTES;
         for source in sources {
-            if let Some(object) = read_object(&records, source, class, key)? {
+            if let Some(object) =
+                read_query_object(&records, source, class, key, &mut remaining_bytes)?
+            {
                 return Ok(Some(object));
             }
         }
@@ -1277,18 +1378,20 @@ impl Store {
         let read = self.db.begin_read()?;
         let records = read.open_table(OBJECTS)?;
         let mut routes = Vec::new();
+        let mut remaining_bytes = MAX_QUERY_OBJECT_BYTES;
         for source in sources {
             let lower = (source.as_str(), class, start.as_str());
             let upper = (source.as_str(), class, end.as_str());
             for entry in records.range(lower..upper)?.take(limit - routes.len()) {
                 let (identity, text) = entry?;
                 let (source, class, key) = identity.value();
-                routes.push(Object {
-                    source: source.to_owned(),
-                    class: class.to_owned(),
-                    key: key.to_owned(),
-                    text: text.value().to_owned(),
-                });
+                routes.push(materialize_query_object(
+                    source,
+                    class,
+                    key,
+                    text.value(),
+                    &mut remaining_bytes,
+                )?);
             }
             if routes.len() == limit {
                 break;
@@ -1317,13 +1420,15 @@ impl Store {
         let records = read.open_table(OBJECTS)?;
         let prefixes = read.open_table(PREFIXES)?;
         let mut routes = Vec::new();
+        let mut remaining_bytes = MAX_QUERY_OBJECT_BYTES;
         let mut collect = |range: RangeInclusive<PrefixKey<'_>>| -> Result<usize> {
             for entry in prefixes.range(range)?.take(limit - routes.len()) {
                 let (index_key, _) = entry?;
                 let (source, class, network, length, origin) = index_key.value();
                 let key = route_key(class, network, length, origin)?;
-                let object = read_object(&records, source, class, &key)?
-                    .context("route prefix index points to a missing route")?;
+                let object =
+                    read_query_object(&records, source, class, &key, &mut remaining_bytes)?
+                        .context("route prefix index points to a missing route")?;
                 routes.push(object);
             }
             Ok(routes.len())
@@ -1390,6 +1495,15 @@ impl Store {
         }
         let read = self.db.begin_read()?;
         let origins = read.open_multimap_table(ORIGINS)?;
+        // Values are already unique and ordered inside one source. A common
+        // single-source query needs neither a hash set nor duplicate strings.
+        if let [source] = sources {
+            return origins
+                .get((source.as_str(), class, origin))?
+                .take(limit)
+                .map(|prefix| Ok(prefix?.value().to_ascii_lowercase()))
+                .collect();
+        }
         let mut seen = HashSet::new();
         let mut prefixes = Vec::new();
         for source in sources {
@@ -1397,7 +1511,7 @@ impl Store {
             // results can repeat. Inspecting `limit` entries suffices to fill the cap.
             for prefix in origins.get((source.as_str(), class, origin))?.take(limit) {
                 let prefix = prefix?;
-                if seen.insert(prefix.value().to_owned()) {
+                if !seen.contains(prefix.value()) && seen.insert(prefix.value().to_owned()) {
                     prefixes.push(prefix.value().to_ascii_lowercase());
                     if prefixes.len() == limit {
                         return Ok(prefixes);
@@ -1431,6 +1545,11 @@ impl Store {
 
     /// Check index coverage and retained journal metadata.
     pub fn verify(&self) -> Result<u64> {
+        self.verify_with_cancel(None)
+    }
+
+    fn verify_with_cancel(&self, cancel: Option<&std::sync::atomic::AtomicBool>) -> Result<u64> {
+        maintenance::check_cancelled(cancel)?;
         let read = self.db.begin_read()?;
         let records = read.open_table(OBJECTS)?;
         let exact = read.open_multimap_table(EXACT)?;
@@ -1450,9 +1569,11 @@ impl Store {
         let mut indexed = 0;
         let mut routes = 0;
         for entry in exact.iter()? {
+            maintenance::check_cancelled(cancel)?;
             let (identity, classes) = entry?;
             let (source, key) = identity.value();
             for class in classes {
+                maintenance::check_cancelled(cancel)?;
                 let class = class?;
                 ensure!(
                     records.get((source, class.value(), key))?.is_some(),
@@ -1471,9 +1592,11 @@ impl Store {
         );
         let mut indexed_routes = 0;
         for entry in origins.iter()? {
+            maintenance::check_cancelled(cancel)?;
             let (identity, prefixes) = entry?;
             let (source, class, origin) = identity.value();
             for prefix in prefixes {
+                maintenance::check_cancelled(cancel)?;
                 let prefix = prefix?;
                 let key = format!("{}{origin}", prefix.value());
                 ensure!(
@@ -1489,6 +1612,7 @@ impl Store {
             "some routes are missing from the route origin index"
         );
         for entry in prefixes.iter()? {
+            maintenance::check_cancelled(cancel)?;
             let (identity, _) = entry?;
             let (source, class, network, length, origin) = identity.value();
             let key = route_key(class, network, length, origin)?;
@@ -1502,15 +1626,26 @@ impl Store {
             "some routes are missing from the route prefix index"
         );
         let mut expected_counts = std::collections::BTreeMap::<(String, String), u64>::new();
+        // Object keys are ordered by source and class. Count each contiguous
+        // group without allocating two temporary strings for every record.
+        let mut count_group = (String::new(), String::new());
+        let mut group_count = 0;
         let mut indexed_attributes = 0;
         let mut indexed_inetnum_blocks = 0;
         let mut indexed_as_blocks = 0;
         for entry in records.iter()? {
+            maintenance::check_cancelled(cancel)?;
             let (identity, text) = entry?;
             let (source, class, key) = identity.value();
-            *expected_counts
-                .entry((source.into(), class.into()))
-                .or_default() += 1;
+            if (source, class) != (count_group.0.as_str(), count_group.1.as_str()) {
+                let next = (source.to_owned(), class.to_owned());
+                let previous = std::mem::replace(&mut count_group, next);
+                if group_count > 0 {
+                    expected_counts.insert(previous, group_count);
+                }
+                group_count = 0;
+            }
+            group_count += 1;
             if class == "inetnum"
                 && let Some(inetnum_cover) = &inetnum_cover
             {
@@ -1543,6 +1678,9 @@ impl Store {
                 );
                 indexed_attributes += 1;
             }
+        }
+        if group_count > 0 {
+            expected_counts.insert(count_group, group_count);
         }
         ensure!(
             inverse.len()? == indexed_attributes,
@@ -1614,14 +1752,12 @@ fn verify_mirror_filters(read: &ReadTransaction) -> Result<()> {
                 .is_none(),
             "filtered mirror must not expose a partial journal"
         );
-        let upper = format!("{source}\0");
-        for entry in records.range((source, "", "")..(upper.as_str(), "", ""))? {
-            let (identity, _) = entry?;
-            ensure!(
-                classes.contains(&identity.value().1),
-                "filtered mirror contains an excluded class"
-            );
-        }
+        check_source_classes(
+            &records,
+            source,
+            |class| classes.contains(&class),
+            "filtered mirror contains an excluded class",
+        )?;
     }
     Ok(())
 }
@@ -1636,18 +1772,10 @@ fn write_source_records(
     let records = read.open_table(OBJECTS)?;
     let mut count = 0;
     for entry in records.range((source, "", "")..(next_source.as_str(), "", ""))? {
-        let (identity, text) = entry?;
+        let (_, text) = entry?;
         let raw = text.value();
-        let object;
         let text = if public {
-            let (_, class, key) = identity.value();
-            object = Object {
-                source: source.to_owned(),
-                class: class.to_owned(),
-                key: key.to_owned(),
-                text: raw.to_owned(),
-            };
-            object.public_text()
+            crate::rpsl::public_text(raw)
         } else {
             Cow::Borrowed(raw)
         };
@@ -1660,6 +1788,35 @@ fn write_source_records(
     }
     ensure!(count > 0, "source {source} has no objects to export");
     Ok(count)
+}
+
+/// The primary key groups each source's objects by class. Seek past each class
+/// rather than reading every object body to validate a mirror's retained scope.
+/// This reads actual object keys, independently of the cached class counts.
+fn check_source_classes(
+    records: &impl ReadableTable<Identity<'static>, &'static str>,
+    source: &str,
+    accepts: impl Fn(&str) -> bool,
+    message: &str,
+) -> Result<bool> {
+    let upper = format!("{source}\0");
+    let mut lower_class = String::new();
+    let mut nonempty = false;
+    loop {
+        let class = {
+            let mut range =
+                records.range((source, lower_class.as_str(), "")..(upper.as_str(), "", ""))?;
+            let Some((identity, _)) = range.next().transpose()? else {
+                break;
+            };
+            identity.value().1.to_owned()
+        };
+        ensure!(accepts(&class), "{message}");
+        nonempty = true;
+        lower_class = class;
+        lower_class.push('\0');
+    }
+    Ok(nonempty)
 }
 
 fn read_serial(
@@ -1846,7 +2003,18 @@ impl<'txn> WriteIndexes<'txn> {
         })
     }
 
+    #[cfg(test)]
     fn has_strong_reference(&self, source: &str, class: &str, key: &str) -> Result<bool> {
+        self.has_strong_reference_excluding(source, class, key, &HashSet::new())
+    }
+
+    fn has_strong_reference_excluding(
+        &self,
+        source: &str,
+        class: &str,
+        key: &str,
+        deleted: &HashSet<(&str, &str)>,
+    ) -> Result<bool> {
         let fields: &[&str] = match class {
             "mntner" => &["mnt-by"],
             "person" | "role" => &["admin-c", "tech-c", "zone-c"],
@@ -1856,10 +2024,15 @@ impl<'txn> WriteIndexes<'txn> {
         for &field in fields {
             let lower = (source, field, key, "", "");
             let upper = (source, field, end.as_str(), "", "");
-            for entry in self.inverse.range(lower..upper)?.take(2) {
+            // Each field has at most one index entry per referring identity.
+            // After the batch's deletions and self-reference, the next entry
+            // must reject the operation. The caller bounds batches to 32.
+            for entry in self.inverse.range(lower..upper)?.take(deleted.len() + 2) {
                 let (identity, _) = entry?;
                 let (_, _, _, referring_class, referring_key) = identity.value();
-                if (referring_class, referring_key) != (class, key) {
+                if (referring_class, referring_key) != (class, key)
+                    && !deleted.contains(&(referring_class, referring_key))
+                {
                     return Ok(true);
                 }
             }
@@ -2320,6 +2493,60 @@ fn route_index_parts<'a>(class: &str, key: &'a str) -> Result<Option<(&'a str, &
     Ok(Some((prefix, &key[prefix.len()..])))
 }
 
+/// Bound raw object text and owned identities before public query materialization.
+/// Stored snapshot records can be much larger than the public response budget.
+pub(crate) const MAX_QUERY_OBJECT_BYTES: usize = 2 * 1024 * 1024;
+
+#[derive(Debug)]
+pub(crate) struct QueryMaterializationLimit;
+
+impl std::fmt::Display for QueryMaterializationLimit {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("query object byte limit exceeded")
+    }
+}
+
+impl std::error::Error for QueryMaterializationLimit {}
+
+fn materialize_query_object(
+    source: &str,
+    class: &str,
+    key: &str,
+    text: &str,
+    remaining_bytes: &mut usize,
+) -> Result<Object> {
+    // Do not clone any record content until every owned string fits. A failure
+    // aborts the whole lookup rather than returning a truncated object list.
+    let bytes = text
+        .len()
+        .checked_add(source.len())
+        .and_then(|bytes| bytes.checked_add(class.len()))
+        .and_then(|bytes| bytes.checked_add(key.len()))
+        .ok_or(QueryMaterializationLimit)?;
+    *remaining_bytes = remaining_bytes
+        .checked_sub(bytes)
+        .ok_or(QueryMaterializationLimit)?;
+    Ok(Object {
+        source: source.to_owned(),
+        class: class.to_owned(),
+        key: key.to_owned(),
+        text: text.to_owned(),
+    })
+}
+
+pub(crate) fn read_query_object(
+    records: &impl ReadableTable<Identity<'static>, &'static str>,
+    source: &str,
+    class: &str,
+    key: &str,
+    remaining_bytes: &mut usize,
+) -> Result<Option<Object>> {
+    let Some(text) = records.get((source, class, key))? else {
+        return Ok(None);
+    };
+    materialize_query_object(source, class, key, text.value(), remaining_bytes).map(Some)
+}
+
 fn read_object(
     records: &impl ReadableTable<Identity<'static>, &'static str>,
     source: &str,
@@ -2386,6 +2613,205 @@ mod tests {
         } else {
             store.replace_source("TEST", [Ok(maintainer)])?;
         }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn service_write_guards_are_bound_to_the_registry_and_not_reacquired() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = Store::open(&dir.path().join("one.redb"))?;
+        let other = Store::open(&dir.path().join("two.redb"))?;
+        store.replace_source("TEST", [Ok(object("TEST", "aut-num", "AS64496"))])?;
+        let classes = HashSet::from([String::from("aut-num")]);
+        let guard = Arc::clone(store.query_gate()).write_owned().await;
+        // These must return immediately using the already held gate. Trying to
+        // acquire a second write lock would deadlock the service worker.
+        store.confirm_mirror_base_with_guard("TEST", 10, &classes, &guard)?;
+        assert_eq!(
+            store.apply_nrtm3_filtered_with_guard(
+                "TEST",
+                (11, 11),
+                None,
+                [Ok(Operation {
+                    kind: Kind::Add,
+                    serial: 11,
+                    object: object("TEST", "aut-num", "AS64497")
+                })],
+                Some(&classes),
+                &guard,
+            )?,
+            11
+        );
+        for error in [
+            other
+                .confirm_mirror_base_with_guard("TEST", 10, &classes, &guard)
+                .unwrap_err(),
+            other
+                .apply_nrtm3_filtered_with_guard("TEST", (11, 11), None, [], Some(&classes), &guard)
+                .unwrap_err(),
+            other
+                .apply_authoritative_report_with_guard("TEST", vec![], &[], &guard)
+                .unwrap_err(),
+        ] {
+            assert!(error.to_string().contains("different registry"));
+        }
+        drop(guard);
+        assert_eq!(store.source_serial("TEST")?, Some(11));
+        assert_eq!(store.verify()?, 2);
+        assert_eq!(other.verify()?, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn public_queries_bound_large_record_materialization_without_changing_storage() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = Store::open(&dir.path().join("bounded.redb"))?;
+        let text = format!(
+            "route: 192.0.2.0/24\norigin: AS64496\nmnt-by: TEST-MNT\nremarks: {}\nsource: TEST\n",
+            "x".repeat(MAX_QUERY_OBJECT_BYTES),
+        );
+        let object = crate::rpsl::parse_snapshot(&text).map_err(anyhow::Error::msg)?;
+        let key = object.key.clone();
+        store.replace_source("TEST", [Ok(object)])?;
+        let sources = [String::from("TEST")];
+        let limit = |error: anyhow::Error| assert!(error.is::<QueryMaterializationLimit>());
+        limit(store.first("route", &key, &sources).unwrap_err());
+        limit(store.exact(&key, &sources, 17).unwrap_err());
+        limit(store.exact_objects(&[key], &sources, &[], 17).unwrap_err());
+        limit(
+            store
+                .inverse("mnt-by", "TEST-MNT", &sources, 129)
+                .unwrap_err(),
+        );
+        limit(
+            store
+                .inverse("origin", "AS64496", &sources, 17)
+                .unwrap_err(),
+        );
+        limit(
+            store
+                .routes_at_prefix("route", "192.0.2.0/24", &sources, 17)
+                .unwrap_err(),
+        );
+        limit(
+            store
+                .routes_matching_prefix(
+                    "route",
+                    "192.0.2.0/25",
+                    PrefixMatch::AllCovering,
+                    &sources,
+                    17,
+                )
+                .unwrap_err(),
+        );
+        // Mirror/import, verification and offline public/raw exports keep the
+        // full snapshot record despite its public query materialization limit.
+        assert_eq!(store.verify()?, 1);
+        let mut output = Vec::new();
+        assert_eq!(store.export_public_source("TEST", &mut output)?, (1, None));
+        assert_eq!(output, format!("{text}\n").as_bytes());
+        Ok(())
+    }
+
+    #[test]
+    fn query_materialization_budget_is_shared_across_sources_and_records() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = Store::open(&dir.path().join("aggregate.redb"))?;
+        for source in ["FIRST", "SECOND"] {
+            let text = format!(
+                "route: 192.0.2.0/24\norigin: AS64496\nmnt-by: TEST-MNT\nremarks: {}\nsource: {source}\n",
+                "x".repeat(MAX_QUERY_OBJECT_BYTES / 2)
+            );
+            store.replace_source(
+                source,
+                [crate::rpsl::parse_snapshot(&text).map_err(anyhow::Error::msg)],
+            )?;
+        }
+        let sources = [String::from("FIRST"), String::from("SECOND")];
+        assert_eq!(store.exact("192.0.2.0/24AS64496", &sources, 1)?.len(), 1);
+        assert_eq!(
+            store
+                .inverse("mnt-by", "TEST-MNT", &sources[..1], 129)?
+                .len(),
+            1
+        );
+        assert!(
+            store
+                .first("route", "192.0.2.0/24AS64496", &sources)?
+                .is_some()
+        );
+        for result in [
+            store.exact("192.0.2.0/24AS64496", &sources, 17),
+            store.inverse("mnt-by", "TEST-MNT", &sources, 129),
+            store.inverse("origin", "AS64496", &sources, 17),
+            store.routes_at_prefix("route", "192.0.2.0/24", &sources, 17),
+            store.routes_matching_prefix(
+                "route",
+                "192.0.2.0/25",
+                PrefixMatch::ClosestCovering,
+                &sources,
+                17,
+            ),
+        ] {
+            assert!(result.unwrap_err().is::<QueryMaterializationLimit>());
+        }
+        assert_eq!(store.verify()?, 2);
+        Ok(())
+    }
+
+    #[test]
+    fn verification_rejects_corrupt_counts_at_every_group_boundary() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = Store::open(&dir.path().join("counts.redb"))?;
+        store.replace_source(
+            "ALPHA",
+            [
+                Ok(object("ALPHA", "as-set", "AS-A")),
+                Ok(object("ALPHA", "as-set", "AS-B")),
+                Ok(object("ALPHA", "aut-num", "AS64496")),
+            ],
+        )?;
+        store.replace_source("OMEGA", [Ok(object("OMEGA", "aut-num", "AS64497"))])?;
+        assert_eq!(store.verify()?, 4);
+        // First, internal and final groups must all be counted independently.
+        for (source, class) in [
+            ("ALPHA", "as-set"),
+            ("ALPHA", "aut-num"),
+            ("OMEGA", "aut-num"),
+        ] {
+            let write = store.db.begin_write()?;
+            let previous = write
+                .open_table(CLASS_COUNTS)?
+                .insert((source, class), 999)?
+                .unwrap()
+                .value();
+            write.commit()?;
+            assert!(
+                store
+                    .verify()
+                    .unwrap_err()
+                    .to_string()
+                    .contains("object class counts")
+            );
+            let write = store.db.begin_write()?;
+            write
+                .open_table(CLASS_COUNTS)?
+                .insert((source, class), previous)?;
+            write.commit()?;
+            assert_eq!(store.verify()?, 4);
+        }
+        let write = store.db.begin_write()?;
+        write
+            .open_table(CLASS_COUNTS)?
+            .insert(("GHOST", "route"), 0)?;
+        write.commit()?;
+        assert!(
+            store
+                .verify()
+                .unwrap_err()
+                .to_string()
+                .contains("object class counts")
+        );
         Ok(())
     }
 
@@ -2591,6 +3017,182 @@ mod tests {
         let indexes = WriteIndexes::open(&write)?;
         assert!(indexes.has_strong_reference("TEST", "mntner", "TEST-MNT")?);
         assert!(indexes.has_strong_reference("TEST", "person", "EO1-TEST")?);
+        Ok(())
+    }
+
+    #[test]
+    fn authoritative_dangling_contacts_cannot_be_claimed_without_a_tombstone() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = Store::open(&dir.path().join("registry.redb"))?;
+        let passwords = [String::from("fixture password")];
+        let sources = [String::from("TEST")];
+        seed_authoritative_maintainer(&store, &passwords[0])?;
+        let maintainer = store.first("mntner", "TEST-MNT", &sources)?.unwrap();
+        let dangling = crate::rpsl::parse(
+            "domain: dangling.example\nadmin-c: ADMIN-TEST\ntech-c: TECH-TEST\nzone-c: ZONE-TEST\nmnt-by: TEST-MNT\nsource: TEST\n",
+        ).map_err(anyhow::Error::msg)?;
+        store.replace_source("TEST", [Ok(maintainer), Ok(dangling.clone())])?;
+        for handle in ["ADMIN-TEST", "TECH-TEST", "ZONE-TEST"] {
+            for class in ["person", "role"] {
+                let person = authoritative_contact("Claimed Contact", handle)?;
+                let candidate =
+                    crate::rpsl::parse(&person.text.replacen("person:", &format!("{class}:"), 1))
+                        .map_err(anyhow::Error::msg)?;
+                let error = store
+                    .apply_authoritative("TEST", vec![Change::Upsert(candidate)], &passwords)
+                    .unwrap_err();
+                assert!(
+                    error
+                        .to_string()
+                        .contains("protected by existing references")
+                );
+                assert!(store.first(class, handle, &sources)?.is_none());
+            }
+        }
+        assert!(store.source_history("TEST", 10)?.is_empty());
+        assert_eq!(store.source_local_serial("TEST")?, None);
+        assert_eq!(store.nrtm3_journal_bounds("TEST")?, None);
+        // Cross-source references do not reserve a local contact name.
+        let elsewhere = crate::rpsl::parse(
+            &dangling
+                .text
+                .replace("source: TEST", "source: OTHER")
+                .replace("ADMIN-TEST", "ELSE-TEST"),
+        )
+        .map_err(anyhow::Error::msg)?;
+        store.replace_source("OTHER", [Ok(elsewhere)])?;
+        store.apply_authoritative(
+            "TEST",
+            vec![Change::Upsert(authoritative_contact(
+                "Local Contact",
+                "ELSE-TEST",
+            )?)],
+            &passwords,
+        )?;
+        assert_eq!(store.verify()?, 4);
+        Ok(())
+    }
+
+    #[test]
+    fn authoritative_batch_deletions_ignore_only_deleted_same_source_referrers() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = Store::open(&dir.path().join("registry.redb"))?;
+        let passwords = [String::from("fixture password")];
+        let sources = [String::from("TEST")];
+        seed_authoritative_maintainer(&store, &passwords[0])?;
+        let maintainer = store.first("mntner", "TEST-MNT", &sources)?.unwrap();
+        let contact = authoritative_contact("Existing Contact", "CONTACT-TEST")?;
+        let domain = crate::rpsl::parse("domain: batch.example\nadmin-c: CONTACT-TEST\ntech-c: CONTACT-TEST\nzone-c: CONTACT-TEST\nmnt-by: TEST-MNT\nsource: TEST\n")
+            .map_err(anyhow::Error::msg)?;
+        let extra = crate::rpsl::parse(&domain.text.replace("batch.example", "remaining.example"))
+            .map_err(anyhow::Error::msg)?;
+        store.replace_source(
+            "TEST",
+            [
+                Ok(maintainer),
+                Ok(contact.clone()),
+                Ok(domain.clone()),
+                Ok(extra.clone()),
+            ],
+        )?;
+        assert!(
+            store
+                .apply_authoritative(
+                    "TEST",
+                    vec![
+                        Change::Delete(contact.clone()),
+                        Change::Delete(domain.clone())
+                    ],
+                    &passwords
+                )
+                .is_err()
+        );
+        assert!(store.source_history("TEST", 10)?.is_empty());
+        // An upserted referrer still counts: modifications are not deletions.
+        assert!(
+            store
+                .apply_authoritative(
+                    "TEST",
+                    vec![
+                        Change::Delete(contact.clone()),
+                        Change::Delete(domain.clone()),
+                        Change::Upsert(extra.clone())
+                    ],
+                    &passwords
+                )
+                .is_err()
+        );
+        let other = crate::rpsl::parse(&extra.text.replace("source: TEST", "source: OTHER"))
+            .map_err(anyhow::Error::msg)?;
+        store.replace_source("OTHER", [Ok(other.clone())])?;
+        assert!(
+            store
+                .apply_authoritative(
+                    "TEST",
+                    vec![
+                        Change::Delete(contact.clone()),
+                        Change::Delete(domain.clone()),
+                        Change::Delete(other)
+                    ],
+                    &passwords
+                )
+                .is_err()
+        );
+        assert_eq!(store.verify()?, 5);
+        assert_eq!(
+            store.apply_authoritative(
+                "TEST",
+                vec![
+                    Change::Delete(contact.clone()),
+                    Change::Delete(domain),
+                    Change::Delete(extra)
+                ],
+                &passwords
+            )?,
+            3
+        );
+        assert!(store.first("person", &contact.key, &sources)?.is_none());
+        assert_eq!(store.source_history("TEST", 10)?.len(), 3);
+        assert_eq!(store.source_local_serial("TEST")?, Some(3));
+        assert_eq!(store.nrtm3_journal_bounds("TEST")?, Some((1, 3)));
+        assert_eq!(store.verify()?, 2);
+        Ok(())
+    }
+
+    #[test]
+    fn authoritative_reference_probe_handles_a_full_deletion_batch() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = Store::open(&dir.path().join("registry.redb"))?;
+        let passwords = [String::from("fixture password")];
+        let sources = [String::from("TEST")];
+        seed_authoritative_maintainer(&store, &passwords[0])?;
+        let maintainer = store.first("mntner", "TEST-MNT", &sources)?.unwrap();
+        let mut objects = vec![maintainer];
+        for number in 0..32 {
+            objects.push(
+                crate::rpsl::parse(&format!(
+                    "domain: batch-{number:02}.example\nmnt-by: TEST-MNT\nsource: TEST\n"
+                ))
+                .map_err(anyhow::Error::msg)?,
+            );
+        }
+        store.replace_source("TEST", objects.iter().cloned().map(Ok))?;
+        let batch = || objects[..32].iter().cloned().map(Change::Delete).collect();
+        assert!(
+            store
+                .apply_authoritative("TEST", batch(), &passwords)
+                .is_err()
+        );
+        assert_eq!(store.verify()?, 33);
+        store.apply_authoritative(
+            "TEST",
+            vec![Change::Delete(objects[32].clone())],
+            &passwords,
+        )?;
+        assert_eq!(store.apply_authoritative("TEST", batch(), &passwords)?, 32);
+        assert_eq!(store.verify()?, 0);
+        assert_eq!(store.source_local_serial("TEST")?, Some(33));
+        assert_eq!(store.source_history("TEST", 100)?.len(), 33);
         Ok(())
     }
 
@@ -3229,6 +3831,93 @@ mod tests {
         assert_eq!(store.verify()?, 2);
         assert!(store.apply_nrtm3("TEST", (42, 43), None, []).is_err());
         assert!(store.apply_nrtm3("TEST", (44, 44), Some(43), []).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn mirror_class_checks_preserve_prefix_boundaries_and_read_actual_keys() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = Store::open(&dir.path().join("registry.redb"))?;
+        let parse = |text: &str| crate::rpsl::parse_snapshot(text).map_err(anyhow::Error::msg);
+        store.replace_source(
+            "TEST",
+            [
+                parse("route: 192.0.2.0/24\norigin: AS64496\nsource: TEST\n"),
+                parse("route: 198.51.100.0/24\norigin: AS64496\nsource: TEST\n"),
+                parse("route-set: RS-EXAMPLE\nsource: TEST\n"),
+                parse("route6: 2001:db8::/32\norigin: AS64496\nsource: TEST\n"),
+            ],
+        )?;
+        store.replace_source(
+            "TEST-OTHER",
+            [parse(
+                "person: Neighbour Source\nnic-hdl: EX1-OTHER\nsource: TEST-OTHER\n",
+            )],
+        )?;
+        // Cached statistics are not a substitute for inspecting stored classes.
+        let write = store.db.begin_write()?;
+        write.open_table(CLASS_COUNTS)?.remove(("TEST", "route6"))?;
+        write.commit()?;
+        for names in [
+            vec!["route"],
+            vec!["route", "route-set"],
+            vec!["route", "route6"],
+        ] {
+            let filter = names.into_iter().map(str::to_owned).collect::<HashSet<_>>();
+            assert!(
+                store
+                    .confirm_mirror_base("TEST", 10, &filter)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("excluded mirror class")
+            );
+            assert!(
+                store
+                    .apply_nrtm3_filtered_if("TEST", (11, 11), Some(10), [], Some(&filter), || true)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("outside the mirror class filter")
+            );
+            assert_eq!(store.source_serial("TEST")?, None);
+        }
+        let write = store.db.begin_write()?;
+        write
+            .open_table(CLASS_COUNTS)?
+            .insert(("TEST", "route6"), 1)?;
+        write.commit()?;
+        let filter = ["route", "route-set", "route6"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<HashSet<_>>();
+        assert!(store.confirm_mirror_base("EMPTY", 10, &filter).is_err());
+        assert_eq!(store.source_serial("EMPTY")?, None);
+        assert_eq!(
+            store
+                .apply_nrtm3_filtered_if("TEST", (11, 11), Some(10), [], Some(&filter), || true)?,
+            11
+        );
+        store.confirm_mirror_base("TEST", 11, &filter)?;
+        assert_eq!(store.verify()?, 5);
+        // Keep all ordinary indexes coherent, but violate only the mirror policy.
+        let write = store.db.begin_write()?;
+        {
+            let mut records = write.open_table(OBJECTS)?;
+            let mut indexes = WriteIndexes::open(&write)?;
+            insert_snapshot_object(
+                &mut records,
+                &mut indexes,
+                "TEST",
+                &parse("rtr-set: RTRS-OUTSIDE\nsource: TEST\n")?,
+            )?;
+        }
+        write.commit()?;
+        assert!(
+            store
+                .verify()
+                .unwrap_err()
+                .to_string()
+                .contains("filtered mirror contains an excluded class")
+        );
         Ok(())
     }
 
@@ -3977,6 +4666,43 @@ mod tests {
         output.clear();
         assert!(store.export_source("MISSING", &mut output).is_err());
         assert!(output.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn public_export_borrows_large_records_and_redacts_sensitive_attributes() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = Store::open(&dir.path().join("export.redb"))?;
+        let policy = format!(
+            "filter-set: FLTR-LARGE\r\nfilter: {}\r\nsource: TEST\r\n",
+            "AS64496 OR ".repeat(100_000) + "AS64497"
+        );
+        let sensitive = "mntner: TEST-MNT\nauth: BCRYPT-PW private-fixture\n+ folded-secret\nremarks: registro.br ownerid: private-owner\n+ continued-owner\nrpki-ov-state: valid\nremarks: public remark\n# private comment\nsource: TEST\n";
+        store.replace_source(
+            "TEST",
+            [&policy, sensitive]
+                .into_iter()
+                .map(|text| crate::rpsl::parse_snapshot(text).map_err(anyhow::Error::msg)),
+        )?;
+        store.replace_source("OTHER", [Ok(object("OTHER", "aut-num", "AS64498"))])?;
+        let mut output = Vec::new();
+        assert_eq!(store.export_public_source("TEST", &mut output)?, (2, None));
+        let expected =
+            format!("{policy}\nmntner: TEST-MNT\nremarks: public remark\nsource: TEST\n\n");
+        assert_eq!(output, expected.as_bytes());
+        // An ordinary policy remains borrowed, including original CRLF bytes.
+        assert!(matches!(
+            crate::rpsl::public_text(&policy),
+            Cow::Borrowed(_)
+        ));
+        assert!(
+            store
+                .export_public_source("TEST", std::io::Cursor::new(&mut [0; 1][..]))
+                .is_err()
+        );
+        let mut raw = Vec::new();
+        assert_eq!(store.export_source("TEST", &mut raw)?, 2);
+        assert!(String::from_utf8(raw)?.contains("private-fixture"));
         Ok(())
     }
 

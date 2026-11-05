@@ -1,6 +1,9 @@
 //! Bounded expansion of AS-SET and ROUTE-SET data for IRRd WHOIS queries.
 
-use std::collections::{BTreeSet, HashSet, VecDeque};
+use std::{
+    collections::{BTreeSet, HashSet, VecDeque},
+    fmt,
+};
 
 use anyhow::{Context, Result, anyhow, ensure};
 
@@ -17,6 +20,20 @@ const MAX_VISITED_VALUES: usize = 16_384;
 const MAX_WORK_BYTES: usize = 2 * 1024 * 1024;
 const MAX_RESULTS: usize = 4096;
 const MAX_RESULT_BYTES: usize = 256 * 1024;
+
+/// A valid set query exceeded an explicit work or response budget. This is a
+/// client-visible limit, not a database failure; callers must not return a
+/// partial expansion or misreport it as an internal server error.
+#[derive(Debug)]
+pub(crate) struct LimitExceeded(&'static str);
+
+impl fmt::Display for LimitExceeded {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.0)
+    }
+}
+
+impl std::error::Error for LimitExceeded {}
 
 pub fn members(
     store: &Store,
@@ -108,7 +125,7 @@ fn direct_members(store: &Store, object: &Object) -> Result<Vec<SetMember>> {
     )?;
     ensure!(
         rows.len() <= MAX_INDIRECT_ROWS,
-        "set exceeds indirect membership limit"
+        LimitExceeded("set exceeds indirect membership limit")
     );
     for row in rows {
         let applicable = match object.class.as_str() {
@@ -199,7 +216,7 @@ impl<'a> Expansion<'a> {
             }
             ensure!(
                 depth <= MAX_DEPTH && self.seen_sets.len() <= MAX_SET_LOOKUPS,
-                "set exceeds traversal limit"
+                LimitExceeded("set exceeds traversal limit")
             );
             let as_only = !matches!(mode, RecursiveMode::RouteMembers);
             let cutoff = limit == Some(depth + 1);
@@ -250,7 +267,7 @@ impl<'a> Expansion<'a> {
         }
         ensure!(
             self.seen_origins.len() <= MAX_ORIGIN_LOOKUPS,
-            "set exceeds origin lookup limit"
+            LimitExceeded("set exceeds origin lookup limit")
         );
         let origin = format!("AS{number}");
         for (ipv6, class) in [(false, "route"), (true, "route6")] {
@@ -262,7 +279,7 @@ impl<'a> Expansion<'a> {
                     .origin_prefixes(class, &origin, self.sources, MAX_RESULTS + 1)?;
             ensure!(
                 prefixes.len() <= MAX_RESULTS,
-                "set exceeds prefix result limit"
+                LimitExceeded("set exceeds prefix result limit")
             );
             for prefix in prefixes {
                 self.charge(prefix.len())?;
@@ -277,7 +294,7 @@ impl<'a> Expansion<'a> {
         self.work_bytes += bytes;
         ensure!(
             self.visited_values <= MAX_VISITED_VALUES && self.work_bytes <= MAX_WORK_BYTES,
-            "set exceeds expansion work limit"
+            LimitExceeded("set exceeds expansion work limit")
         );
         Ok(())
     }
@@ -287,7 +304,7 @@ impl<'a> Expansion<'a> {
             self.output_bytes += value.len() + 1;
             ensure!(
                 self.output.len() < MAX_RESULTS && self.output_bytes <= MAX_RESULT_BYTES,
-                "set exceeds result limit"
+                LimitExceeded("set exceeds result limit")
             );
             self.output.insert(value);
         }
@@ -400,6 +417,7 @@ mod tests {
         fixture(&store, "TEST", &[&object])?;
         let error = members(&store, &["TEST".into()], "AS-BIG", false, &[]).unwrap_err();
         assert_eq!(error.to_string(), "set exceeds result limit");
+        assert!(error.is::<LimitExceeded>());
         Ok(())
     }
 }

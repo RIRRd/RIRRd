@@ -1,9 +1,10 @@
 name: IRRd upstream oracle
 
 on:
+  workflow_call:
   workflow_dispatch:
   push:
-    branches: [main, 'release/**', 'feature/**', 'fix/**']
+    branches: [main, dev, 'release/**', 'feature/**', 'fix/**']
   pull_request:
     paths:
       - '.github/workflows/upstream-oracle.yml'
@@ -34,6 +35,8 @@ jobs:
           curl --silent --show-error --fail --max-time 3 --retry 10 --retry-max-time 25 --retry-all-errors --retry-delay 1 'http://127.0.0.1:8000/v1/whois/?q=%21gAS64496' | grep -Fx '192.0.2.0/24'
       - name: Check pinned organisation schema
         run: docker compose -p irrd-454-oracle -f tools/oracle/compose.yaml exec -T reference python < tools/oracle/check_organisation_schema.py
+      - name: Check pinned contact display-name behavior
+        run: docker compose -p irrd-454-oracle -f tools/oracle/compose.yaml exec -T reference python < tools/oracle/check_contact_names.py
       - name: Compare WHOIS transcripts
         shell: bash
         run: |
@@ -72,6 +75,7 @@ jobs:
           python3 tools/oracle/compare_policy_set_auth.py
           python3 tools/oracle/compare_organisation_graphql.py
           python3 tools/oracle/compare_policy_graphql.py
+          python3 tools/oracle/compare_inverse_graphql.py
           python3 tools/differential_whois.py --reference 127.0.0.1:8043 --candidate 127.0.0.1:9043 --allow-filtered-auth-omission --normalize-attribute-padding
           python3 tools/differential_whois.py --http --reference 127.0.0.1:8000 --candidate 127.0.0.1:9080 --allow-filtered-auth-omission --normalize-attribute-padding
       - name: Print oracle logs on failure

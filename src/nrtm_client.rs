@@ -10,6 +10,7 @@ use anyhow::{Context, Result, ensure};
 
 const MAX_PREAMBLE_BYTES: u64 = 8 * 1024;
 const NO_UPDATES: &[u8] = b"% Warning: there are no newer updates available";
+const NO_UPDATES_LEGACY: &[u8] = b"% Warning: there are no updates available";
 const NO_UPDATES_NUMBERED: &[u8] = b"% Warning (1): there are no newer updates available";
 
 /// Finish the bounded network transfer before taking a database write lock.
@@ -21,8 +22,20 @@ pub fn fetch_staged(
     timeout: Duration,
     max_bytes: u64,
 ) -> Result<Option<BufReader<std::fs::File>>> {
+    fetch_staged_until(endpoint, source, start, None, timeout, max_bytes)
+}
+
+/// A finite requested range keeps bootstrap batches within the normal byte cap.
+pub fn fetch_staged_until(
+    endpoint: SocketAddr,
+    source: &str,
+    start: u64,
+    end: Option<u64>,
+    timeout: Duration,
+    max_bytes: u64,
+) -> Result<Option<BufReader<std::fs::File>>> {
     let max_bytes = max_bytes.min(64 * 1024 * 1024);
-    let Some(response) = fetch(endpoint, source, start, timeout, max_bytes)? else {
+    let Some(response) = fetch_until(endpoint, source, start, end, timeout, max_bytes)? else {
         return Ok(None);
     };
     let mut stage = tempfile::tempfile().context("creating private NRTMv3 staging file")?;
@@ -47,11 +60,26 @@ pub fn fetch(
     timeout: Duration,
     max_bytes: u64,
 ) -> Result<Option<impl BufRead>> {
+    fetch_until(endpoint, source, start, None, timeout, max_bytes)
+}
+
+fn fetch_until(
+    endpoint: SocketAddr,
+    source: &str,
+    start: u64,
+    end: Option<u64>,
+    timeout: Duration,
+    max_bytes: u64,
+) -> Result<Option<impl BufRead>> {
     ensure!(
         !endpoint.ip().is_unspecified() && endpoint.port() != 0,
         "NRTMv3 endpoint must specify a peer IP address and port"
     );
     ensure!(start != 0, "NRTMv3 start serial must be positive");
+    ensure!(
+        end.is_none_or(|end| end >= start),
+        "NRTMv3 end serial precedes start serial"
+    );
     ensure!(
         source.len() <= 32 && crate::rpsl::generic_name(source),
         "invalid NRTMv3 source name"
@@ -62,7 +90,8 @@ pub fn fetch(
         .context("NRTMv3 timeout is out of range")?;
     let socket = TcpStream::connect_timeout(&endpoint, remaining(deadline)?)
         .with_context(|| format!("connecting to NRTMv3 peer {endpoint}"))?;
-    let query = format!("-g {}:3:{start}-LAST\n", source.to_ascii_uppercase());
+    let end = end.map_or_else(|| "LAST".to_owned(), |value| value.to_string());
+    let query = format!("-g {}:3:{start}-{end}\n", source.to_ascii_uppercase());
     write_query(&socket, query.as_bytes(), deadline).context("sending NRTMv3 request")?;
 
     let mut reader = TimedReader {
@@ -72,32 +101,84 @@ pub fn fetch(
     let limit = max_bytes.min(MAX_PREAMBLE_BYTES);
     let mut prefix = Vec::new();
     let no_updates = loop {
-        let start = prefix.len();
+        let line_start = prefix.len();
         ensure!(
             read_preamble_line(&mut reader, &mut prefix, limit)?,
             "NRTMv3 peer returned an empty response"
         );
-        match complete_line(&prefix[start..]) {
+        match complete_line(&prefix[line_start..]) {
             Some(b"") => continue,
-            Some(NO_UPDATES | NO_UPDATES_NUMBERED) => break true,
+            Some(line)
+                if line.eq_ignore_ascii_case(NO_UPDATES)
+                    || line.eq_ignore_ascii_case(NO_UPDATES_NUMBERED)
+                    || line.eq_ignore_ascii_case(NO_UPDATES_LEGACY) =>
+            {
+                break true;
+            }
+            Some(line) if next_serial_is_idle_range(line, start) => break true,
+            Some(line) if preamble_comment(line) => continue,
             _ => break false,
         }
     };
 
     if no_updates {
         loop {
-            let start = prefix.len();
+            let line_start = prefix.len();
             if !read_preamble_line(&mut reader, &mut prefix, limit)? {
                 return Ok(None);
             }
             ensure!(
-                complete_line(&prefix[start..]) == Some(b""),
+                complete_line(&prefix[line_start..]) == Some(b""),
                 "unexpected data after NRTMv3 no-updates warning"
             );
         }
     }
 
     Ok(Some(Cursor::new(prefix).chain(reader)))
+}
+
+fn next_serial_is_idle_range(line: &[u8], start: u64) -> bool {
+    // RIPE returns this range error for a quiet poll of exactly last + 1.
+    // An expired cursor, a larger gap or any other error must remain an error.
+    let Some(range) = line.strip_prefix(b"%ERROR:401: invalid range: Not within ") else {
+        return false;
+    };
+    let Some((first, last)) = std::str::from_utf8(range)
+        .ok()
+        .and_then(|range| range.split_once('-'))
+    else {
+        return false;
+    };
+    let number = |value: &str| {
+        (!value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()))
+            .then(|| value.parse::<u64>().ok())
+            .flatten()
+    };
+    match (number(first), number(last)) {
+        (Some(first), Some(last)) => first <= last && last.checked_add(1) == Some(start),
+        _ => false,
+    }
+}
+
+fn preamble_comment(line: &[u8]) -> bool {
+    if line.starts_with(b"#") {
+        return true;
+    }
+    let Some(body) = line.strip_prefix(b"%") else {
+        return false;
+    };
+    let mut body = body;
+    while let Some(rest) = body.strip_prefix(b"%") {
+        body = rest;
+    }
+    let body = body.trim_ascii_start();
+    let keyword = body
+        .split(|byte| byte.is_ascii_whitespace() || *byte == b':')
+        .next()
+        .unwrap_or_default();
+    ![b"START".as_slice(), b"END", b"ERROR"]
+        .iter()
+        .any(|directive| keyword.eq_ignore_ascii_case(directive))
 }
 
 fn complete_line(line: &[u8]) -> Option<&[u8]> {
@@ -216,6 +297,63 @@ mod tests {
     }
 
     #[test]
+    fn idle_range_error_requires_the_exact_next_serial_and_complete_framing() -> Result<()> {
+        for (response, idle) in [
+            ("%ERROR:401: invalid range: Not within 1-9\n\n", true),
+            (
+                "% Copyright banner\r\n%ERROR:401: invalid range: Not within 0-9\r\n",
+                true,
+            ),
+            ("%ERROR:401: invalid range: Not within 1-8\n", false),
+            ("%ERROR:401: invalid range: Not within 11-20\n", false),
+            ("%ERROR:401: invalid range: Not within 10-9\n", false),
+            ("%ERROR:401: invalid range: Not within +1-9\n", false),
+            (
+                "%ERROR:401: invalid range: Not within 1-18446744073709551615\n",
+                false,
+            ),
+            ("%ERROR:401: invalid range: Not within 1-9", false),
+            (
+                "%ERROR:401: invalid range: Not within 1-9\n%START Version: 3 TEST 10-10\n",
+                false,
+            ),
+            (
+                "%ERROR:401: invalid range: Not within 1-9\n% ERROR: access denied\n",
+                false,
+            ),
+            (
+                "%ERROR:401: access denied\n% Warning: there are no newer updates available\n",
+                false,
+            ),
+        ] {
+            let (address, worker) = peer(move |mut stream| stream.write_all(response.as_bytes()))?;
+            match fetch_staged(address, "TEST", 10, Duration::from_secs(2), 4096) {
+                Ok(None) => ensure!(idle, "invalid error became an idle poll"),
+                Ok(Some(input)) => {
+                    ensure!(!idle, "valid idle range was not recognized");
+                    ensure!(crate::nrtm3::Reader::new(input, "TEST", 4096).is_err());
+                }
+                Err(_) => ensure!(!idle, "valid idle reply failed"),
+            }
+            worker.join().unwrap()?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_server_error_cannot_be_hidden_before_a_no_update_warning() -> Result<()> {
+        for prefix in ["%ERROR: unavailable", "%% ERROR: unavailable"] {
+            let response = format!("{prefix}\n% Warning: there are no newer updates available\n");
+            let (address, worker) = peer(move |mut stream| stream.write_all(response.as_bytes()))?;
+            let received = fetch_staged(address, "TEST", 10, Duration::from_secs(2), 4096)?
+                .context("server errors must not become an up-to-date result")?;
+            assert!(crate::nrtm3::Reader::new(received, "TEST", 4096).is_err());
+            worker.join().unwrap()?;
+        }
+        Ok(())
+    }
+
+    #[test]
     fn staged_transfer_keeps_its_budget_and_has_no_network_deadline_during_local_apply()
     -> Result<()> {
         let response = b"%START Version: 3 TEST 10-10\n\nADD 10\n\naut-num: AS64496\nsource: TEST\n\n%END TEST\n";
@@ -241,12 +379,37 @@ mod tests {
     fn recognizes_only_complete_bounded_no_update_replies() -> Result<()> {
         for (response, max_bytes, no_updates) in [
             (
+                &b"% Warning: there are no updates available\n\n\n"[..],
+                4096,
+                true,
+            ),
+            (
+                &b"% Copyright banner\n% WARNING: there are no updates available\r\n"[..],
+                4096,
+                true,
+            ),
+            (
+                &b"% Warning: there are no updates available\n% ERROR\n"[..],
+                4096,
+                false,
+            ),
+            (
                 &b"\n% Warning: there are no newer updates available\n\n"[..],
                 4096,
                 true,
             ),
             (
                 &b"% Warning (1): there are no newer updates available\r\n"[..],
+                4096,
+                true,
+            ),
+            (
+                &b"% Published database banner\n% See publisher documentation\n\n% WARNING: there are no newer updates available\n\n"[..],
+                4096,
+                true,
+            ),
+            (
+                &b"# Database banner\n% Warning (1): there are no newer updates available\n"[..],
                 4096,
                 true,
             ),
@@ -261,6 +424,8 @@ mod tests {
                 false,
             ),
             (&b"\r\n"[..], 4096, false),
+            (&b"% Copyright banner only\n"[..], 4096, false),
+            (&b"% Unrecognised warning\n"[..], 4096, false),
             (&b""[..], 4096, false),
         ] {
             let (address, worker) = peer(move |mut stream| stream.write_all(response))?;

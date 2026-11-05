@@ -36,6 +36,9 @@ pub struct Config {
     pub authoritative_scope: Option<ScopeConfig>,
     pub listen: SocketAddr,
     pub http_listen: Option<SocketAddr>,
+    /// Public reverse-proxy admission; the native listener remains loopback-only.
+    #[serde(default)]
+    pub http_public_queries: bool,
     #[serde(default)]
     pub http_authoritative_updates: bool,
     pub max_connections: usize,
@@ -77,6 +80,9 @@ pub struct MirrorConfig {
     pub endpoint: SocketAddr,
     pub interval_seconds: u64,
     pub base_serial: Option<u64>,
+    /// Character set of this specific upstream peer; UTF-8 remains strict by default.
+    #[serde(default)]
+    pub encoding: crate::nrtm3::Encoding,
     /// Retain these classes while consuming every upstream serial.
     #[serde(default)]
     pub object_class_filter: HashSet<String>,
@@ -178,6 +184,11 @@ impl Config {
                 .iter()
                 .all(|source| seen.contains(source)),
             "authoritative_sources must be configured in sources"
+        );
+        ensure!(
+            !config.http_public_queries
+                || (config.http_listen.is_some() && !config.http_authoritative_updates),
+            "http_public_queries requires a loopback HTTP listener and disabled HTTP updates"
         );
         ensure!(
             !config.http_authoritative_updates

@@ -47,6 +47,31 @@ Record the previous binary's source revision separately; its SHA is automatic.
 
 ## Scope
 
+### Constrained before/after checks
+
+`run_small_host.py` compares a saved binary with the candidate at 64 MiB and
+16 MiB cache budgets. Supply the actual `--before-commit` and
+`--before-cache-mib 64` to compare the previous and candidate 64 MiB profiles
+with identical one-worker/four-blocking-worker settings. Without this option,
+the historical baseline retains its original default runtime/cache settings.
+The 16 MiB candidate is a separate resource-budget comparison.
+
+Use unused loopback ports, particularly on a host with a live registry:
+
+```sh
+python3 tools/bench/run_small_host.py --state /private/optimization-run \
+  --fixture /private/synthetic-100k.rpsl \
+  --before /private/previous-rust-irrd --before-commit ACTUAL_BASELINE_COMMIT \
+  --before-cache-mib 64 --candidate "$PWD/target/release/rust-irrd" \
+  --commit "$(git rev-parse HEAD)" --whois-port 9843 --http-port 9880 --seconds 10
+```
+
+The controller refuses occupied ports, verifies every imported database through
+the normal CLI and checks the query process identity. Every measured query is
+validated by `registry_load`. The per-file cold-start checker reads the recorded
+ports, including results from the original default-port runs. Do not run builds,
+fuzzers or upstream benchmark services during the timed comparison.
+
 - Three fresh imports, alternating order; warm host file cache is possible.
   CLI wall time, CPU and peak CLI RSS are recorded. PostgreSQL schema migration
   and service startup are outside import timing. Both imports must accept exactly
@@ -77,7 +102,7 @@ Record the previous binary's source revision separately; its SHA is automatic.
 Fixtures, logs, databases and caches stay outside Git. Commit the generator,
 controller, configuration and sanitized measurement JSON only. The static site
 on `codex/coming-soon` renders the completed JSON via
-`python3 site/coming-soon/render.py /path/to/results.json` before deployment.
+the separately maintained website tooling before publishing a comparison.
 
 If a client defect aborts the query stage **after all three valid imports**,
 correct and rebuild the client, then use `--resume /absolute/state/measured-...`.
@@ -97,13 +122,3 @@ Resume also requires `--resume-reason 'brief public explanation'`. The upstream
 allowlist diagnosis was verified directly: the same GraphQL POST returned 400
 with `Host: localhost` and 200 with the configured endpoint Host. The corrected
 client passed a live request preflight before restarting the query suite.
-
-## ROV and monitoring delivery
-
-`compare_rpki_index.py` compares a pinned RIRRd source revision with the current
-ROV kernel using synthetic prevalidated payloads; CPU and wall time are recorded.
-`compare_history_gateway.py` exercises the normal history HTTP handler in isolated
-processes. Both require an explicit work/output location outside Git. See
-[the efficiency checkpoint](../../docs/benchmarks/UI_EFFICIENCY.md) for fixture,
-measurement scope, exact revisions and raw results. These do not run a public
-load test or replace the separate official IRRd oracle comparison.

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Download a tagged beta package and verify its published SHA-256 checksum.
 set -euo pipefail
-version=0.1.0-beta.2
+version=0.1.0-beta.3
 format=auto
 destination=
 usage() { printf '%s\n' 'Usage: bash tools/install.sh [--version X.Y.Z-beta.N] [--format deb|rpm] [--download-only DIRECTORY]'; }
@@ -29,7 +29,7 @@ if [[ $format = auto ]]; then
     else die 'Select --format deb or --format rpm for downloading'; fi
 fi
 case $format in
-    deb) archive="rust-irrd_${version%%-*}~${version#*-}-1_${deb_arch}.deb"; manager=apt-get;;
+    deb) archive="rust-irrd_${version%%-*}.${version#*-}-1_${deb_arch}.deb"; manager=apt-get;;
     rpm) archive="rust-irrd-${version%%-*}-0.1.${version#*-}.${rpm_arch}.rpm"; manager=dnf;;
     *) die 'Package format must be deb or rpm';;
 esac

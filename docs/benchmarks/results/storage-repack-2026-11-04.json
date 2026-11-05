@@ -1,0 +1,689 @@
+{
+  "scope": "100k original synthetic fixture; schema-preserving repack, not a live catalog conversion",
+  "source_commit": "375b6634a881180b0c07a34814775b9afc637b67",
+  "fixture_sha256": "9fe1bf623acb0499df78537f4d097582c0fd1bba0fa4c99ae4b21a38dee3a0f2",
+  "binary_sha256": "4749026fbc7a986e44c5fabe97dfb47d4af73367f552c8f53924292471613f1b",
+  "repack": {
+    "elapsed_seconds": 34.274496868,
+    "logical_sha256": "be81010002c8759dfb634ca872118c9002b72b0936dc99586278fc85b5525e01",
+    "objects": 100000,
+    "output_file": {
+      "allocated_bytes": 79052800,
+      "apparent_bytes": 135278592
+    },
+    "source_file": {
+      "allocated_bytes": 102674432,
+      "apparent_bytes": 135278592
+    },
+    "tables": 15,
+    "resource_limits": {
+      "cpu": "1 CPU",
+      "memory_max_bytes": 268435456,
+      "Result": "success",
+      "MemoryPeak": "212635648",
+      "CPUUsageNSec": "18741459000"
+    }
+  },
+  "before_tables": {
+    "page_size": 4096,
+    "allocated_pages": 24782,
+    "stored_bytes": 41996268,
+    "metadata_bytes": 11500619,
+    "fragmented_bytes": 81236937,
+    "tables": [
+      {
+        "name": "as_block_cover_v1",
+        "kind": "table",
+        "entries": 0,
+        "stored_bytes": 0,
+        "metadata_bytes": 0,
+        "fragmented_bytes": 0,
+        "leaf_pages": 0,
+        "branch_pages": 0
+      },
+      {
+        "name": "authoritative_audit_v1",
+        "kind": "table",
+        "entries": 0,
+        "stored_bytes": 0,
+        "metadata_bytes": 0,
+        "fragmented_bytes": 0,
+        "leaf_pages": 0,
+        "branch_pages": 0
+      },
+      {
+        "name": "authoritative_nrtm3_serials_v1",
+        "kind": "table",
+        "entries": 0,
+        "stored_bytes": 0,
+        "metadata_bytes": 0,
+        "fragmented_bytes": 0,
+        "leaf_pages": 0,
+        "branch_pages": 0
+      },
+      {
+        "name": "authoritative_protected_names_v1",
+        "kind": "table",
+        "entries": 0,
+        "stored_bytes": 0,
+        "metadata_bytes": 0,
+        "fragmented_bytes": 0,
+        "leaf_pages": 0,
+        "branch_pages": 0
+      },
+      {
+        "name": "exact_v1",
+        "kind": "multimap",
+        "entries": 100000,
+        "stored_bytes": 625000,
+        "metadata_bytes": 4680459,
+        "fragmented_bytes": 4742029,
+        "leaf_pages": 2389,
+        "branch_pages": 64
+      },
+      {
+        "name": "inetnum_cover_v1",
+        "kind": "table",
+        "entries": 0,
+        "stored_bytes": 0,
+        "metadata_bytes": 0,
+        "fragmented_bytes": 0,
+        "leaf_pages": 0,
+        "branch_pages": 0
+      },
+      {
+        "name": "inverse_v1",
+        "kind": "table",
+        "entries": 300000,
+        "stored_bytes": 18971754,
+        "metadata_bytes": 2108258,
+        "fragmented_bytes": 18839604,
+        "leaf_pages": 9337,
+        "branch_pages": 409
+      },
+      {
+        "name": "mirror_class_filters_v1",
+        "kind": "table",
+        "entries": 0,
+        "stored_bytes": 0,
+        "metadata_bytes": 0,
+        "fragmented_bytes": 0,
+        "leaf_pages": 0,
+        "branch_pages": 0
+      },
+      {
+        "name": "nrtm3_journal_v1",
+        "kind": "table",
+        "entries": 0,
+        "stored_bytes": 0,
+        "metadata_bytes": 0,
+        "fragmented_bytes": 0,
+        "leaf_pages": 0,
+        "branch_pages": 0
+      },
+      {
+        "name": "nrtm4_state_v1",
+        "kind": "table",
+        "entries": 0,
+        "stored_bytes": 0,
+        "metadata_bytes": 0,
+        "fragmented_bytes": 0,
+        "leaf_pages": 0,
+        "branch_pages": 0
+      },
+      {
+        "name": "object_class_counts_v1",
+        "kind": "table",
+        "entries": 6,
+        "stored_bytes": 132,
+        "metadata_bytes": 28,
+        "fragmented_bytes": 3936,
+        "leaf_pages": 1,
+        "branch_pages": 0
+      },
+      {
+        "name": "objects_v1",
+        "kind": "table",
+        "entries": 100000,
+        "stored_bytes": 19242287,
+        "metadata_bytes": 1459833,
+        "fragmented_bytes": 18218072,
+        "leaf_pages": 9210,
+        "branch_pages": 292
+      },
+      {
+        "name": "origins_v1",
+        "kind": "multimap",
+        "entries": 49997,
+        "stored_bytes": 832236,
+        "metadata_bytes": 2419158,
+        "fragmented_bytes": 3113790,
+        "leaf_pages": 1512,
+        "branch_pages": 42
+      },
+      {
+        "name": "route_prefixes_v1",
+        "kind": "table",
+        "entries": 49997,
+        "stored_bytes": 2324859,
+        "metadata_bytes": 297013,
+        "fragmented_bytes": 2551376,
+        "leaf_pages": 1219,
+        "branch_pages": 44
+      },
+      {
+        "name": "source_serials_v1",
+        "kind": "table",
+        "entries": 0,
+        "stored_bytes": 0,
+        "metadata_bytes": 0,
+        "fragmented_bytes": 0,
+        "leaf_pages": 0,
+        "branch_pages": 0
+      }
+    ]
+  },
+  "after_tables": {
+    "allocated_pages": 19028,
+    "file": {
+      "allocated_bytes": 79052800,
+      "apparent_bytes": 135278592
+    },
+    "fragmented_bytes": 81670508,
+    "metadata_bytes": 11062952,
+    "page_size": 4096,
+    "stored_bytes": 41996268,
+    "tables": [
+      {
+        "branch_pages": 0,
+        "entries": 0,
+        "fragmented_bytes": 0,
+        "kind": "table",
+        "leaf_pages": 0,
+        "metadata_bytes": 0,
+        "name": "as_block_cover_v1",
+        "stored_bytes": 0
+      },
+      {
+        "branch_pages": 0,
+        "entries": 0,
+        "fragmented_bytes": 0,
+        "kind": "table",
+        "leaf_pages": 0,
+        "metadata_bytes": 0,
+        "name": "authoritative_audit_v1",
+        "stored_bytes": 0
+      },
+      {
+        "branch_pages": 0,
+        "entries": 0,
+        "fragmented_bytes": 0,
+        "kind": "table",
+        "leaf_pages": 0,
+        "metadata_bytes": 0,
+        "name": "authoritative_nrtm3_serials_v1",
+        "stored_bytes": 0
+      },
+      {
+        "branch_pages": 0,
+        "entries": 0,
+        "fragmented_bytes": 0,
+        "kind": "table",
+        "leaf_pages": 0,
+        "metadata_bytes": 0,
+        "name": "authoritative_protected_names_v1",
+        "stored_bytes": 0
+      },
+      {
+        "branch_pages": 46,
+        "entries": 100000,
+        "fragmented_bytes": 2408898,
+        "kind": "multimap",
+        "leaf_pages": 1829,
+        "metadata_bytes": 4646102,
+        "name": "exact_v1",
+        "stored_bytes": 625000
+      },
+      {
+        "branch_pages": 0,
+        "entries": 0,
+        "fragmented_bytes": 0,
+        "kind": "table",
+        "leaf_pages": 0,
+        "metadata_bytes": 0,
+        "name": "inetnum_cover_v1",
+        "stored_bytes": 0
+      },
+      {
+        "branch_pages": 262,
+        "entries": 300000,
+        "fragmented_bytes": 9827508,
+        "kind": "table",
+        "leaf_pages": 7234,
+        "metadata_bytes": 1904354,
+        "name": "inverse_v1",
+        "stored_bytes": 18971754
+      },
+      {
+        "branch_pages": 0,
+        "entries": 0,
+        "fragmented_bytes": 0,
+        "kind": "table",
+        "leaf_pages": 0,
+        "metadata_bytes": 0,
+        "name": "mirror_class_filters_v1",
+        "stored_bytes": 0
+      },
+      {
+        "branch_pages": 0,
+        "entries": 0,
+        "fragmented_bytes": 0,
+        "kind": "table",
+        "leaf_pages": 0,
+        "metadata_bytes": 0,
+        "name": "nrtm3_journal_v1",
+        "stored_bytes": 0
+      },
+      {
+        "branch_pages": 0,
+        "entries": 0,
+        "fragmented_bytes": 0,
+        "kind": "table",
+        "leaf_pages": 0,
+        "metadata_bytes": 0,
+        "name": "nrtm4_state_v1",
+        "stored_bytes": 0
+      },
+      {
+        "branch_pages": 0,
+        "entries": 6,
+        "fragmented_bytes": 3936,
+        "kind": "table",
+        "leaf_pages": 1,
+        "metadata_bytes": 28,
+        "name": "object_class_counts_v1",
+        "stored_bytes": 132
+      },
+      {
+        "branch_pages": 183,
+        "entries": 100000,
+        "fragmented_bytes": 9449676,
+        "kind": "table",
+        "leaf_pages": 7142,
+        "metadata_bytes": 1311237,
+        "name": "objects_v1",
+        "stored_bytes": 19242287
+      },
+      {
+        "branch_pages": 27,
+        "entries": 49997,
+        "fragmented_bytes": 1467284,
+        "kind": "multimap",
+        "leaf_pages": 1119,
+        "metadata_bytes": 2394496,
+        "name": "origins_v1",
+        "stored_bytes": 832236
+      },
+      {
+        "branch_pages": 29,
+        "entries": 49997,
+        "fragmented_bytes": 1176692,
+        "kind": "table",
+        "leaf_pages": 892,
+        "metadata_bytes": 270865,
+        "name": "route_prefixes_v1",
+        "stored_bytes": 2324859
+      },
+      {
+        "branch_pages": 0,
+        "entries": 0,
+        "fragmented_bytes": 0,
+        "kind": "table",
+        "leaf_pages": 0,
+        "metadata_bytes": 0,
+        "name": "source_serials_v1",
+        "stored_bytes": 0
+      }
+    ]
+  },
+  "queries": {
+    "scope": "same binary, 100k original synthetic data, one CPU/128MiB server, 16MiB cache, four validating clients, reused connections; warm files possible",
+    "source_commit": "375b6634a881180b0c07a34814775b9afc637b67",
+    "binary_sha256": "4749026fbc7a986e44c5fabe97dfb47d4af73367f552c8f53924292471613f1b",
+    "driver_sha256": "e6ca02b2c1d5694f1f76e24bc33b090d29a35ce202d1f3f72fe244d526fc52ea",
+    "profiles": [
+      {
+        "attempted": 99188,
+        "clients": 4,
+        "connections": "Reused",
+        "errors": {},
+        "keys": 50000,
+        "max_ms": 4.351152,
+        "mode": "Whois",
+        "p50_ms": 0.287854,
+        "p95_ms": 0.603876,
+        "p99_ms": 0.818414,
+        "queries_per_second": 12394.932617542077,
+        "requested_seconds": 8,
+        "response_body_bytes": 15627626,
+        "successful": 99188,
+        "wall_seconds": 8.002302478,
+        "warmup_seconds": 2,
+        "layout": "original",
+        "repetition": 1
+      },
+      {
+        "attempted": 34140,
+        "clients": 4,
+        "connections": "Reused",
+        "errors": {},
+        "keys": 50000,
+        "max_ms": 15.743584,
+        "mode": "Graphql",
+        "p50_ms": 0.88157,
+        "p95_ms": 1.751547,
+        "p99_ms": 2.493195,
+        "queries_per_second": 4266.480606588808,
+        "requested_seconds": 8,
+        "response_body_bytes": 3140880,
+        "successful": 34140,
+        "wall_seconds": 8.001911446,
+        "warmup_seconds": 2,
+        "layout": "original",
+        "repetition": 1
+      },
+      {
+        "attempted": 104810,
+        "clients": 4,
+        "connections": "Reused",
+        "errors": {},
+        "keys": 50000,
+        "max_ms": 3.156395,
+        "mode": "Whois",
+        "p50_ms": 0.274261,
+        "p95_ms": 0.568004,
+        "p99_ms": 0.764965,
+        "queries_per_second": 13096.849625510662,
+        "requested_seconds": 8,
+        "response_body_bytes": 16513400,
+        "successful": 104810,
+        "wall_seconds": 8.002687898,
+        "warmup_seconds": 2,
+        "layout": "repacked",
+        "repetition": 1
+      },
+      {
+        "attempted": 40213,
+        "clients": 4,
+        "connections": "Reused",
+        "errors": {},
+        "keys": 50000,
+        "max_ms": 10.967107,
+        "mode": "Graphql",
+        "p50_ms": 0.777386,
+        "p95_ms": 1.46943,
+        "p99_ms": 1.950874,
+        "queries_per_second": 5025.104442340307,
+        "requested_seconds": 8,
+        "response_body_bytes": 3699596,
+        "successful": 40213,
+        "wall_seconds": 8.002420738,
+        "warmup_seconds": 2,
+        "layout": "repacked",
+        "repetition": 1
+      },
+      {
+        "attempted": 103833,
+        "clients": 4,
+        "connections": "Reused",
+        "errors": {},
+        "keys": 50000,
+        "max_ms": 7.915172,
+        "mode": "Whois",
+        "p50_ms": 0.276226,
+        "p95_ms": 0.574732,
+        "p99_ms": 0.779653,
+        "queries_per_second": 12975.501192295389,
+        "requested_seconds": 8,
+        "response_body_bytes": 16359482,
+        "successful": 103833,
+        "wall_seconds": 8.002234246,
+        "warmup_seconds": 2,
+        "layout": "repacked",
+        "repetition": 2
+      },
+      {
+        "attempted": 33131,
+        "clients": 4,
+        "connections": "Reused",
+        "errors": {},
+        "keys": 50000,
+        "max_ms": 6.768559,
+        "mode": "Graphql",
+        "p50_ms": 0.881317,
+        "p95_ms": 1.932133,
+        "p99_ms": 2.558184,
+        "queries_per_second": 4140.114309317099,
+        "requested_seconds": 8,
+        "response_body_bytes": 3048052,
+        "successful": 33131,
+        "wall_seconds": 8.00243605,
+        "warmup_seconds": 2,
+        "layout": "repacked",
+        "repetition": 2
+      },
+      {
+        "attempted": 101506,
+        "clients": 4,
+        "connections": "Reused",
+        "errors": {},
+        "keys": 50000,
+        "max_ms": 8.996904,
+        "mode": "Whois",
+        "p50_ms": 0.28161,
+        "p95_ms": 0.584621,
+        "p99_ms": 0.818835,
+        "queries_per_second": 12684.71671972541,
+        "requested_seconds": 8,
+        "response_body_bytes": 15992846,
+        "successful": 101506,
+        "wall_seconds": 8.00222837,
+        "warmup_seconds": 2,
+        "layout": "original",
+        "repetition": 2
+      },
+      {
+        "attempted": 32738,
+        "clients": 4,
+        "connections": "Reused",
+        "errors": {},
+        "keys": 50000,
+        "max_ms": 10.394047,
+        "mode": "Graphql",
+        "p50_ms": 0.911355,
+        "p95_ms": 1.935963,
+        "p99_ms": 2.67383,
+        "queries_per_second": 4089.3021115612587,
+        "requested_seconds": 8,
+        "response_body_bytes": 3011896,
+        "successful": 32738,
+        "wall_seconds": 8.005767025,
+        "warmup_seconds": 2,
+        "layout": "original",
+        "repetition": 2
+      },
+      {
+        "attempted": 93340,
+        "clients": 4,
+        "connections": "Reused",
+        "errors": {},
+        "keys": 50000,
+        "max_ms": 10.395919,
+        "mode": "Whois",
+        "p50_ms": 0.307022,
+        "p95_ms": 0.639691,
+        "p99_ms": 0.868473,
+        "queries_per_second": 11664.50842976816,
+        "requested_seconds": 8,
+        "response_body_bytes": 14706240,
+        "successful": 93340,
+        "wall_seconds": 8.002051742,
+        "warmup_seconds": 2,
+        "layout": "original",
+        "repetition": 3
+      },
+      {
+        "attempted": 34920,
+        "clients": 4,
+        "connections": "Reused",
+        "errors": {},
+        "keys": 50000,
+        "max_ms": 9.44628,
+        "mode": "Graphql",
+        "p50_ms": 0.854852,
+        "p95_ms": 1.767272,
+        "p99_ms": 2.410749,
+        "queries_per_second": 4363.86609467041,
+        "requested_seconds": 8,
+        "response_body_bytes": 3212640,
+        "successful": 34920,
+        "wall_seconds": 8.002078717,
+        "warmup_seconds": 2,
+        "layout": "original",
+        "repetition": 3
+      },
+      {
+        "attempted": 101248,
+        "clients": 4,
+        "connections": "Reused",
+        "errors": {},
+        "keys": 50000,
+        "max_ms": 7.373789,
+        "mode": "Whois",
+        "p50_ms": 0.2852,
+        "p95_ms": 0.581209,
+        "p99_ms": 0.789621,
+        "queries_per_second": 12652.499240084631,
+        "requested_seconds": 8,
+        "response_body_bytes": 15952196,
+        "successful": 101248,
+        "wall_seconds": 8.002213482,
+        "warmup_seconds": 2,
+        "layout": "repacked",
+        "repetition": 3
+      },
+      {
+        "attempted": 35196,
+        "clients": 4,
+        "connections": "Reused",
+        "errors": {},
+        "keys": 50000,
+        "max_ms": 7.786941,
+        "mode": "Graphql",
+        "p50_ms": 0.84065,
+        "p95_ms": 1.794133,
+        "p99_ms": 2.400394,
+        "queries_per_second": 4398.57246587644,
+        "requested_seconds": 8,
+        "response_body_bytes": 3238032,
+        "successful": 35196,
+        "wall_seconds": 8.001686973,
+        "warmup_seconds": 2,
+        "layout": "repacked",
+        "repetition": 3
+      }
+    ],
+    "memory": [
+      {
+        "layout": "original",
+        "repetition": 1,
+        "process_pss_bytes": 25925632
+      },
+      {
+        "layout": "repacked",
+        "repetition": 1,
+        "process_pss_bytes": 25608192
+      },
+      {
+        "layout": "repacked",
+        "repetition": 2,
+        "process_pss_bytes": 25590784
+      },
+      {
+        "layout": "original",
+        "repetition": 2,
+        "process_pss_bytes": 25886720
+      },
+      {
+        "layout": "original",
+        "repetition": 3,
+        "process_pss_bytes": 26066944
+      },
+      {
+        "layout": "repacked",
+        "repetition": 3,
+        "process_pss_bytes": 25623552
+      }
+    ],
+    "completed_at": "2026-11-04T21:39:47Z"
+  },
+  "previous_reader": {
+    "binary_sha256": "e5c8961dc7e6ce0b6540c2a827b980fb6a70d8148993a3aeff378df3039d725e",
+    "original": {
+      "objects": 100000
+    },
+    "repacked": {
+      "objects": 100000
+    }
+  },
+  "checks": {
+    "rust_passed": 189,
+    "optional_rust_skipped": 1,
+    "protocol_cases_passed": 56,
+    "report_cases_passed": 32,
+    "all_19_classes_queried_after_repack": true,
+    "vulnerabilities": 0
+  },
+  "portability_followup": {
+    "source_commit": "c18430098ae827c86fbbc3bf3534880290cdf5f3",
+    "ci": [
+      {
+        "name": "RPSL and NRTMv3 fuzzing",
+        "status": "completed",
+        "conclusion": "success",
+        "url": "https://github.com/RIRRd/RIRRd/actions/runs/41919245149"
+      },
+      {
+        "name": "Router tools and bundled dashboard",
+        "status": "completed",
+        "conclusion": "success",
+        "url": "https://github.com/RIRRd/RIRRd/actions/runs/41919245176"
+      },
+      {
+        "name": "Deployment smoke test",
+        "status": "completed",
+        "conclusion": "success",
+        "url": "https://github.com/RIRRd/RIRRd/actions/runs/41919244901"
+      },
+      {
+        "name": "Source publication hygiene",
+        "status": "completed",
+        "conclusion": "success",
+        "url": "https://github.com/RIRRd/RIRRd/actions/runs/41919244796"
+      },
+      {
+        "name": "IRRd upstream oracle",
+        "status": "completed",
+        "conclusion": "success",
+        "url": "https://github.com/RIRRd/RIRRd/actions/runs/41919244826"
+      },
+      {
+        "name": "CI",
+        "status": "completed",
+        "conclusion": "success",
+        "url": "https://github.com/RIRRd/RIRRd/actions/runs/41919245009"
+      }
+    ],
+    "local_checks": "fmt, strict Clippy, 189 Rust cases with one optional skip, 56 protocols and 32 report cases passed after private-handle reopen fix"
+  }
+}

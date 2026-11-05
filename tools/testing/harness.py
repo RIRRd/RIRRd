@@ -46,11 +46,11 @@ max_snapshot_bytes = 262144
             raise AssertionError('Fixture CLI failed: ' + result.stderr.decode('utf-8', errors='replace'))
         return result
 
-    def start(self):
+    def start(self, *server_args):
         assert self.child is None
         ready = threading.Event()
         self.addresses = {}
-        self.child = subprocess.Popen([str(self.binary), '--config', str(self.config), 'server'], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, env={**os.environ, 'RUST_LOG':'info'})
+        self.child = subprocess.Popen([str(self.binary), '--config', str(self.config), 'server', *server_args], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, env={**os.environ, 'RUST_LOG':'info'})
         def consume():
             for line in self.child.stderr:
                 if len(self.logs) < 100:

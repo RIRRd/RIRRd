@@ -15,7 +15,7 @@ pub(crate) use lookup::{is_inverse_field, lookup_attributes};
 pub const MAX_OBJECT_BYTES: usize = 64 * 1024;
 /// Large published routing policies are valid snapshot inputs. Submission and
 /// NRTM paths retain their independent, smaller admission limits.
-pub const MAX_SNAPSHOT_OBJECT_BYTES: usize = 4 * 1024 * 1024;
+pub const MAX_SNAPSHOT_OBJECT_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct Object {
@@ -39,37 +39,82 @@ impl fmt::Debug for Object {
 impl Object {
     /// Render for unprivileged queries. The stored text can contain credentials.
     pub fn public_text(&self) -> Cow<'_, str> {
-        let sensitive = |name: &str| {
-            name.eq_ignore_ascii_case("auth") || name.eq_ignore_ascii_case("rpki-ov-state")
-        };
-        let needs_filtering = self.text.lines().any(|line| {
-            line.starts_with(['#', '%'])
-                || line
-                    .split_once(':')
-                    .is_some_and(|(name, _)| sensitive(name))
-        });
-        if !needs_filtering {
-            return Cow::Borrowed(&self.text);
-        }
-
-        let mut result = String::with_capacity(self.text.len());
-        let mut suppress_continuations = false;
-        for segment in self.text.split_inclusive('\n') {
-            let line = segment.trim_end_matches(['\r', '\n']);
-            if line.starts_with(['#', '%']) {
-                continue;
-            }
-            if !is_continuation(line) {
-                suppress_continuations = line
-                    .split_once(':')
-                    .is_some_and(|(name, _)| sensitive(name));
-            }
-            if !suppress_continuations {
-                result.push_str(segment);
-            }
-        }
-        Cow::Owned(result)
+        public_text(&self.text)
     }
+}
+
+/// Render borrowed database text with the same public redaction as queries.
+pub(crate) fn public_text(text: &str) -> Cow<'_, str> {
+    let sensitive = |name: &str, value: &str| {
+        const OWNER_ID: &str = "registro.br ownerid:";
+        name.eq_ignore_ascii_case("auth")
+            || name.eq_ignore_ascii_case("rpki-ov-state")
+            || (name.eq_ignore_ascii_case("remarks")
+                && value
+                    .trim_start()
+                    .get(..OWNER_ID.len())
+                    .is_some_and(|prefix| prefix.eq_ignore_ascii_case(OWNER_ID)))
+    };
+    let private_marker = text.contains("-----BEGIN PGP PRIVATE KEY BLOCK-----");
+    let private_end = private_marker
+        && text
+            .lines()
+            .any(|line| armor_value(line) == "-----END PGP PRIVATE KEY BLOCK-----");
+    let needs_filtering = text.lines().any(|line| {
+        line.starts_with(['#', '%'])
+            || (private_marker && private_key_start(line, private_end))
+            || line
+                .split_once(':')
+                .is_some_and(|(name, value)| sensitive(name, value))
+    });
+    if !needs_filtering {
+        return Cow::Borrowed(text);
+    }
+
+    let mut result = String::with_capacity(text.len());
+    let mut suppress_continuations = false;
+    let mut private_block = false;
+    for segment in text.split_inclusive('\n') {
+        let line = segment.trim_end_matches(['\r', '\n']);
+        if private_block {
+            if armor_value(line) == "-----END PGP PRIVATE KEY BLOCK-----" {
+                private_block = false;
+            }
+            continue;
+        }
+        if private_marker && private_key_start(line, private_end) {
+            private_block = true;
+            continue;
+        }
+        if line.starts_with(['#', '%']) {
+            continue;
+        }
+        if !is_continuation(line) {
+            suppress_continuations = line
+                .split_once(':')
+                .is_some_and(|(name, value)| sensitive(name, value));
+        }
+        if !suppress_continuations {
+            result.push_str(segment);
+        }
+    }
+    Cow::Owned(result)
+}
+
+fn armor_value(line: &str) -> &str {
+    if is_continuation(line) {
+        line[1..].trim()
+    } else {
+        line.split_once(':').map_or(line, |(_, value)| value).trim()
+    }
+}
+
+fn private_key_start(line: &str, private_end: bool) -> bool {
+    let begin = "-----BEGIN PGP PRIVATE KEY BLOCK-----";
+    (private_end && armor_value(line) == begin)
+        || line.split_once(':').is_some_and(|(name, value)| {
+            name.eq_ignore_ascii_case("certif") && value.contains(begin)
+        })
 }
 
 #[derive(Default)]
@@ -82,14 +127,19 @@ struct Identity {
 
 /// Parse one UTF-8 object, keeping the input text and canonicalising its key.
 pub fn parse(text: &str) -> Result<Object, String> {
-    parse_with_limit(text, MAX_OBJECT_BYTES)
+    parse_with_limit(Cow::Borrowed(text), MAX_OBJECT_BYTES)
 }
 
 pub fn parse_snapshot(text: &str) -> Result<Object, String> {
-    parse_with_limit(text, MAX_SNAPSHOT_OBJECT_BYTES)
+    parse_with_limit(Cow::Borrowed(text), MAX_SNAPSHOT_OBJECT_BYTES)
 }
 
-fn parse_with_limit(text: &str, max_bytes: usize) -> Result<Object, String> {
+/// Validate an imported record without copying its already-owned text buffer.
+pub fn parse_snapshot_owned(text: String) -> Result<Object, String> {
+    parse_with_limit(Cow::Owned(text), MAX_SNAPSHOT_OBJECT_BYTES)
+}
+
+fn parse_with_limit(text: Cow<'_, str>, max_bytes: usize) -> Result<Object, String> {
     if text.len() > max_bytes {
         return Err(format!("RPSL object exceeds {max_bytes} bytes"));
     }
@@ -137,8 +187,12 @@ fn parse_with_limit(text: &str, max_bytes: usize) -> Result<Object, String> {
         {
             return Err(format!("line {line_no}: invalid attribute name"));
         }
-        let name = name.to_ascii_lowercase();
-        if matches!(name.as_str(), "password" | "override" | "api-key") {
+        let name = if name.bytes().any(|byte| byte.is_ascii_uppercase()) {
+            Cow::Owned(name.to_ascii_lowercase())
+        } else {
+            Cow::Borrowed(name)
+        };
+        if matches!(name.as_ref(), "password" | "override" | "api-key") {
             return Err(format!(
                 "line {line_no}: submission credentials in snapshot object"
             ));
@@ -148,7 +202,7 @@ fn parse_with_limit(text: &str, max_bytes: usize) -> Result<Object, String> {
             if !supported_class(&name) {
                 return Err(format!("line {line_no}: unsupported object class"));
             }
-            identity.class = name.clone();
+            identity.class = name.to_string();
             has_attribute = true;
         }
 
@@ -157,7 +211,7 @@ fn parse_with_limit(text: &str, max_bytes: usize) -> Result<Object, String> {
             "person" | "role" => "nic-hdl",
             _ => "",
         };
-        current = match name.as_str() {
+        current = match name.as_ref() {
             "source" => Some(&mut identity.source),
             _ if name == identity.class => Some(&mut identity.first),
             _ if name == secondary_name => Some(&mut identity.second),
@@ -171,7 +225,13 @@ fn parse_with_limit(text: &str, max_bytes: usize) -> Result<Object, String> {
         }
     }
 
-    let first = required(identity.first.as_deref(), "class identity")?;
+    // Contact names are display/lookup text; nic-hdl is their primary key.
+    // IRRd 4.5.4 accepts an empty person/role value, including in strict mode.
+    let first = if matches!(identity.class.as_str(), "person" | "role") {
+        normalise_attribute(identity.first.as_deref().unwrap_or_default())
+    } else {
+        required(identity.first.as_deref(), "class identity")?
+    };
     let source = required(identity.source.as_deref(), "source")?;
     if !generic_name(&source) {
         return Err("invalid source name".into());
@@ -200,7 +260,7 @@ fn parse_with_limit(text: &str, max_bytes: usize) -> Result<Object, String> {
         source: source.to_ascii_uppercase(),
         class: identity.class,
         key,
-        text: text.to_owned(),
+        text: text.into_owned(),
     })
 }
 
@@ -437,6 +497,44 @@ mod tests {
     }
 
     #[test]
+    fn owned_snapshot_records_use_the_same_identity_and_credential_checks() {
+        for text in [
+            "Aut-Num: AS064496\r\nAS-Name: TEST\r\nSource: test\r\n",
+            "person: Café Operator\nnic-hdl: EX1-TEST\nsource: TEST\n",
+            "route6: 2001:db8::/32\norigin: AS64496\nsource: TEST\n",
+            "mntner: TEST-MNT\nauth: BCRYPT-PW DummyValue\nsource: TEST\n",
+            "aut-num: AS64496\nsource: TEST\nPassword: secret\n",
+            "aut-num: AS64496\nsource: TEST\nOVERRIDE: secret\n",
+            "aut-num: AS64496\nsource: TEST\nAPI-KEY: secret\n",
+            "aut-num: AS64496\nsource: TEST\nSOURCE: OTHER\n",
+            "aut-num: AS64496\nsource: TEST\n\naut-num: AS64497\nsource: TEST\n",
+            "aut-num: AS64496\nsource: TEST\0\n",
+            "aut-num: AS64496\n",
+        ] {
+            assert_eq!(parse_snapshot_owned(text.to_owned()), parse_snapshot(text));
+        }
+    }
+
+    #[test]
+    fn empty_contact_display_names_keep_their_nic_handle_identity() {
+        for class in ["person", "role"] {
+            for display in ["", "  # publisher omitted the display name"] {
+                let text = format!("{class}:{display}\nnic-hdl: EX1-TEST\nsource: TEST\n");
+                for object in [parse(&text).unwrap(), parse_snapshot(&text).unwrap()] {
+                    assert_eq!(object.key, "EX1-TEST");
+                    assert_eq!(object.text, text);
+                    let attributes = object.lookup_attributes().unwrap();
+                    assert!(attributes.person.is_empty() && attributes.role.is_empty());
+                }
+            }
+            assert!(parse_snapshot(&format!("{class}:\nsource: TEST\n")).is_err());
+            assert!(parse_snapshot(&format!("{class}:\nnic-hdl:\nsource: TEST\n")).is_err());
+        }
+        assert!(parse_snapshot("mntner:\nsource: TEST\n").is_err());
+        assert!(parse_snapshot("aut-num:\nsource: TEST\n").is_err());
+    }
+
+    #[test]
     fn matches_mirror_key_normalisation_cases_from_irrd_4_5_4() {
         for (text, expected) in [
             (
@@ -560,5 +658,39 @@ mod tests {
                 }
             }
         }
+    }
+    #[test]
+    fn public_text_withholds_private_armor_and_preserves_public_certificates() {
+        let text = "key-cert: PGPKEY-01234567\ncertif: -----BEGIN PGP PRIVATE KEY BLOCK-----\ncertif: synthetic-private-payload\ncertif: -----END PGP PRIVATE KEY BLOCK-----\ncertif: public-certificate-fixture\nremarks: safe metadata\nsource: TEST\n";
+        let object = parse_snapshot(text).unwrap();
+        let public = object.public_text();
+        assert!(!public.contains("PRIVATE KEY"));
+        assert!(!public.contains("synthetic-private-payload"));
+        assert!(public.contains("public-certificate-fixture"));
+        assert!(public.contains("source: TEST"));
+        let mention = "key-cert: PGPKEY-01234567\nremarks: Never publish -----BEGIN PGP PRIVATE KEY BLOCK----- here.\nsource: TEST\n";
+        assert_eq!(parse_snapshot(mention).unwrap().public_text(), mention);
+        let header_mention = "key-cert: PGPKEY-01234567\nremarks: -----BEGIN PGP PRIVATE KEY BLOCK-----\nsource: TEST\n";
+        assert_eq!(
+            parse_snapshot(header_mention).unwrap().public_text(),
+            header_mention
+        );
+        let partial = "key-cert: PGPKEY-01234567\ncertif: -----BEGIN PGP PRIVATE KEY BLOCK-----\n+ synthetic-private-payload\n";
+        assert!(
+            !parse_snapshot(&(partial.to_owned() + "source: TEST\n"))
+                .unwrap()
+                .public_text()
+                .contains("synthetic-private-payload")
+        );
+    }
+    #[test]
+    fn converted_owner_identifiers_and_folds_are_not_public_routing_data() {
+        let text = "route: 192.0.2.0/24\norigin: AS64496\nremarks: Registro.BR ownerid: 000.000.000-00\n+ private continuation\nremarks: Public conversion provenance\nsource: REGISTROBR\n";
+        let object = parse_snapshot(text).unwrap();
+        let public = object.public_text();
+        assert!(!public.contains("000.000.000-00"));
+        assert!(!public.contains("private continuation"));
+        assert!(public.contains("Public conversion provenance"));
+        assert!(public.contains("origin: AS64496"));
     }
 }

@@ -21,7 +21,21 @@ id_rsa*
 *.sqlite3
 *.log
 
-# Reproducible community build output; source assets and deployment files are tracked.
-/site/community/public/
+# Private project/community websites and operator workspace live in RIRRd/website.
+/site/
+/ops/
+/deploy/dev/
+/tools/live-service/
+/archives/
+*.sqlite-wal
+*.sqlite-shm
+*.pcap
+*.profraw
+*.profdata
 
-/site/project/public/
+/runtime/
+/snapshots/
+/queues/
+/cache/
+*_ed25519
+*_rsa

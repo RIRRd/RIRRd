@@ -296,12 +296,17 @@ async fn submit(State(state): State<HttpState>, request: Request) -> Response {
     let Ok(slot) = state.write_slot.try_acquire_owned() else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
+    // Never occupy a blocking worker while waiting for a coherent query view.
+    // With a one-worker pool, a reader may own that view while its actual lookup
+    // is queued for the same worker. Acquire asynchronously before enqueueing.
+    let gate = Arc::clone(state.store.query_gate()).write_owned().await;
     let result = tokio::task::spawn_blocking(move || {
         let _slot = slot;
-        state.store.apply_authoritative_report(
+        state.store.apply_authoritative_report_with_guard(
             &submission.source,
             submission.changes,
             &submission.passwords,
+            &gate,
         )
     })
     .await;
@@ -412,6 +417,61 @@ mod tests {
             .err()
             .expect("invalid request accepted")
             .to_string()
+    }
+
+    #[test]
+    fn waiting_submission_does_not_block_a_queued_reader_in_a_one_worker_pool() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let store = Arc::new(Store::open(&directory.path().join("registry.redb"))?);
+        let password = "synthetic submission proof";
+        let hash = bcrypt::hash(password, 4)?;
+        let maintainer = parse(&format!(
+            "mntner: TEST-MNT\nauth: BCRYPT-PW {hash}\nmnt-by: TEST-MNT\nsource: TEST\n"
+        ))
+        .map_err(anyhow::Error::msg)?;
+        store.replace_source("TEST", [Ok(maintainer)])?;
+        let state = HttpState {
+            store: Arc::clone(&store),
+            sources: Arc::new(HashSet::from([String::from("TEST")])),
+            timeout: Duration::from_secs(2),
+            body_slots: Arc::new(Semaphore::new(MAX_BODY_READERS)),
+            write_slot: Arc::new(Semaphore::new(1)),
+        };
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .max_blocking_threads(1)
+            .enable_all()
+            .build()?;
+        runtime.block_on(async move {
+            // A reader has a coherent view but has not yet queued its lookup.
+            // Retain a cleanup handle so a regression fails without hanging the
+            // test runtime's worker shutdown.
+            let read_view = Arc::new(std::sync::Mutex::new(Some(
+                Arc::clone(store.query_gate()).read_owned().await,
+            )));
+            let text = "person: Synthetic Contact\naddress: Example Road\nphone: +1 202 555 0100\ne-mail: noc@example.invalid\nnic-hdl: CONTACT-TEST\nmnt-by: TEST-MNT\nsource: TEST\n";
+            let body = json!({"objects":[{"object_text":text}],"passwords":[password]}).to_string();
+            let request = Request::builder().method("POST").uri("/v1/submit/").body(Body::from(body))?;
+            let submission = tokio::spawn(submit(State(state.clone()), request));
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while state.write_slot.available_permits() != 0 {
+                    tokio::task::yield_now().await;
+                }
+            }).await?;
+            let pending_view = Arc::clone(&read_view);
+            let query = tokio::task::spawn_blocking(move || {
+                let view = pending_view.lock().unwrap().take();
+                drop(view);
+            });
+            let progress = tokio::time::timeout(Duration::from_secs(2), query).await;
+            drop(read_view.lock().unwrap().take());
+            let response = tokio::time::timeout(Duration::from_secs(5), submission).await??;
+            ensure!(progress.is_ok(), "writer blocked the sole worker needed by its queued reader");
+            assert_eq!(response.status(), StatusCode::OK);
+            let bytes = read_body(response.into_body()).await.map_err(|_| anyhow!("invalid response body"))?;
+            let report: Value = serde_json::from_slice(&bytes)?;
+            assert_eq!(report["summary"]["successful_create"], 1);
+            Ok(())
+        })
     }
 
     #[test]

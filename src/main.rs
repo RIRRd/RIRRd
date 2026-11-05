@@ -19,6 +19,7 @@ mod nrtm4_records;
 mod nrtm4_remote;
 mod nrtm4_state;
 mod nrtm_client;
+mod public_http;
 mod route_policy;
 mod rpsl;
 mod scope;
@@ -28,6 +29,7 @@ mod submission_http;
 mod whois;
 
 use std::{
+    collections::HashMap,
     fs::{self, File},
     io::{self, BufRead, BufReader, BufWriter, IsTerminal, Read, Write},
     net::SocketAddr,
@@ -38,7 +40,11 @@ use std::{
 
 use anyhow::{Context, Result, ensure};
 use clap::{Parser, Subcommand};
-use tokio::{net::TcpListener, sync::watch, task::JoinSet};
+use tokio::{
+    net::TcpListener,
+    sync::{Semaphore, watch},
+    task::JoinSet,
+};
 use tracing_subscriber::EnvFilter;
 use zeroize::Zeroizing;
 
@@ -53,9 +59,32 @@ struct Cli {
     command: Command,
 }
 
+fn database_file_usage(path: &Path) -> Result<serde_json::Value> {
+    let metadata = fs::metadata(path)?;
+    let allocated_bytes: Option<u64> = {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            Some(metadata.blocks() * 512)
+        }
+        #[cfg(not(unix))]
+        {
+            None
+        }
+    };
+    Ok(serde_json::json!({"apparent_bytes":metadata.len(),"allocated_bytes":allocated_bytes}))
+}
+
 #[derive(Subcommand)]
 enum Command {
-    Server,
+    Server {
+        /// Build a separate verified candidate from a stable read snapshot while serving.
+        #[arg(long)]
+        repack_to: Option<PathBuf>,
+        /// Destination cache budget for the optional maintenance job, in MiB.
+        #[arg(long, requires = "repack_to", value_parser = clap::value_parser!(u64).range(1..=4096))]
+        repack_cache_mib: Option<u64>,
+    },
     Config {
         #[command(subcommand)]
         command: ConfigCommand,
@@ -165,6 +194,9 @@ enum SourceCommand {
         /// Network-only deadline, separate from local indexing time.
         #[arg(long, value_parser = clap::value_parser!(u64).range(1..=300))]
         timeout_seconds: Option<u64>,
+        /// Inclusive last serial for a bounded bootstrap batch.
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
+        end_serial: Option<u64>,
     },
     /// Remove one source's stored objects and indexes.
     Purge {
@@ -194,8 +226,19 @@ enum ExportCommand {
 #[derive(Subcommand)]
 enum DatabaseCommand {
     Verify,
+    /// Report offline storage use by table; does not replace integrity checks.
+    Stats,
+    /// Repack an offline registry into a new, verified file without replacing it.
+    Repack {
+        #[arg(long)]
+        file: PathBuf,
+    },
     /// Read the committed object count; this does not verify index integrity.
-    Count,
+    Count {
+        /// Include committed per-source/class counts; still not an integrity check.
+        #[arg(long)]
+        by_class: bool,
+    },
     /// Write a private, versioned backup of the offline database.
     Backup {
         #[arg(long)]
@@ -340,14 +383,40 @@ fn main() -> Result<()> {
             println!("{}", serde_json::json!({ "objects": objects }));
         }
         Command::Database {
-            command: DatabaseCommand::Count,
+            command: DatabaseCommand::Stats,
         } => {
             let store =
                 Store::open_existing_with_cache(&config.database, config.database_cache_bytes())?;
-            println!(
-                "{}",
-                serde_json::json!({"objects": store.object_count()?, "integrity_verified": false})
-            );
+            let mut usage = serde_json::to_value(store.storage_usage()?)?;
+            usage["file"] = database_file_usage(&config.database)?;
+            println!("{usage}");
+        }
+        Command::Database {
+            command: DatabaseCommand::Repack { file },
+        } => {
+            backup::require_absent(&file)?;
+            let store =
+                Store::open_existing_with_cache(&config.database, config.database_cache_bytes())?;
+            let before = database_file_usage(&config.database)?;
+            let started = Instant::now();
+            let mut report =
+                serde_json::to_value(store.repack(&file, config.database_cache_bytes())?)?;
+            report["source_file"] = before;
+            report["output_file"] = database_file_usage(&file)?;
+            report["elapsed_seconds"] = started.elapsed().as_secs_f64().into();
+            println!("{report}");
+        }
+        Command::Database {
+            command: DatabaseCommand::Count { by_class },
+        } => {
+            let store =
+                Store::open_existing_with_cache(&config.database, config.database_cache_bytes())?;
+            let mut report =
+                serde_json::json!({"objects": store.object_count()?, "integrity_verified": false});
+            if by_class {
+                report["class_counts"] = serde_json::to_value(store.class_counts()?)?;
+            }
+            println!("{report}");
         }
         Command::Database {
             command: DatabaseCommand::Backup { file },
@@ -408,7 +477,21 @@ fn main() -> Result<()> {
                 })
             );
         }
-        Command::Server => {
+        Command::Server {
+            repack_to,
+            repack_cache_mib,
+        } => {
+            let maintenance = repack_to
+                .map(|path| -> Result<_> {
+                    backup::require_absent(&path)?;
+                    let cache = usize::try_from(
+                        repack_cache_mib.unwrap_or(config.database_cache_mib as u64),
+                    )?
+                    .checked_mul(1024 * 1024)
+                    .context("maintenance cache budget overflow")?;
+                    Ok((path, cache))
+                })
+                .transpose()?;
             let route_policy = RoutePolicy::load(&config)?;
             let store = Arc::new(
                 Store::open_for_service_with_cache(
@@ -428,7 +511,7 @@ fn main() -> Result<()> {
             runtime
                 .enable_all()
                 .build()?
-                .block_on(serve(config, store))?;
+                .block_on(serve(config, store, maintenance))?;
         }
         Command::Export {
             command:
@@ -520,6 +603,7 @@ fn main() -> Result<()> {
                     endpoint,
                     base_serial,
                     timeout_seconds,
+                    end_serial,
                 },
         } => {
             ensure!(
@@ -536,25 +620,47 @@ fn main() -> Result<()> {
             let start = base
                 .checked_add(1)
                 .context("source serial cannot advance")?;
-            let filter = config
+            let mirror = config
                 .nrtm3_sync
                 .get(&source)
-                .filter(|mirror| {
-                    mirror.endpoint == endpoint && !mirror.object_class_filter.is_empty()
-                })
+                .filter(|mirror| mirror.endpoint == endpoint);
+            let encoding = mirror.map(|mirror| mirror.encoding).unwrap_or_default();
+            let filter = mirror
+                .filter(|mirror| !mirror.object_class_filter.is_empty())
                 .map(|mirror| &mirror.object_class_filter);
-            match nrtm_client::fetch_staged(
-                endpoint,
-                &source,
-                start,
-                Duration::from_secs(timeout_seconds.unwrap_or(config.io_timeout_seconds)),
-                config.max_snapshot_bytes,
-            )? {
+            let timeout = Duration::from_secs(timeout_seconds.unwrap_or(config.io_timeout_seconds));
+            let response = match end_serial {
+                Some(end) => nrtm_client::fetch_staged_until(
+                    endpoint,
+                    &source,
+                    start,
+                    Some(end),
+                    timeout,
+                    config.max_snapshot_bytes,
+                ),
+                None => nrtm_client::fetch_staged(
+                    endpoint,
+                    &source,
+                    start,
+                    timeout,
+                    config.max_snapshot_bytes,
+                ),
+            }?;
+            match response {
                 Some(input) => {
+                    let transcript = nrtm3::Reader::with_encoding(
+                        input,
+                        &source,
+                        config.max_snapshot_bytes,
+                        encoding,
+                        filter.is_some(),
+                    )
+                    .map_err(anyhow::Error::msg)?;
+                    ensure!(
+                        end_serial.is_none_or(|end| transcript.range().1 <= end),
+                        "NRTMv3 response exceeds requested end serial"
+                    );
                     let serial = if let Some(classes) = filter {
-                        let transcript =
-                            nrtm3::Reader::filtered(input, &source, config.max_snapshot_bytes)
-                                .map_err(anyhow::Error::msg)?;
                         store.apply_nrtm3_filtered_if(
                             &source,
                             transcript.range(),
@@ -564,13 +670,7 @@ fn main() -> Result<()> {
                             || true,
                         )?
                     } else {
-                        apply_nrtm3(
-                            &store,
-                            &source,
-                            base_serial,
-                            input,
-                            config.max_snapshot_bytes,
-                        )?
+                        store.apply_nrtm3(&source, transcript.range(), base_serial, transcript)?
                     };
                     print_serial(&source, Some(serial));
                 }
@@ -692,7 +792,11 @@ fn print_serial(source: &str, serial: Option<u64>) {
     );
 }
 
-async fn serve(config: Config, store: Arc<Store>) -> Result<()> {
+async fn serve(
+    config: Config,
+    store: Arc<Store>,
+    maintenance: Option<(PathBuf, usize)>,
+) -> Result<()> {
     let whois = TcpListener::bind(config.listen)
         .await
         .context("binding WHOIS")?;
@@ -706,13 +810,19 @@ async fn serve(config: Config, store: Arc<Store>) -> Result<()> {
     };
     let (stop, stopped) = watch::channel(false);
     let mut services = JoinSet::new();
+    let mut peer_slots = HashMap::new();
     for (source, mirror) in &config.nrtm3_sync {
+        let slots = peer_slots
+            .entry(mirror.endpoint)
+            .or_insert_with(|| Arc::new(Semaphore::new(2)))
+            .clone();
         services.spawn(mirror_worker::run(
             store.clone(),
             source.clone(),
             mirror.clone(),
             config.max_snapshot_bytes,
             Duration::from_secs(config.io_timeout_seconds),
+            slots,
             stopped.clone(),
         ));
     }
@@ -736,6 +846,7 @@ async fn serve(config: Config, store: Arc<Store>) -> Result<()> {
                 update_sources,
                 timeout,
                 whois_sources: config.http_whois_sources.clone(),
+                public_queries: config.http_public_queries,
                 dashboard: dashboard::Metadata {
                     mode: "live",
                     version: env!("CARGO_PKG_VERSION"),
@@ -751,6 +862,27 @@ async fn serve(config: Config, store: Arc<Store>) -> Result<()> {
             },
         ));
     }
+    let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let maintenance = maintenance.map(|(path, cache)| {
+        let store = store.clone();
+        let cancel = cancel.clone();
+        tokio::task::spawn_blocking(move || {
+            let started = Instant::now();
+            match store.repack_with_cancel(&path, cache, Some(&cancel)) {
+                Ok(report) => {
+                    let mut report = serde_json::to_value(report)?;
+                    report["output_file"] = database_file_usage(&path)?;
+                    report["elapsed_seconds"] = started.elapsed().as_secs_f64().into();
+                    tracing::info!(report = %report, "Online repack completed; candidate is inactive");
+                    Ok(())
+                }
+                Err(error) => {
+                    tracing::warn!(error = %error, "Online repack did not publish a candidate; serving database retained");
+                    Err(error)
+                }
+            }
+        })
+    });
     services.spawn(async move { whois::serve(whois, &config, store, stopped).await });
     let mut result = tokio::select! {
         result = shutdown_signal() => result.context("waiting for shutdown"),
@@ -760,9 +892,15 @@ async fn serve(config: Config, store: Arc<Store>) -> Result<()> {
             _ => Err(anyhow::anyhow!("a listener stopped unexpectedly")),
         },
     };
+    cancel.store(true, std::sync::atomic::Ordering::Relaxed);
     let _ = stop.send(true);
     while let Some(service) = services.join_next().await {
         result = result.and_then(|()| service?);
+    }
+    // A blocking database writer must close cleanly before runtime shutdown.
+    // Cancellation is checked in scans; engine compaction/fsync must finish.
+    if let Some(maintenance) = maintenance {
+        let _ = maintenance.await;
     }
     result
 }

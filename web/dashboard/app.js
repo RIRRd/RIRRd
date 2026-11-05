@@ -3,10 +3,10 @@
   const el = id => document.getElementById(id);
   const text = (id, value) => { el(id).textContent = value; };
   const count = n => Number(n || 0).toLocaleString();
-  const bytes = n => Number.isFinite(n) ? (n / 1048576).toFixed(1) + ' MiB' : 'Not reported';
+  const bytes = n => Number.isFinite(n) ? n >= 1073741824 ? (n / 1073741824).toFixed(2) + ' GiB' : (n / 1048576).toFixed(1) + ' MiB' : 'Not reported';
   const pages = ['overview', 'query', 'sources', 'api', 'connect', 'system'];
   let metadata, latest, loading = false, currentResult = '', command = '', cursor = null, queryController;
-  let historyData, historyFetched = 0;
+  let historyData, historyFetched = 0, historyScope = 'run', historyWindow = 3600;
   const publicMode = () => metadata?.public_service === true;
   const selectedPage = () => pages.includes(location.hash.slice(1)) ? location.hash.slice(1) : 'overview';
   const sampleASN = () => metadata?.sources?.includes('EXAMPLE') ? 'AS64496' : 'AS3333';
@@ -70,7 +70,7 @@
     let incremental = 0;
     for (const row of rows) {
       const [mode, warning] = health(row); if (mode === 'Incremental') incremental++;
-      const button = document.createElement('button'); button.type = 'button'; button.textContent = row.source; button.title = mode;
+      const button = document.createElement('button'); button.type = 'button'; button.textContent = row.source; button.title = mode; button.dataset.warning = String(warning); button.setAttribute('aria-label', row.source + ' · ' + mode);
       button.addEventListener('click', () => { el('source-detail').value = row.source; renderDetail(); location.hash = 'sources'; });
       el('overview-sources').append(button);
       if (!row.source.includes(filter)) continue;
@@ -85,16 +85,32 @@
     const names = rows.map(row => row.source);
     fillSelect('source-detail', names); fillSelect('browse-source', names);
     text('source-count', rows.length); text('source-summary', incremental + ' incremental · ' + (rows.length - incremental) + ' snapshot / other');
-    text('freshness-summary', incremental + ' incremental feeds. ' + (rows.length - incremental) + ' sources use scheduled snapshots or have a different update state.');
-    text('sources-state', rows.length + ' configured sources'); renderDetail();
+    text('freshness-summary', incremental + ' sources follow incremental updates. ' + (rows.length - incremental) + ' use snapshots or another update state. Select a source to check its latest observation.');
+    const retained = latest?.classes || metadata.retained_classes;
+    text('sources-state', rows.length + ' configured sources' + (Array.isArray(retained) ? ' · ' + retained.length + ' retained object classes' : '')); renderDetail();
   }
   function renderDetail() {
     const row = sourceRows().find(row => row.source === el('source-detail').value); if (!row) return;
     const out = el('source-detail-content'); const opened=new Set(out.dataset.source===row.source?[...out.querySelectorAll('details[open]')].map(item=>item.dataset.receipt):[]);out.dataset.source=row.source;out.replaceChildren();
     const summary = document.createElement('p'); summary.textContent = row.source + ' · ' + health(row)[0] + (row.provider ? ' · ' + row.provider : ''); out.append(summary);
+    for (const message of [row.source_note, row.sync_note]) { if (message) { const note = document.createElement('p'); note.className = 'fine'; note.textContent = message; out.append(note); } }
     const grid = document.createElement('div'); grid.className = 'class-grid';
     for (const [name, total] of Object.entries(classes(row)).sort((a, b) => b[1] - a[1])) { const box = document.createElement('div'), label = document.createElement('span'), number = document.createElement('strong'); label.textContent = name; number.textContent = count(total); box.append(label, number); grid.append(box); }
     out.append(grid);
+    const retained = latest?.classes || metadata.retained_classes;
+    if (Array.isArray(retained)) {
+      const coverage = document.createElement('p'); coverage.className = 'fine';
+      coverage.textContent = (latest?.data_profile === 'full' ? 'Full IRRd class profile' : latest?.data_profile === 'routing' ? 'Routing-only profile' : 'Configured import profile') + ' · Retained classes: ' + retained.join(', ') + '.';
+      out.append(coverage);
+    }
+    for (const [field, label] of [['excluded_classes', 'Snapshot classes outside the configured profile'], ['quarantined_records', 'Quarantined snapshot records']]) {
+      const values = Object.entries(row[field] || {}).filter(([, value]) => value > 0);
+      if (!values.length) continue;
+      const details = document.createElement('details'), title = document.createElement('summary'), list = document.createElement('ul');
+      title.textContent = label + ' · ' + count(values.reduce((sum, [, value]) => sum + value, 0));
+      for (const [name, value] of values) { const item = document.createElement('li'); item.textContent = name + ': ' + count(value); list.append(item); }
+      details.append(title, list); out.append(details);
+    }
     const note = document.createElement('p'); note.className = 'fine'; note.textContent = row.mirror ? 'Committed mirror serial: ' + (row.mirror.serial ?? 'Not reported') + '. Last successful check: ' + (row.mirror.last_success_unix_seconds ? new Date(row.mirror.last_success_unix_seconds * 1000).toISOString() : 'Unreported') : 'Snapshot imported: ' + (row.imported_at || 'Unreported') + '. A snapshot is not a continuous feed.'; out.append(note);
     for (const file of row.downloads || []) {
       const details = document.createElement('details'), title = document.createElement('summary'), info = document.createElement('p'), hash = document.createElement('pre');
@@ -106,8 +122,12 @@
   }
   function renderHistory() {
     if (!historyData) return;
-    const cutoff = Date.now() / 1000 - Number(el('history-range').value);
-    const samples = historyData.samples.filter(p => p.timestamp >= cutoff);
+    const cutoff = Date.now() / 1000 - historyWindow;
+    const started = latest?.process_started_at_unix_seconds;
+    const scoped = historyScope === 'run' && Number.isFinite(started);
+    const samples = historyData.samples.filter(p => p.timestamp >= cutoff && (!scoped ||
+      (p.timestamp >= started && (!p.run_id || !latest.process_run_id || p.run_id === latest.process_run_id))));
+    const events = (historyData.events || []).filter(e => e.end >= cutoff && (!scoped || e.end >= started));
     const charts = window.RIRRdCharts;
     const selected=selectedPage();
     if(selected==='overview'){
@@ -115,14 +135,20 @@
     charts.line(el('latency-chart'), samples, 'http_p95_ms', 'Recent HTTP p95 response time', v => v.toFixed(1) + ' ms');
     }
     if(selected==='system'){
-    charts.line(el('memory-chart'), samples, 'rss_bytes', 'Registry process resident memory', v => (v / 1048576).toFixed(0) + ' MiB');
-    charts.line(el('cpu-chart'), samples, 'cpu_percent', 'Registry CPU as a percentage of one core', v => v.toFixed(1) + '%');
+    charts.line(el('memory-chart'), samples, 'rss_bytes', 'Registry process resident memory', bytes, {events});
+    charts.line(el('cpu-chart'), samples, 'cpu_percent', 'Registry CPU as a percentage of one core', v => v.toFixed(2) + '%', {events});
     }
-    text('history-note', historyData.scope + ' Samples: ' + samples.length + '. Collection began ' + (historyData.samples[0] ? new Date(historyData.samples[0].timestamp * 1000).toLocaleString() : 'just now') + '.');
+    const note = (scoped ? 'Current daemon run, started ' + new Date(started * 1000).toLocaleString() : historyScope === 'run' ? 'Run identity unavailable; showing the selected time window' : 'All recorded runs, including maintenance') +
+      ' · ' + samples.length + ' measured samples. Gaps and restarts are not interpolated.';
+    text('history-note', note); text('resource-history-note', note);
+    const out = el('resource-events'); out.replaceChildren();
+    for (const event of events) {
+      const item = document.createElement('li'); item.textContent = event.label + ' · ' + new Date(event.start * 1000).toLocaleString() + ' to ' + new Date(event.end * 1000).toLocaleString() + ' · shaded in the charts'; out.append(item);
+    }
   }
   async function refreshHistory(force) {
     if (!publicMode()) return;
-    el('overview-history').hidden = false; el('resource-history').hidden = false;
+    el('overview-history').hidden = false; el('resource-history').hidden = false; el('resource-history-panel').hidden = false;
     try {
       if (force || Date.now() - historyFetched > 60000) {
         historyData = await json('history.json'); historyFetched = Date.now();
@@ -134,28 +160,54 @@
     if (!metadata || loading || document.hidden) return;
     const selected = selectedPage();
     if (!force && !['overview', 'sources', 'system'].includes(selected)) return;
-    loading = true;
+    loading = true; el('refresh').disabled = true; text('refresh', 'Refreshing…');
     try {
       latest = await json(publicMode() ? 'live.json' : 'mirrors.json');
       if (publicMode() && latest.service !== 'online') throw new Error('Node service is unavailable');
-      text('mode-badge', publicMode() ? 'Live · Beta' : 'Private instance');
+      if (publicMode() && latest.observed_at && (!Number.isFinite(Date.parse(latest.observed_at)) || Math.abs(Date.now() - Date.parse(latest.observed_at)) > 90000)) throw new Error('The latest observation is stale or its clock cannot be verified');
+      text('mode-badge', metadata.node?.environment === 'development' ? 'Development' : publicMode() ? 'Live · Beta' : 'Private instance'); el('mode-badge').classList.remove('warning');
       const totals = {};
       for (const group of Object.values(latest.class_counts || {})) for (const [name, value] of Object.entries(group)) totals[name] = (totals[name] || 0) + value;
       text('live-objects', count(latest.total_objects)); text('count-route', count(totals.route)); text('count-route6', count(totals.route6)); text('count-as-set', count(totals['as-set']));
       text('live-observed', latest.observed_at ? 'Observed ' + new Date(latest.observed_at).toLocaleString() + '. Counts include committed incremental edits.' : 'Committed database counts.');
+      if (latest.native_http) {
+        el('http-admission').hidden = false; const metrics=el('http-admission-metrics');metrics.replaceChildren();
+        for (const [label,value]of [['HTTP attempts',count(latest.native_http.requests)],['Successful HTTP replies',count(latest.native_http.successful)],['Rate limited · 429',count(latest.native_http.rate_limited)],['Admission busy',count(latest.native_http.admission_busy)],['Server errors',count(latest.native_http.server_errors)],['Successful p95',latest.native_http.successful_p95_ms==null?'No samples':latest.native_http.successful_p95_ms.toFixed(3)+' ms']]) {const box=document.createElement('div'),name=document.createElement('span'),number=document.createElement('strong');name.textContent=label;number.textContent=value;box.append(name,number);metrics.append(box);}
+      }
       renderSources();
-      RIRRdCharts.bars(el('source-chart'), sourceRows().map(row => ({label:row.source,value:Object.values(classes(row)).reduce((n,v)=>n+v,0)})).sort((a,b)=>b.value-a.value), 'Committed routing objects by source');
+      RIRRdCharts.bars(el('source-chart'), sourceRows().map(row => ({label:row.source,value:Object.values(classes(row)).reduce((n,v)=>n+v,0)})).sort((a,b)=>b.value-a.value), 'Committed IRR objects by source');
       if (['overview','system'].includes(selected) || force) await refreshHistory(force);
       el('resource-metrics').replaceChildren();
-      for (const [label, value, detail] of [['Process memory', bytes(latest.process_rss_bytes), 'Resident memory (RSS)'], ['Service memory', bytes(latest.cgroup_memory_bytes), 'Includes charged filesystem cache'], ['CPU, one-core scale', latest.cpu_percent_one_core == null ? 'Not reported' : latest.cpu_percent_one_core.toFixed(2) + '%', 'Sampled, not lifetime CPU'], ['Database file', latest.database_bytes == null ? 'Not reported' : (latest.database_bytes / 1073741824).toFixed(2) + ' GiB', 'Current database generation']]) {
+      el('resource-metrics').classList.remove('stale');
+      const cache = latest.service_file_cache_bytes, allocated = latest.database_allocated_bytes;
+      const rows = [['Application RAM', bytes(latest.process_rss_bytes), 'Current process resident memory (RSS)'],
+        [cache == null ? 'Service total' : 'Service file cache', bytes(cache ?? latest.cgroup_memory_bytes), cache == null ? 'Includes charged cache and kernel memory' : bytes(latest.service_reclaimable_cache_bytes) + ' clean inactive pages; reclaimable estimate'],
+        ['CPU · one core = 100%', latest.cpu_percent_one_core == null ? 'Waiting for a second sample' : latest.cpu_percent_one_core.toFixed(2) + '%', 'Current interval, not a lifetime peak'],
+        [allocated == null ? 'Database file' : 'Database on disk', (allocated ?? latest.database_bytes) == null ? 'Not reported' : ((allocated ?? latest.database_bytes) / 1073741824).toFixed(2) + ' GiB', allocated == null ? 'File length; allocated space unavailable' : (latest.database_bytes / 1073741824).toFixed(2) + ' GiB file length']];
+      for (const [label, value, detail] of rows) {
         const card = document.createElement('article'), name = document.createElement('span'), number = document.createElement('strong'), note = document.createElement('small'); name.textContent = label; number.textContent = value; note.textContent = detail; card.append(name, number, note); el('resource-metrics').append(card);
       }
-      text('resource-note', publicMode() ? 'Only this node’s service is measured here. Other VM software and reclaimable OS cache are separate.' : 'Host resource telemetry is not exposed by this local console. Use your operating-system service tools for host measurements.');
-    } catch (error) { if (publicMode()) text('mode-badge', 'Unavailable'); text('live-observed', 'Status unavailable: ' + error.message + '. Previously displayed figures may be stale.'); }
-    finally { loading = false; }
+      const accounting = el('resource-accounting'); accounting.replaceChildren();
+      for (const [label, value] of [['Service total · includes cache', bytes(latest.cgroup_memory_bytes)],
+        ['Service working set · estimate', bytes(latest.service_working_set_bytes)],
+        ['Service RAM ceiling · not usage', latest.service_memory_limit_bytes == null ? 'Not reported / unlimited' : (latest.service_memory_limit_bytes / 1073741824).toFixed(2) + ' GiB'],
+        ['Historical service peak · includes cache', bytes(latest.cgroup_memory_peak_bytes)]]) {
+        const term = document.createElement('dt'), definition = document.createElement('dd'); term.textContent = label; definition.textContent = value; accounting.append(term, definition);
+      }
+      const observed = latest.observed_at ? new Date(latest.observed_at).toLocaleString() : 'Not reported';
+      text('resource-observed', 'Observed ' + observed + (latest.run_kind === 'maintenance' ? ' · Maintenance-enabled daemon run' : latest.run_kind === 'serving' ? ' · Normal serving run' : ''));
+      text('resource-note', publicMode() ? 'Counters cover this service. RSS and cgroup accounting differ; do not add them together. Other VM software is excluded.' : 'Host resource telemetry is not exposed by this local console. Use your operating-system service tools for host measurements.');
+    } catch (error) { if (publicMode()) { text('mode-badge', 'Unavailable'); el('mode-badge').classList.add('warning'); } text('live-observed', 'Status unavailable: ' + error.message + '. Previously displayed figures may be stale.'); el('resource-metrics').classList.add('stale'); text('resource-observed', 'Live metrics unavailable. Last observation: ' + (latest?.observed_at ? new Date(latest.observed_at).toLocaleString() : 'unknown') + '. Displayed numbers may be stale.'); }
+    finally { loading = false; el('refresh').disabled = false; text('refresh', 'Refresh'); }
   }
   function queryText() {
     const value = el('query-value').value.trim(), kind = el('query-kind').value, family = el('query-family').value;
+    if (kind === 'object' && value.startsWith('!m')) {
+      const match = /^!m([a-z0-9-]+),([^\u0000-\u001f\u007f]+)$/i.exec(value);
+      const classes = Array.from(el('browse-class').options, option => option.value);
+      if (!match || new TextEncoder().encode(value).length > 512 || !classes.includes(match[1].toLowerCase())) throw new Error('Choose a supported object class and key.');
+      return '!m' + match[1].toLowerCase() + ',' + match[2];
+    }
     if (!value || value.length > 256 || !/^[a-z0-9][a-z0-9:._/ -]*$/i.test(value)) throw new Error('Enter an ASN, AS-set, IP address, prefix or object key.');
     if (kind === 'origin') { if (!/^AS\d+$/i.test(value) || Number(value.slice(2)) > 4294967295) throw new Error('Enter an ASN such as ' + sampleASN() + '.'); return (family === '6' ? '!6' : '!g') + value; }
     if (kind === 'recursive' || kind === 'members') return '!i' + value + (kind === 'recursive' ? ',1' : '');
@@ -173,7 +225,17 @@
       button.setAttribute('aria-pressed',String(active));
     });
 
-    el('query-family').disabled = !['origin', 'set'].includes(el('query-kind').value);
+    el('query-family').disabled = !['origin', 'set'].includes(kind);
+    const help = {
+      object: 'Look up an exact RPSL object or prefix. An IP address returns covering routes; the address determines IPv4 or IPv6.',
+      covering: 'Find registered routes that cover this IP address or prefix. The address determines IPv4 or IPv6.',
+      more: 'Find registered routes more specific than this prefix. The prefix determines IPv4 or IPv6.',
+      origin: 'Return ' + (family === '6' ? 'IPv6' : 'IPv4') + ' prefixes registered with this origin ASN.',
+      recursive: 'Expand nested AS-sets and return their ASNs. This returns membership, not prefixes.',
+      members: 'Return direct set members, including nested set names without expanding them.',
+      set: 'Expand the AS-set and return its members’ registered ' + (family === '6' ? 'IPv6' : 'IPv4') + ' prefixes.'
+    };
+    text('query-help', help[kind] + ' Select an explicit source for repeatable results.');
     try { command = "curl --fail '" + location.origin + requestPath(queryText()) + "'"; } catch { command = 'Choose a query above.'; }
     text('query-command', command);
   }
@@ -219,12 +281,16 @@
     const asn = sampleASN(), set = sampleSet(), source = sourceDefault();
     el('command-examples').replaceChildren();
     for (const [title, note, q] of [['IPv4 prefixes by ASN', 'Every matching IPv4 route in the selected sources.', '!g' + asn], ['IPv6 prefixes by ASN', 'The IPv6 counterpart of the origin lookup.', '!6' + asn], ['All ASNs in an AS-set', 'Recursive membership, with nested sets expanded.', '!i' + set + ',1'], ['AS-set to IPv4 prefixes', 'Resolve member ASNs to originated IPv4 routes.', '!a4' + set], ['AS-set to IPv6 prefixes', 'Resolve member ASNs to originated IPv6 routes.', '!a6' + set], ['Direct AS-set members', 'Includes nested set names without recursive expansion.', '!i' + set]]) {
-      const p = new URLSearchParams({q, sources: source}); const value = whois + " '" + q + "'\n\n# HTTP, with explicit source selection\ncurl --fail '" + location.origin + '/v1/whois/?' + p + "'";
+      const p = new URLSearchParams({q, sources: source}); const value = (metadata.node?.public_whois === false ? "" : whois + " '" + q + "'\n\n# HTTP, with explicit source selection\n") + "curl --fail '" + location.origin + '/v1/whois/?' + p + "'";
       el('command-examples').append(commandCard(title, note, value));
     }
     const endpoint = host.includes(':') ? '[' + host + ']:' + port : host + ':' + port;
     text('connect-endpoint', publicMode() ? 'Public WHOIS endpoint: ' + endpoint : localOnly ? 'This instance binds WHOIS locally at ' + endpoint + '. Run these commands on this host, or use an authorised management tunnel.' : 'WHOIS endpoint for this host: ' + endpoint + '. Use an address reachable from your router-management host.');
     el('router-commands').replaceChildren();
+    if (metadata.node?.public_whois === false) {
+      text('connect-endpoint','Development uses HTTPS queries only. TCP WHOIS is private; port 43 on this VM continues to serve production.');
+      el('router-guide').href='https://rirrd.net/docs/routers/';return;
+    }
     const reserved = asn === 'AS64496' ? ' -p' : '';
     for (const [title, switches, name] of [['BIRD · IPv4 prefix set', '-4 -b', 'IRR_IN4'], ['BIRD · IPv6 prefix set', '-6 -b', 'IRR_IN6'], ['FRR · IPv4 prefix list', '-4', 'IRR_IN4'], ['FRR · IPv6 prefix list', '-6', 'IRR_IN6']]) el('router-commands').append(commandCard(title, 'Generate and review a candidate; choose your real peer or AS-set.', 'bgpq4' + reserved + ' ' + switches + ' -h ' + endpoint + ' -S ' + source + ' -l ' + name + ' ' + set));
     if (publicMode()) el('router-guide').href = '/guides/routers/';
@@ -234,7 +300,7 @@
     try {
       const p = new URLSearchParams({source: el('browse-source').value, class: el('browse-class').value, limit: '30'}); if (next && cursor) p.set('after', cursor);
       const data = await json('/v1/irr/objects?' + p); cursor = data.next_cursor; el('browse-next').disabled = !cursor; el('browse-results').replaceChildren();
-      data.keys.forEach(key => { const button = document.createElement('button'); button.type = 'button'; button.textContent = key; button.addEventListener('click', () => { el('query-value').value = ['route', 'route6'].includes(data.object_class) ? key.split('AS')[0] : key; el('query-kind').value = 'object'; el('query-source').value = data.source; updateCommand(); location.hash = 'query'; el('query-form').requestSubmit(); }); el('browse-results').append(button); });
+      data.keys.forEach(key => { const button = document.createElement('button'); button.type = 'button'; button.textContent = key; button.addEventListener('click', () => { el('query-value').value = '!m' + data.object_class + ',' + key; el('query-kind').value = 'object'; el('query-source').value = data.source; updateCommand(); location.hash = 'query'; el('query-form').requestSubmit(); }); el('browse-results').append(button); });
       text('browse-status', data.keys.length + ' keys from ' + data.source + '. Select a key to inspect it. Live data can change between pages.');
     } catch (error) { text('browse-status', error.message); } finally { el('browse-submit').disabled = false; }
   }
@@ -247,13 +313,17 @@
     try {
       metadata = await json('meta.json');
       if (publicMode() && location.hash === '#network') { location.replace('/#nodes'); return; }
-      text('mode-badge', publicMode() ? 'Live · Beta' : 'Private instance'); text('brand-caption', publicMode() ? 'Public node' : 'Your instance');
-      if (publicMode()) { document.querySelector('.brand>span:last-child').firstChild.nodeValue = 'irrd.tools'; document.querySelector('.mobile-brand').textContent = 'irrd.tools'; }
+      text('mode-badge', metadata.node?.environment === 'development' ? 'Development' : publicMode() ? 'Live · Beta' : 'Private instance'); text('brand-caption', publicMode() ? 'Public node' : 'Your instance');
+      if (publicMode()) { const brand=metadata.node?.environment==='development'?'RIRRd dev':'irrd.tools';document.querySelector('.brand>span:last-child').firstChild.nodeValue = brand; document.querySelector('.mobile-brand').textContent = brand; }
       text('node-name', metadata.node?.name || 'RIRRd instance');
       text('node-description', publicMode() ? [metadata.node?.location, metadata.node?.provider ? 'Hosted by ' + metadata.node.provider : '', 'Read-only routing tools'].filter(Boolean).join(' · ') : 'Your independently operated Internet Routing Registry.');
       text('instance-label', publicMode() ? 'Public read-only node' : 'Independent self-hosted instance'); el('community-link').hidden = !publicMode();
       text('mode-notice', publicMode() ? 'Public beta · Read-only queries. Source update times are listed individually.' : 'Self-hosted RIRRd console · Independent of the public community network. No community account or node listing is required.');
-      fillSelect('query-source', metadata.http_sources || metadata.sources, true); commands(); el('query-value').value = sampleASN(); updateCommand(); el('query-submit').disabled = false;
+      if (metadata.node?.environment === 'development') {
+        text('mode-notice','Development · '+metadata.version+' · Separate mirror database. Check source freshness before use. Not a production endpoint.');
+        text('instance-label','Development · separate database');text('brand-caption','Development console');el('community-link').href='https://irrd.tools/';
+      }
+      fillSelect('query-source' , metadata.http_sources || metadata.sources, true); commands(); el('query-value').value = sampleASN(); updateCommand(); el('query-submit').disabled = false;
       const taskName = new URLSearchParams(location.search).get('task');
       if (['origin4','origin6','recursive','set4','set6','object'].includes(taskName)) task(taskName);
       const presetValue = new URLSearchParams(location.search).get('value'); if (presetValue && presetValue.length <= 256) { el('query-value').value = presetValue; updateCommand(); }
@@ -266,7 +336,12 @@
       await refresh();
     } catch (error) { text('mode-notice', 'Unable to connect: ' + error.message); el('mode-notice').className = 'notice error'; }
   }
-  el('history-range').addEventListener('change', renderHistory);
+  document.querySelectorAll('[data-history-range]').forEach(control => control.addEventListener('change', () => {
+    historyWindow = Number(control.value); document.querySelectorAll('[data-history-range]').forEach(other => { other.value = control.value; }); renderHistory();
+  }));
+  document.querySelectorAll('[data-history-scope]').forEach(control => control.addEventListener('change', () => {
+    historyScope = control.value; document.querySelectorAll('[data-history-scope]').forEach(other => { other.value = control.value; }); renderHistory();
+  }));
   window.addEventListener('hashchange', page);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
   document.querySelectorAll('[data-task]').forEach(button => button.addEventListener('click', () => task(button.dataset.task)));

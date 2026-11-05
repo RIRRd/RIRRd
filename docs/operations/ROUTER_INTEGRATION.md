@@ -6,24 +6,24 @@ normally a change to the generator's `-h` argument and its explicit `-S` source
 selection, followed by validation of the candidate router configuration.
 
 This is a development integration guide. The experimental public test service uses
-`rirrd.co.uk:43` for read-only TCP WHOIS and bgpq4, and
-https://rirrd.co.uk/dashboard/ for live queries/status. Check the source list and
+`irrd.tools:43` for read-only TCP WHOIS and bgpq4, and
+https://irrd.tools/dashboard/ for live queries/status. Check the source list and
 snapshot timestamps there first. Full parity, live policy filtering and production
 qualification remain incomplete. Keep last-known-good filters and review candidates.
 
 For a public test using RIPE's real AS3333 records:
 
 ```sh
-whois -h rirrd.co.uk -- '-s RIPE AS3333'
-bgpq4 -4 -b -h rirrd.co.uk:43 -S RIPE -l RIPE_TEST AS3333
-bgpq4 -6 -b -h rirrd.co.uk:43 -S RIPE -l RIPE_TEST6 AS3333
+whois -h irrd.tools -- '-s RIPE AS3333'
+bgpq4 -4 -b -h irrd.tools:43 -S RIPE -l RIPE_TEST AS3333
+bgpq4 -6 -b -h irrd.tools:43 -S RIPE -l RIPE_TEST6 AS3333
 ```
 
 Generate a new BIRD/FRR candidate bundle using the same guarded helper below:
 
 ```sh
 python3 tools/router-integration/generate_filters.py \
-  --endpoint rirrd.co.uk:43 --sources RIPE --object AS3333 \
+  --endpoint irrd.tools:43 --sources RIPE --object AS3333 \
   --name RIPE_TEST --output "$HOME/rirrd-public-candidate-001"
 ```
 

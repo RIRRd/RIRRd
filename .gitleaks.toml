@@ -2,10 +2,53 @@ title = "RIRRd secret scanning — default rules with narrow public-data excepti
 [extend]
 useDefault = true
 
-[allowlist]
+[[allowlists]]
 description = "Public binary SHA-256 metadata and one unsupported public-PGP-ID fixture, never deployment credentials"
 regexTarget = "line"
 regexes = [
   '''^\s*"load_client_sha256":\s*"[a-f0-9]{64}",?\s*$''',
   '''^\s*"(?:auth: )?PGPKEY-[0-9A-Fa-f]{8}"\.to_owned\(\),\s*$'''
+]
+
+[[allowlists]]
+targetRules = ["private-key"]
+description = "Exact Rust armor-detection expressions and synthetic certificate fixtures; no real key material"
+condition = "AND"
+paths = ['''(^|/)src/rpsl\.rs$''']
+regexTarget = "match"
+regexes = [
+  '''^\-\-\-\-\-BEGIN PGP PRIVATE KEY BLOCK\-\-\-\-\- here\.\\nsource: TEST\\n";\n        assert_eq!\(parse_snapshot\(mention\)\.unwrap\(\)\.public_text\(\), mention\);\n        let header_mention = "key\-cert: PGPKEY\-01234567\\nremarks: \-\-\-\-\-BEGIN PGP PRIVATE KEY BLOCK\-\-\-\-\-$''',
+  '''^\-\-\-\-\-BEGIN PGP PRIVATE KEY BLOCK\-\-\-\-\-"\);\n        let private_end = private_marker\n            && self\n                \.text\n                \.lines\(\)\n                \.any\(\|line\| armor_value\(line\) == "\-\-\-\-\-END PGP PRIVATE KEY BLOCK\-\-\-\-\-$''',
+  '''^\-\-\-\-\-BEGIN PGP PRIVATE KEY BLOCK\-\-\-\-\-\\ncertif: synthetic\-private\-payload\\ncertif: \-\-\-\-\-END PGP PRIVATE KEY BLOCK\-\-\-\-\-$''',
+]
+
+[[allowlists]]
+targetRules = ["generic-api-key"]
+description = "Exact Rust armor-detection expressions and synthetic certificate fixtures; no real key material"
+condition = "AND"
+paths = ['''(^|/)src/rpsl\.rs$''']
+regexTarget = "match"
+regexes = [
+  '''^key\-cert: PGPKEY\-01234567\\n$''',
+]
+
+[[allowlists]]
+targetRules = ["generic-api-key"]
+description = "Exact synthetic public certificate ID in the full-class smoke fixture"
+condition = "AND"
+paths = ['''(^|/)tests/smoke\.rs$''']
+regexTarget = "match"
+regexes = [
+  '''^key-cert", "PGPKEY-A1B2C3D4"$''',
+  '''^key-cert: PGPKEY-A1B2C3D4"$''',
+]
+
+[[allowlists]]
+targetRules = ["private-key"]
+description = "Exact borrowed-text armor detection expression; no key material"
+condition = "AND"
+paths = ['''(^|/)src/rpsl\.rs$''']
+regexTarget = "match"
+regexes = [
+  '''^-----BEGIN PGP PRIVATE KEY BLOCK-----"\);\n    let private_end = private_marker\n        && text\n            \.lines\(\)\n            \.any\(\|line\| armor_value\(line\) == "-----END PGP PRIVATE KEY BLOCK-----$''',
 ]

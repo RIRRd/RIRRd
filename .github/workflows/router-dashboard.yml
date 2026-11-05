@@ -1,18 +1,16 @@
 name: Router tools and bundled dashboard
 on:
+  workflow_call:
   workflow_dispatch:
   push:
-    branches: [main, 'release/**', 'feature/**', 'fix/**']
+    branches: [main, dev, 'release/**', 'feature/**', 'fix/**']
   pull_request:
     paths:
       - '.github/workflows/router-dashboard.yml'
       - 'Cargo.*'
       - 'src/**'
       - 'web/**'
-      - 'site/community/**'
-      - 'tools/check_community_ui.py'
       - 'tools/router-integration/**'
-      - 'tools/live-service/**'
       - 'tools/check_dashboard.py'
       - 'examples/routers/**'
 permissions:
@@ -26,10 +24,6 @@ jobs:
         with:
           persist-credentials: false
       - run: cargo build --locked --release
-      - name: Check read-only public gateway isolation and source normalization
-        run: python3 tools/live-service/test_gateway.py
-      - name: Check independent community submission service
-        run: python3 -m unittest discover -s site/community -p 'test_*.py'
       - name: Install real client and isolated router parsers
         run: |
           sudo apt-get update

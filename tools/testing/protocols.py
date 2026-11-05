@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import socket
+import time
 import unittest
 from urllib.parse import urlencode
 
@@ -37,6 +38,76 @@ class Protocols(unittest.TestCase):
         status, raw, _ = self.registry.request('/graphql/', 'POST', json.dumps({'query':query}), {'Content-Type':'application/json'})
         self.assertEqual(status, 200)
         return json.loads(raw)
+
+    @unittest.skipIf(os.name == "nt", "This check exercises POSIX SIGTERM; Windows terminate force-stops a process")
+    def test_shutdown_during_online_repack_keeps_the_original_verifiable(self):
+        registry = Registry()
+        try:
+            registry.config.write_text(registry.config.read_text().replace('max_snapshot_bytes = 262144', 'max_snapshot_bytes = 16777216'))
+            fixture = registry.root / 'large.rpsl'
+            fixture.write_text(''.join('aut-num: AS' + str(65000 + n) + '\ndescr: ' + 'x' * 4096 + '\nsource: EXAMPLE\n\n' for n in range(1000)))
+            registry.cli('import', 'snapshot', '--source', 'EXAMPLE', '--file', str(fixture))
+            baseline = json.loads(registry.cli('database', 'count', '--by-class').stdout)
+            packed = registry.root / 'interrupted.redb'
+            registry.start('--repack-to', str(packed), '--repack-cache-mib', '8')
+            child = registry.child
+            registry.stop()
+            self.assertEqual(child.returncode, 0, 'Maintenance shutdown must close database handles cleanly')
+            self.assertEqual(json.loads(registry.cli('database', 'verify').stdout)['objects'], baseline['objects'])
+            self.assertEqual(json.loads(registry.cli('database', 'count', '--by-class').stdout), baseline)
+            if packed.exists():
+                candidate = registry.root / 'candidate.toml'
+                candidate.write_text(registry.config.read_text().replace('"registry.redb"', '"interrupted.redb"'))
+                self.assertEqual(json.loads(registry.cli('database', 'verify', config=candidate).stdout)['objects'], baseline['objects'])
+        finally:
+            registry.close()
+
+    def test_server_repack_publishes_a_verified_inactive_copy_and_keeps_serving(self):
+        registry = Registry()
+        try:
+            baseline = json.loads(registry.cli('database', 'count', '--by-class').stdout)
+            packed = registry.root / 'online.redb'
+            registry.start('--repack-to', str(packed), '--repack-cache-mib', '8')
+            deadline = time.monotonic() + 15
+            while not packed.exists() and time.monotonic() < deadline:
+                self.assertIn(b'192.0.2.0/24', payload(registry.wire(b'!gAS64496\n')))
+                time.sleep(.01)
+            self.assertTrue(packed.is_file())
+            self.assertIn(b'192.0.2.0/24', payload(registry.wire(b'!gAS64496\n')))
+            self.assertEqual(registry.request('/v1/whois/?q=%216AS64496')[0], 200)
+            candidate = registry.root / 'candidate.toml'
+            candidate.write_text(registry.config.read_text().replace('"registry.redb"', '"online.redb"'))
+            self.assertEqual(json.loads(registry.cli('database', 'count', '--by-class', config=candidate).stdout), baseline)
+            self.assertEqual(json.loads(registry.cli('database', 'verify', config=candidate).stdout)['objects'], baseline['objects'])
+            registry.stop()
+            self.assertEqual(json.loads(registry.cli('database', 'count', '--by-class').stdout), baseline)
+            self.assertNotEqual(registry.cli('server', '--repack-to', str(packed), success=False).returncode, 0)
+            self.assertNotEqual(registry.cli('server', '--repack-cache-mib', '8', success=False).returncode, 0)
+        finally:
+            registry.close()
+
+    def test_offline_repack_retains_class_counts_and_public_queries(self):
+        registry = Registry()
+        try:
+            before = json.loads(registry.cli('database', 'count', '--by-class').stdout)
+            self.assertFalse(before['integrity_verified'])
+            self.assertEqual(sum(sum(classes.values()) for classes in before['class_counts'].values()), before['objects'])
+            plain = json.loads(registry.cli('database', 'count').stdout)
+            self.assertEqual(set(plain), {'objects', 'integrity_verified'})
+            packed = registry.root / 'packed.redb'
+            result = json.loads(registry.cli('database', 'repack', '--file', str(packed)).stdout)
+            self.assertEqual(result['objects'], before['objects'])
+            self.assertEqual(len(result['logical_sha256']), 64)
+            self.assertNotEqual(registry.cli('database', 'repack', '--file', str(packed), success=False).returncode, 0)
+            registry.config.write_text(registry.config.read_text().replace('"registry.redb"', '"packed.redb"'))
+            self.assertEqual(json.loads(registry.cli('database', 'count', '--by-class').stdout), before)
+            registry.start()
+            self.assertIn(b'192.0.2.0/24', payload(registry.wire(b'!gAS64496\n')))
+            status, raw, _ = registry.request('/v1/whois/?q=%216AS64496')
+            self.assertEqual(status, 200)
+            self.assertIn(b'2001:db8:100::/48', raw)
+        finally:
+            registry.close()
 
     def test_tcp_utf8_length_is_bytes(self):
         raw = self.registry.wire(b'!!\n!sSECOND\n!maut-num,AS64496\n!q\n')
@@ -76,6 +147,44 @@ class Protocols(unittest.TestCase):
         data = self.graphql('{ __schema { queryType { fields { name } } } }')
         names = {f['name'] for f in data['data']['__schema']['queryType']['fields']}
         self.assertTrue({'rpslObjects','databaseStatus','asnPrefixes','asSetPrefixes','recursiveSetMembers'} <= names)
+
+    def test_graphql_inverse_filters_share_redaction_and_class_constraints(self):
+        rows = self.graphql('{rpslObjects(mntBy:["DOCS-MNT"],sources:["EXAMPLE"],objectClass:["route6"]){rpslPk objectClass source objectText}}')
+        self.assertNotIn('errors', rows)
+        self.assertTrue(rows['data']['rpslObjects'])
+        for row in rows['data']['rpslObjects']:
+            self.assertEqual(row['objectClass'], 'route6')
+            self.assertEqual(row['source'], 'EXAMPLE')
+            self.assertNotIn('auth:', row['objectText'].lower())
+        denied = self.graphql('{rpslObjects(mntBy:["DOCS-MNT"],sources:["UNCONFIGURED"]){rpslPk}}')
+        self.assertTrue(denied.get('errors'))
+        empty = self.graphql('{rpslObjects(mntBy:["DOCS-MNT"],techC:["ABSENT-TEST"]){rpslPk}}')
+        self.assertEqual(empty['data']['rpslObjects'], [])
+
+    def test_large_mirrored_record_is_retained_but_public_queries_fail_with_limits(self):
+        registry = Registry()
+        try:
+            registry.config.write_text(registry.config.read_text().replace('max_snapshot_bytes = 262144', 'max_snapshot_bytes = 4194304'))
+            fixture = registry.root / 'large-policy.rpsl'
+            fixture.write_text('filter-set: FLTR-LARGE\nfilter: ' + 'AS64496 OR ' * 220000 + 'AS64497\nsource: EXAMPLE\n')
+            registry.cli('import', 'snapshot', '--source', 'EXAMPLE', '--file', str(fixture))
+            registry.start()
+            self.assertEqual(registry.wire(b'!mfilter-set,FLTR-LARGE\n'), b'F Too many results\n')
+            status, raw, _ = registry.request('/v1/whois/?q=%21mfilter-set%2CFLTR-LARGE')
+            self.assertEqual(status, 400)
+            self.assertIn(b'Too many results', raw)
+            status, raw, _ = registry.request('/graphql/', 'POST', json.dumps({'query':'{rpslObjects(rpslPk:["FLTR-LARGE"]){objectText}}'}), {'Content-Type':'application/json'})
+            self.assertEqual(status, 200)
+            self.assertIn('resource limits', json.loads(raw)['errors'][0]['message'])
+            self.assertLess(len(raw), 1024)
+            self.assertIn(b'rust-irrd', registry.wire(b'!v\n'))
+            registry.stop()
+            exported = registry.root / 'export.rpsl'
+            registry.cli('export', 'snapshot', '--source', 'EXAMPLE', '--file', str(exported), '--include-sensitive')
+            self.assertEqual(exported.read_text().rstrip(), fixture.read_text().rstrip())
+            registry.cli('database', 'verify')
+        finally:
+            registry.close()
 
     def test_graphql_unknown_source_is_an_error(self):
         self.assertTrue(self.graphql('{ rpslObjects(sources:["ABSENT"]) { rpslPk } }').get('errors'))
@@ -191,7 +300,7 @@ for name, path, status, contains in [
     ('newline_query','/v1/whois/?q=AS64496%0A%21gAS64497',400,None),
     ('oversized_query','/v1/whois/?q='+('A'*5000),400,None),
     ('unknown_browse_source','/v1/irr/objects?source=ABSENT&class=route',400,None),
-    ('credential_class_browse','/v1/irr/objects?source=EXAMPLE&class=mntner',400,None),
+    ('maintainer_keys_redacted','/v1/irr/objects?source=EXAMPLE&class=mntner',200,'DOCS-MNT'),
     ('oversized_page','/v1/irr/objects?source=EXAMPLE&class=route&limit=101',400,None),
     ('bad_cursor','/v1/irr/objects?source=EXAMPLE&class=route&after=%00',400,None),
     ('console','/ui/',200,'Registry explorer'),

@@ -71,7 +71,29 @@ curl --fail https://irrd.tools/graphql/ -H 'Content-Type: application/json' \
 Check both the HTTP status and GraphQL `errors` field. The
 [API workbench](https://irrd.tools/dashboard/#api) introspects the actual schema.
 
-## Browse AS-sets and routing classes
+## Browse object classes
+
+Development also supports indexed GraphQL object filters. Replace the example
+maintainer with the name you want to query:
+
+```sh
+curl --fail https://dev.rirrd.net/graphql/ -H 'Content-Type: application/json' \
+  --data '{"query":"{ rpslObjects(mntBy:[\"EXAMPLE-MNT\"],sources:[\"RIPE\"],objectClass:[\"as-set\"],recordLimit:8) { rpslPk source objectText } }"}'
+```
+
+Supported inverse filters are `mntBy`, `memberOf`, `mbrsByRef`, `adminC`, `techC`
+and `zoneC`. Values within a filter are alternatives; different filters must
+all match. They can be combined with `rpslPk`, source and class filters. Reads
+use one database snapshot and existing indexes, and return at most eight objects.
+Restrictive intersections that inspect over 4,096 candidates fail as a whole;
+narrow the keys, sources or classes instead of treating that error as no match.
+An explicitly empty filter matches nothing; null means no filter. This bounded
+profile does not provide the complete upstream GraphQL filter schema.
+
+Development object queries check a 2 MiB raw text/identity budget before copying
+records. An oversized query returns a limit error, never a partial routing list.
+Larger mirrored objects remain in storage and can be exported by the operator.
+The key browsing endpoint below can list their identities without loading text.
 
 ```sh
 curl --fail --get --data-urlencode 'source=RIPE' --data-urlencode 'class=as-set' \
@@ -80,9 +102,25 @@ curl --fail --get --data-urlencode 'source=RIPE' --data-urlencode 'class=as-set'
 
 The response contains `keys` and `next_cursor`. Send that cursor as the `after`
 parameter for the next page. Limits are 1–100 keys; pages use an index seek,
-not a full database scan. Changes can occur between pages. Classes: `aut-num`,
-`as-set`, `route-set`, `route`, `route6`, `filter-set`, `peering-set`, `rtr-set`,
-`inet-rtr`.
+not a full database scan. Changes can occur between pages. Current development
+builds accept all 19 [supported object classes](SOURCE_PROFILES.md), including
+contacts, allocation records, maintainers and public key certificates. A node's
+import profile determines which records it actually retains; the older hosted
+production profile contains routing classes only.
+
+On a full-profile development node, browse maintainer keys and inspect a selected
+object using a typed lookup. Authentication fields are redacted:
+
+```sh
+curl --fail --get --data-urlencode 'source=RIPE' --data-urlencode 'class=mntner' \
+  --data-urlencode 'limit=30' https://dev.rirrd.net/v1/irr/objects
+# Replace EXAMPLE-MNT with a returned key.
+curl --fail --get --data-urlencode 'sources=RIPE' \
+  --data-urlencode 'q=!mmntner,EXAMPLE-MNT' https://dev.rirrd.net/v1/whois/
+```
+
+The same `!mCLASS,KEY` lookup selects person/role records by nic-hdl and keeps
+route origins in composite keys. Browse is read-only and source-scoped.
 
 ## Live source and resource telemetry
 

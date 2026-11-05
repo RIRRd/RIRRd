@@ -9,14 +9,28 @@ jobs:
   build-suite:
     if: startsWith(github.ref, 'refs/tags/v') && contains(github.ref, '-beta.')
     uses: ./.github/workflows/ci.yml
-  verify:
+  oracle:
     needs: build-suite
+    uses: ./.github/workflows/upstream-oracle.yml
+  routers:
+    needs: build-suite
+    uses: ./.github/workflows/router-dashboard.yml
+  deployment:
+    needs: build-suite
+    uses: ./.github/workflows/deployment-smoke.yml
+  fuzz:
+    needs: build-suite
+    uses: ./.github/workflows/fuzz.yml
+  verify:
+    needs: [build-suite, oracle, routers, deployment, fuzz]
     if: startsWith(github.ref, 'refs/tags/v') && contains(github.ref, '-beta.')
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
+      - name: Require the reviewed main history
+        run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main
       - run: python3 tools/check_public_tree.py
       - name: Scan the complete reachable source history
         run: |
@@ -51,9 +65,14 @@ jobs:
           find dist -name '*.deb' -o -name '*.rpm' | sort > "$RUNNER_TEMP/archives"
           test "$(wc -l < "$RUNNER_TEMP/archives")" = 4
           mkdir release-assets
-          while IFS= read -r archive; do cp "$archive" release-assets/; done < "$RUNNER_TEMP/archives"
+          while IFS= read -r archive; do
+            name=$(basename "$archive")
+            name=${name//\~/.}
+            cp "$archive" "release-assets/$name"
+          done < "$RUNNER_TEMP/archives"
+          cp tools/install.sh release-assets/install.sh
           cd release-assets
-          sha256sum ./*.deb ./*.rpm > SHA256SUMS
+          sha256sum ./*.deb ./*.rpm ./install.sh > SHA256SUMS
       - name: Publish an explicit prerelease
         env:
           GH_TOKEN: ${{ github.token }}
@@ -62,3 +81,10 @@ jobs:
           gh release create "$TAG" release-assets/* --repo "$GITHUB_REPOSITORY" \
             --verify-tag --prerelease --title "RIRRd $TAG — beta" \
             --notes-file "docs/releases/$TAG.md"
+      - name: Verify published names and server-side SHA-256 digests
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" > "$RUNNER_TEMP/published-assets.json"
+          python3 tools/release/check-assets.py release-assets/SHA256SUMS "$RUNNER_TEMP/published-assets.json"

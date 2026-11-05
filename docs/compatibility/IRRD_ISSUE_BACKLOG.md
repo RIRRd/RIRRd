@@ -1,14 +1,15 @@
 # Upstream IRRd issue backlog
 
-Snapshot taken **3 November 2026** against the public `irrdnet/irrd`
-tracker. The [GitHub issues API][api] returned 40 unique open records
-across pages of 15, 15 and 10. The response marked six records as pull
-requests, leaving **34 open issues**. An empty label cell means GitHub
+Snapshot refreshed **5 November 2026** against the public `irrdnet/irrd`
+tracker. The [GitHub issues API][api] returned 41 unique open records
+in one page requested with `per_page=100`: **34 open issues and seven open
+pull requests**. The issue IDs, titles and labels are unchanged from 3 November;
+the changed pull requests are separated below. An empty label cell means GitHub
 returned no labels. Classification and Rust scope are this project's
 triage. For published IRRd 4.5.4 compatibility, use the separate
 [feature matrix](IRRD_FEATURE_MATRIX.md).
 
-To refresh, request `state=open&sort=created&direction=asc&per_page=15`
+To refresh, request `state=open&sort=created&direction=asc&per_page=100`
 and follow GitHub's `Link: rel="next"` pagination. Verify unique issue
 numbers, retain GitHub's titles and labels, split out records with the
 `pull_request` field, and record the observation date. Compare releases,
@@ -18,11 +19,33 @@ requires evidence before treating it as part of a tagged release.
 
 ## Linux VM refresh
 
-On 3 November 2026 the official latest-release API still returned v4.5.4;
-the open-issues API returned 34 issues and six PRs, all already mapped below.
-The public security-advisories API returned the same four GHSA identifiers.
-No newer-release behavior has been silently added to the pinned baseline.
-See [Linux VM evidence](LINUX_VM_CHECKPOINT.md) for new validation and open gates.
+On 5 November 2026 the official [latest-release API][latest] still returned
+[v4.5.4][release], published on 19 October 2026. The [public advisory API][advisories]
+still returned the four GHSA identifiers below, with no newer publication.
+The 4.5.4 compatibility oracle remains pinned to
+`8e8080dab744a348b7d0e6efcb53f403301dd075`.
+
+The following changes merged into upstream `main` on 3–4 November. They are
+**not evidence of a new release**. Open backport PRs [#1148][p1148] and
+[#1149][p1149] target 4.5.5 and 4.4.9 respectively. Keep newer behavior and
+its regression criteria separate from the pinned oracle.
+
+| Changed upstream work | Observed state | RIRRd disposition and evidence |
+| --- | --- | --- |
+| [#1135][p1135] NRTMv4 session rollover | Merged 3 November; previously listed as open. | [Local trust-state tests](../../src/nrtm4_state.rs) accept a signed new-session snapshot with lower versions and reused reference numbers, while rejecting retired sessions and same-session history rewrites. Live upstream rollover, forced reload and scheduling remain open. |
+| [#1133][p1133] integration readiness polling | Merged 3 November; previously listed as open. | Keep bounded readiness polling in [protocol tests](../../tests/smoke.rs) and [oracle CI](../../.github/workflows/upstream-oracle.yml). Upstream RPKI-specific tests do not add RPKI to this project's scope. |
+| [#1141][p1141] documentation consistency | Merged 3 November. | Consult documentation at the pinned tag for baseline behavior; current upstream documentation can describe later behavior. |
+| [#1142][p1142] configuration validation and query errors | Merged 3 November. | Track validation of event-stream ACL names, NRTMv4 server settings and client-visible GraphQL errors. RIRRd has bounded query errors and [configuration checks](../../src/config.rs); event-stream and NRTMv4 server parity remain open. |
+| [#1143][p1143] NRTMv4 publication ordering | Merged 3 November. | NRTMv4 publication remains open. Its future crash tests must prevent a notification preceding committed status and prevent deletion of delta files still referenced by the active notification. |
+| [#1144][p1144] scope-filter object identity | Merged 3 November. | Live scope suppression remains open. Update by full source/class/key identity, not a shared RPSL key; test identical keys in different sources/classes before enabling transitions. Existing authoritative scope admission is not equivalent to live suppression. |
+| [#1145][p1145] reset WHOIS object-class filters per query | Merged 3 November. | The current WHOIS parser does not implement `-T` or retain a session object-class filter. Add persistent-session reset coverage when implementing that flag; existing source/exclusion state has separate [TCP tests](../../src/whois.rs). |
+| [#1146][p1146] source-aware maintainer pre-approval | Merged 3 November; upstream describes this as hardening. | [Authorization](../../src/authoritative.rs) restricts each batch and lookup to one source and requires operator provisioning of new maintainers. [CLI/HTTP tests](../../tests/smoke.rs) and the [authoritative oracle corpus](../../tools/oracle/compare_policy_set_auth.py) exercise source denial. Any future maintainer pre-approval cache must include source. |
+| [#1147][p1147] login, MFA and TOTP CSRF protection | Merged 4 November; upstream describes this as hardening. | Account/session endpoints are not implemented in RIRRd. Require CSRF protection on authentication and enrollment flows when account workflows are added; the read-only console is not evidence for that gate. |
+
+RPKI validation, Routinator replacement and RTR are deliberately outside the
+current IRR-only project scope. Their upstream records remain in this inventory
+for traceability, rather than as planned RIRRd features. See
+[development status](../STATUS.md) for implementation evidence and open gates.
 
 ## Implementation priorities
 
@@ -34,7 +57,7 @@ See [Linux VM evidence](LINUX_VM_CHECKPOINT.md) for new validation and open gate
 | [#936][i936] folded AS-set membership | Single-line and folded comma-separated members produce the same tokens. Missing commas are rejected with a diagnostic on either form. Check continuation with spaces, tabs and `+`, inline comments, hierarchical names and weak references. | Open with RPSL attribute validation. |
 | [#608][i608] per-client WHOIS connection cap | Make the per-peer limit configurable and combine it with the global cap. Canonicalize IPv4-mapped IPv6 peers, apply exemptions only to the per-peer cap, and release slots on disconnect, timeout and shutdown. Check that one saturated peer leaves capacity for another. | Partial. The [listener and admission tests](../../src/whois.rs) cover configurable caps, mapped addresses, slot release and capacity for a second peer. TCP session coverage includes an IPv4-mapped IPv6 exemption. Exempt clients still consume global capacity. Sustained abuse tests remain open. |
 | [#877][i877] NRTMv3 serial discontinuity and [#1135][p1135] NRTMv4 session rollover | Replay duplicate and out-of-order entries, missing ranges and snapshot reseed while preserving last coherent objects, indexes and serials. For v4, retain rollback protection within a session and verify a legitimate signed new session through a new snapshot. Exercise forced reload and reject a replay of retired history. | Open with mirroring. The v3 thread includes several reported symptoms and does not establish a single root cause. |
-| [#962][i962] ROA refresh with changing route inventory | Concurrent route add/replace/delete cannot abort a refresh due to stale identities or publish mixed ROA state. Inject a race in a controlled test and verify coherent retry, route status and journal transitions. | Open with RPKI. |
+| [#962][i962] ROA refresh with changing route inventory | Concurrent route add/replace/delete cannot abort a refresh due to stale identities or publish mixed ROA state. Inject a race in a controlled test and verify coherent retry, route status and journal transitions. | Deliberately outside the current IRR-only scope; use an external validator. |
 | [#1140][i1140] security report for 4.5.4 | Follow public advisory or release evidence and translate disclosed impact into a regression test. Keep public compatibility work separate from nonpublic vulnerability details. | Public report exists and upstream acknowledged it. No affected surfaces, reproduction or independent severity confirmation were public at capture. |
 
 The four public advisories below describe already released fixes. Reproduce
@@ -57,7 +80,7 @@ the security properties in Rust even where the implementation differs.
 | [#917][i917] and [#1111][p1111] source-scoped GraphQL root | With the same set name in two sources, resolve the requested root source while applying the original allowed source order to descendants. Check invalid sources, alias behavior, mixed lists and preservation of existing GraphQL argument/coercion behavior. | Implemented as the optional GraphQL rootSource argument, with tests for source selection and descendant precedence. Source aliases remain open. |
 | [#634][i634] limit journal query | Return the newest N matching authorized entries deterministically, bound N and preserve source and object filtering. | Open with GraphQL journals. |
 | [#734][i734] reserved ASN validation | Define authoritative handling for AS0, AS23456, AS65535 and AS4294967295, with private-use ASNs kept valid where allowed. Test route, route6, aut-num and hierarchical AS-set keys. Keep mirror policy and AS0 ROA handling distinct. | Implemented for authoritative route and route6 origins, aut-num identities and creation of hierarchical AS-sets and route-sets. Private-use ASNs remain accepted. [RFC 7607](https://www.rfc-editor.org/rfc/rfc7607) · [RFC 6793](https://www.rfc-editor.org/rfc/rfc6793) · [RFC 7300](https://www.rfc-editor.org/rfc/rfc7300) |
-| [#796][i796] incremental ROA updates | Apply a contiguous Routinator JSON delta atomically and compare against a full refresh. Cover resets, old serials, changed sessions, malformed records and validator outages. | Open with RPKI. |
+| [#796][i796] incremental ROA updates | Apply a contiguous Routinator JSON delta atomically and compare against a full refresh. Cover resets, old serials, changed sessions, malformed records and validator outages. | Deliberately outside the current IRR-only scope; use an external validator. |
 
 ## Open issue inventory
 
@@ -79,7 +102,7 @@ open issues with a duplicate label.
 | [#380][i380] | Config file examples: irr.net mirror list | later | Documentation feature | Supply verified, policy-cleared mirror examples and prerequisites. |
 | [#389][i389] | Incorrect SQL database dependency in whois server tests | later | Upstream test cleanup | Keep protocol tests independent of PostgreSQL and retain embedded-storage integration tests. |
 | [#412][i412] | Clean up updates parser tests | later, refactoring | Upstream test cleanup | Test validation rules independently and retain end-to-end multi-object coverage. |
-| [#532][i532] | Refactor common components of scope filter / RPKI code | later, refactoring | Upstream refactor | Share suppression transitions and tests across scope filtering and RPKI. |
+| [#532][i532] | Refactor common components of scope filter / RPKI code | later, refactoring | Upstream refactor | Track scope-filter transitions separately. RPKI-specific refactoring is outside the current IRR-only scope. |
 | [#561][i561] | IRRD incorrectly permits bare IP address for address-prefix | enhancement | Validation bug | Require explicit prefix lengths. Related to #190, with separate inputs. |
 | [#570][i570] | Consider logging statistics for worker processes | enhancement | Observability feature | Measure connections, queries and load with bounded metric dimensions. |
 | [#579][i579] | Separate scheduler and process manager | refactoring | Upstream refactor | Separate scheduling from execution and task lifecycle in the Rust worker design. |
@@ -89,7 +112,7 @@ open issues with a duplicate label.
 | [#690][i690] | Explore performance improvements in sync HTTP endpoints |  | Performance investigation | Benchmark Rust HTTP execution and streaming under equivalent work. The reported sync-wrapper behavior is Python-specific. |
 | [#708][i708] | Various code improvements | later | Upstream maintenance | Cover analogous Rust formatting, lint and dependency checks. Python tooling changes are upstream-specific. |
 | [#734][i734] | Refuse invalid origin ASNs in route objects |  | Validation policy proposal | Specify reserved-ASN validation and migration behavior. Separate delegated-ASN existence checks. |
-| [#796][i796] | RPKI json delta import support |  | RPKI feature | Support validated Routinator delta replay with full-refresh fallback. |
+| [#796][i796] | RPKI json delta import support |  | RPKI feature | Outside the current IRR-only scope; Routinator/ROA ingestion belongs to an external validator. |
 | [#877][i877] | Possible issue in serial sequences on current RADB NRTM |  | Mirroring bug investigation | Test separate reported serial failure scenarios. The public thread leaves the root cause open. |
 | [#886][i886] | provide external method to trigger exports |  | Operator feature | Extend local export to an on-demand scheduled operation for a named source. |
 | [#907][i907] | UI WYSYIWIG |  | UI feature | Retrieve, edit, preview and save objects with authorization and optimistic concurrency. |
@@ -97,7 +120,7 @@ open issues with a duplicate label.
 | [#936][i936] | as-set member validation behaves differently in single line and multiple line values |  | Validation bug | Validate comma-separated membership equivalently across folded and unfolded input. |
 | [#952][i952] | Ability to remove/clean IRRd for objects with specific source | enhancement | Operator feature | Implement explicit transactional source purge and verify query and metadata state. |
 | [#953][i953] | Ability to provide different sources for specific client or group of clients |  | Feature proposal | Define per-client defaults versus enforced visibility. Check aliases and recursive lookups for policy bypass. |
-| [#962][i962] | KeyError exception during ROA import |  | RPKI bug report | Cover overlapping route mutation and ROA refresh with coherent publication. |
+| [#962][i962] | KeyError exception during ROA import |  | RPKI bug report | Outside the current IRR-only scope; retain this upstream ROA-refresh report for traceability. |
 | [#995][i995] | Support for IP-resolvable docker service names in access lists |  | Deployment feature | Define DNS-backed ACLs, trusted resolution, refresh timing and fail-closed behavior. |
 | [#1107][i1107] | Migrate to sqlalchemy 2 |  | Upstream dependency maintenance | Track the SQLAlchemy upgrade for the oracle. Rust has no SQLAlchemy dependency. |
 | [#1117][i1117] | Usage with coredis >= 6.0, or switching away from coredis? |  | Upstream dependency question | Track coredis and limits compatibility for the oracle. Rust has no coredis dependency. |
@@ -113,12 +136,13 @@ separate from the v4.5.4 tag.
 | [#723][p723] | [WIP] Ref #697 - Add profiling for whois and HTTP |  | Draft profiling tooling. Compare outcomes with the Rust benchmark harness. |
 | [#967][p967] | irr_rpsl_submit: error message should be an f string |  | Report the offending argument safely in the Rust submission CLI when it exists. |
 | [#1111][p1111] | Add support for registry scoped RPSL pk |  | Proposal related to #917. Treat schema changes as proposed until released. |
-| [#1133][p1133] | Poll for mirroring and RPKI updates in the integration test |  | Use bounded polling for integration readiness and completion instead of fixed delays. |
-| [#1135][p1135] | Fix NRTMv4 client refusing updates after a session change |  | Add authenticated NRTMv4 session rollover and forced-reload regression coverage. |
 | [#1139][p1139] | Bump twisted from 26.4.0 to 26.10.0rc1 | dependencies, python | Upstream Python pre-release dependency update. Track for the oracle only. |
+| [#1148][p1148] | Backports for 4.5.5 |  | Open proposal for stable/4.5.x; no published 4.5.5 release observed. Do not move the compatibility pin. |
+| [#1149][p1149] | Backports for 4.4.9 |  | Open proposal for stable/4.4.x; track separately from the 4.5.4 oracle. |
+| [#1150][p1150] | Bump joserfc from 1.7.4 to 1.7.6 | dependencies, python | Python dependency update; RIRRd does not use joserfc. Its [NRTMv4 verifier](../../src/nrtm4.rs) already bounds the compact JWS length before splitting and bounds decoded fields. JWE/JWT account semantics are not implemented. |
 
 [tracker]: https://github.com/irrdnet/irrd/issues
-[api]: https://api.github.com/repos/irrdnet/irrd/issues?state=open&sort=created&direction=asc&per_page=15
+[api]: https://api.github.com/repos/irrdnet/irrd/issues?state=open&sort=created&direction=asc&per_page=100
 [api-doc]: https://docs.github.com/en/rest/using-the-rest-api/using-pagination-in-the-rest-api
 [i7]: https://github.com/irrdnet/irrd/issues/7
 [i104]: https://github.com/irrdnet/irrd/issues/104
@@ -160,3 +184,17 @@ separate from the v4.5.4 tag.
 [p1135]: https://github.com/irrdnet/irrd/pull/1135
 [p1139]: https://github.com/irrdnet/irrd/pull/1139
 [i1140]: https://github.com/irrdnet/irrd/issues/1140
+
+[latest]: https://api.github.com/repos/irrdnet/irrd/releases/latest
+[release]: https://github.com/irrdnet/irrd/releases/tag/v4.5.4
+[advisories]: https://api.github.com/repos/irrdnet/irrd/security-advisories
+[p1141]: https://github.com/irrdnet/irrd/pull/1141
+[p1142]: https://github.com/irrdnet/irrd/pull/1142
+[p1143]: https://github.com/irrdnet/irrd/pull/1143
+[p1144]: https://github.com/irrdnet/irrd/pull/1144
+[p1145]: https://github.com/irrdnet/irrd/pull/1145
+[p1146]: https://github.com/irrdnet/irrd/pull/1146
+[p1147]: https://github.com/irrdnet/irrd/pull/1147
+[p1148]: https://github.com/irrdnet/irrd/pull/1148
+[p1149]: https://github.com/irrdnet/irrd/pull/1149
+[p1150]: https://github.com/irrdnet/irrd/pull/1150
