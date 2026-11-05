@@ -39,6 +39,9 @@ pub struct Config {
     /// Public reverse-proxy admission; the native listener remains loopback-only.
     #[serde(default)]
     pub http_public_queries: bool,
+    /// Finite admission budgets for requests forwarded by the trusted proxy.
+    #[serde(default)]
+    pub http_public_policy: PublicHttpPolicy,
     #[serde(default)]
     pub http_authoritative_updates: bool,
     pub max_connections: usize,
@@ -51,6 +54,55 @@ pub struct Config {
     pub nrtm3_sync: HashMap<String, MirrorConfig>,
     pub io_timeout_seconds: u64,
     pub max_snapshot_bytes: u64,
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PublicHttpPolicy {
+    pub rate_per_second: u32,
+    pub burst: u32,
+    pub max_active: usize,
+    pub max_response_bytes: usize,
+    pub max_response_buffer_bytes: usize,
+}
+
+impl Default for PublicHttpPolicy {
+    fn default() -> Self {
+        Self {
+            rate_per_second: 2,
+            burst: 20,
+            max_active: 16,
+            // Large prefix lists allow 16 MiB; leave room for JSON framing.
+            max_response_bytes: 20 * 1024 * 1024,
+            max_response_buffer_bytes: 64 * 1024 * 1024,
+        }
+    }
+}
+
+impl PublicHttpPolicy {
+    fn validate(self) -> Result<()> {
+        ensure!(
+            (1..=10_000).contains(&self.rate_per_second),
+            "http_public_policy.rate_per_second must be between 1 and 10000"
+        );
+        ensure!(
+            (1..=10_000).contains(&self.burst),
+            "http_public_policy.burst must be between 1 and 10000"
+        );
+        ensure!(
+            (1..=16).contains(&self.max_active),
+            "http_public_policy.max_active must be between 1 and 16"
+        );
+        ensure!(
+            (1024..=32 * 1024 * 1024).contains(&self.max_response_bytes),
+            "http_public_policy.max_response_bytes must be between 1024 and 33554432"
+        );
+        ensure!(
+            (self.max_response_bytes..=512 * 1024 * 1024).contains(&self.max_response_buffer_bytes),
+            "http_public_policy.max_response_buffer_bytes must cover max_response_bytes and be at most 536870912"
+        );
+        Ok(())
+    }
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -108,6 +160,7 @@ impl Config {
         let contents = fs::read_to_string(path)
             .with_context(|| format!("reading config {}", path.display()))?;
         let mut config: Self = toml::from_str(&contents).context("invalid configuration")?;
+        config.http_public_policy.validate()?;
         if let Some(sources) = &config.http_whois_sources {
             ensure!(
                 !sources.is_empty() && sources.iter().all(|s| config.sources.contains(s)),

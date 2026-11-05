@@ -847,6 +847,7 @@ async fn serve(
                 timeout,
                 whois_sources: config.http_whois_sources.clone(),
                 public_queries: config.http_public_queries,
+                public_policy: config.http_public_policy,
                 dashboard: dashboard::Metadata {
                     mode: "live",
                     version: env!("CARGO_PKG_VERSION"),

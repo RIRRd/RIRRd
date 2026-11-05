@@ -225,13 +225,18 @@ async fn http_query(State(state): State<HttpWhois>, request: Request) -> Respons
     let Ok(permit) = state.slots.try_acquire_owned() else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
+    let control = crate::storage::QueryControl::new(state.deadline);
+    let _cancel = control.cancel_on_drop();
     let worker = with_query_view(state.store, move |store| {
         let _permit = permit;
-        execute_http(query.trim(), store, &client)
+        control.run(|| execute_http(query.trim(), store, &client))
     });
     match timeout(state.deadline, worker).await {
         Ok(Ok(Ok((StatusCode::NO_CONTENT, _)))) => StatusCode::NO_CONTENT.into_response(),
         Ok(Ok(Ok((status, body)))) => (status, body).into_response(),
+        Ok(Ok(Err(error))) if error.is::<crate::storage::QueryDeadlineExceeded>() => {
+            StatusCode::GATEWAY_TIMEOUT.into_response()
+        }
         Ok(Ok(Err(error))) => {
             tracing::error!(%error, "HTTP WHOIS lookup failed");
             (
@@ -294,7 +299,11 @@ fn unframe_http(response: String, irrd: bool) -> Result<(StatusCode, String)> {
     if irrd {
         if let Some(error) = response.strip_prefix("F ") {
             return Ok((
-                StatusCode::BAD_REQUEST,
+                if error == "Query timed out\n" {
+                    StatusCode::GATEWAY_TIMEOUT
+                } else {
+                    StatusCode::BAD_REQUEST
+                },
                 error.trim_end_matches('\n').to_owned(),
             ));
         }
@@ -318,7 +327,11 @@ fn unframe_http(response: String, irrd: bool) -> Result<(StatusCode, String)> {
     }
     if let Some(error) = response.strip_prefix("%% ERROR: ") {
         return Ok((
-            StatusCode::BAD_REQUEST,
+            if error.trim() == "Query timed out" {
+                StatusCode::GATEWAY_TIMEOUT
+            } else {
+                StatusCode::BAD_REQUEST
+            },
             error.trim_end_matches('\n').to_owned(),
         ));
     }
@@ -642,8 +655,10 @@ async fn lookup(
     let nrtm = matches!(&query, Query::Nrtm3 { .. });
     let discovery = matches!(&query, Query::Nrtm3Sources);
     let irrd = query.uses_irrd_framing();
+    let control = crate::storage::QueryControl::new(deadline);
+    let _cancel = control.cancel_on_drop();
     let lookup = with_query_view(store, move |store| {
-        let result = execute(query, store, &sources, &excluded, &client);
+        let result = control.run(|| execute(query, store, &sources, &excluded, &client));
         (result, permit)
     });
     let response = match timeout(deadline, lookup).await {
@@ -675,9 +690,16 @@ fn execute(
 ) -> Result<String> {
     let irrd = query.uses_irrd_framing();
     match execute_inner(query, store, sources, excluded, client) {
+        Err(error) if error.is::<crate::storage::QueryDeadlineExceeded>() => Ok(if irrd {
+            "F Query timed out\n"
+        } else {
+            "%% ERROR: Query timed out\n\n\n"
+        }
+        .to_owned()),
         Err(error)
             if error.is::<crate::sets::LimitExceeded>()
-                || error.is::<crate::storage::QueryMaterializationLimit>() =>
+                || error.is::<crate::storage::QueryMaterializationLimit>()
+                || error.is::<crate::storage::QueryScanLimit>() =>
         {
             Ok(if irrd {
                 "F Too many results\n"
@@ -709,11 +731,18 @@ fn execute_inner(
             Ok(frame_irrd(&normalized_public_text(&object)))
         }
         Query::Origin { class, origin } => {
-            let prefixes = store.origin_prefixes(class, &origin, sources, 4097)?;
+            let prefixes =
+                store.origin_prefixes(class, &origin, sources, crate::sets::MAX_RESULTS + 1)?;
             if prefixes.is_empty() {
                 return Ok("D\n".to_owned());
             }
-            if prefixes.len() > 4096 {
+            if prefixes.len() > crate::sets::MAX_RESULTS
+                || prefixes
+                    .iter()
+                    .map(|prefix| prefix.len() + 1)
+                    .sum::<usize>()
+                    > crate::sets::MAX_RESULT_BYTES
+            {
                 return Ok("F Too many results\n".to_owned());
             }
             Ok(frame_irrd(&prefixes.join(" ")))
@@ -1198,7 +1227,7 @@ mod tests {
         let config_file = directory.path().join("irrd.toml");
         std::fs::write(
             &config_file,
-            "database = \"registry.redb\"\nsources = [\"TEST\"]\nlisten = \"127.0.0.1:0\"\nmax_connections = 4\nio_timeout_seconds = 2\nmax_snapshot_bytes = 131072\n",
+            "database = \"registry.redb\"\nsources = [\"TEST\"]\nlisten = \"127.0.0.1:0\"\nmax_connections = 4\nio_timeout_seconds = 30\nmax_snapshot_bytes = 8388608\n",
         )?;
         let config = Config::load(&config_file)?;
         let store = Arc::new(Store::open(&config.database)?);
@@ -1206,18 +1235,21 @@ mod tests {
         tokio::task::spawn_blocking(move || -> Result<()> {
             writer.replace_source(
                 "TEST",
-                [("AS-LIMIT", 4096), ("AS-OVER", 4097)]
-                    .into_iter()
-                    .map(|(name, size)| {
-                        let members = (0..size)
-                            .map(|n| format!("AS{}", 64512 + n))
-                            .collect::<Vec<_>>()
-                            .join(",");
-                        crate::rpsl::parse(&format!(
-                            "as-set: {name}\nmembers: {members}\nsource: TEST\n"
-                        ))
-                        .map_err(anyhow::Error::msg)
-                    }),
+                [
+                    ("AS-LIMIT", crate::sets::MAX_RESULTS),
+                    ("AS-OVER", crate::sets::MAX_RESULTS + 1),
+                ]
+                .into_iter()
+                .map(|(name, size)| {
+                    let members = (0..size)
+                        .map(|n| format!("AS{}", 64512 + n))
+                        .collect::<Vec<_>>()
+                        .join(",");
+                    crate::rpsl::parse_snapshot(&format!(
+                        "as-set: {name}\nmembers: {members}\nsource: TEST\n"
+                    ))
+                    .map_err(anyhow::Error::msg)
+                }),
             )?;
             Ok(())
         })
@@ -1233,7 +1265,7 @@ mod tests {
         let http_server = tokio::spawn(async move {
             axum::serve(
                 http,
-                http_router(store, vec!["TEST".into()], Duration::from_secs(2)),
+                http_router(store, vec!["TEST".into()], Duration::from_secs(30)),
             )
             .with_graceful_shutdown(async {
                 let _ = stopped.await;
@@ -1244,24 +1276,33 @@ mod tests {
             ("!iAS-LIMIT", "%21iAS-LIMIT", false),
             ("!iAS-OVER", "%21iAS-OVER", true),
             ("!iAS-OVER,1", "%21iAS-OVER%2C1", true),
+            ("!iAS-LIMIT", "%21iAS-LIMIT", false),
         ] {
             let mut socket = TcpStream::connect(tcp_address).await?;
             socket.write_all(format!("{query}\n").as_bytes()).await?;
             let mut response = String::new();
-            timeout(Duration::from_secs(3), socket.read_to_string(&mut response)).await??;
+            timeout(
+                Duration::from_secs(40),
+                socket.read_to_string(&mut response),
+            )
+            .await??;
             if exceeds {
                 assert_eq!(response, "F Too many results\n", "{query}");
             } else {
                 let (status, values) = unframe_http(response, true)?;
                 assert_eq!(status, StatusCode::OK);
-                assert_eq!(values.split_whitespace().count(), 4096);
+                assert_eq!(values.split_whitespace().count(), crate::sets::MAX_RESULTS);
             }
             let mut socket = TcpStream::connect(http_address).await?;
             socket.write_all(format!(
                 "GET /v1/whois/?q={encoded} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
             ).as_bytes()).await?;
             let mut response = String::new();
-            timeout(Duration::from_secs(3), socket.read_to_string(&mut response)).await??;
+            timeout(
+                Duration::from_secs(40),
+                socket.read_to_string(&mut response),
+            )
+            .await??;
             let (headers, body) = response
                 .split_once("\r\n\r\n")
                 .context("invalid HTTP response")?;
@@ -1270,7 +1311,7 @@ mod tests {
                 assert_eq!(body, "Too many results");
             } else {
                 assert!(headers.starts_with("HTTP/1.1 200 "), "{headers}");
-                assert_eq!(body.split_whitespace().count(), 4096);
+                assert_eq!(body.split_whitespace().count(), crate::sets::MAX_RESULTS);
             }
         }
         tcp_stop.send(true)?;

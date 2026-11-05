@@ -2,14 +2,18 @@
 
 use std::{
     borrow::Cow,
+    cell::RefCell,
     cmp::Ordering,
     collections::HashSet,
     io::Write,
     net::{Ipv4Addr, Ipv6Addr},
     ops::RangeInclusive,
     path::Path,
-    sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering as AtomicOrdering},
+    },
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, Result, ensure};
@@ -82,6 +86,70 @@ const AUTH_AUDIT: TableDefinition<JournalKey, AuditValue> =
 const PROTECTED_NAMES: TableDefinition<Identity<'static>, ()> =
     TableDefinition::new("authoritative_protected_names_v1");
 const NRTM3_RETAINED_OPERATIONS: u64 = 4096;
+
+#[derive(Clone)]
+pub(crate) struct QueryControl {
+    deadline: Instant,
+    cancelled: Arc<AtomicBool>,
+}
+
+thread_local! {
+    static QUERY_CONTROL: RefCell<Option<QueryControl>> = const { RefCell::new(None) };
+}
+
+pub(crate) struct CancelQuery(QueryControl);
+impl Drop for CancelQuery {
+    fn drop(&mut self) {
+        self.0.cancelled.store(true, AtomicOrdering::Relaxed);
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct QueryDeadlineExceeded;
+impl std::fmt::Display for QueryDeadlineExceeded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("query deadline exceeded or request cancelled")
+    }
+}
+impl std::error::Error for QueryDeadlineExceeded {}
+
+impl QueryControl {
+    pub(crate) fn new(timeout: Duration) -> Self {
+        Self {
+            deadline: Instant::now() + timeout,
+            cancelled: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    pub(crate) fn cancel_on_drop(&self) -> CancelQuery {
+        CancelQuery(self.clone())
+    }
+
+    pub(crate) fn run<T>(&self, work: impl FnOnce() -> Result<T>) -> Result<T> {
+        struct Restore(Option<QueryControl>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                QUERY_CONTROL.with(|active| active.replace(self.0.take()));
+            }
+        }
+        let _restore = Restore(QUERY_CONTROL.with(|active| active.replace(Some(self.clone()))));
+        check_query_deadline()?;
+        work()
+    }
+}
+
+pub(crate) fn check_query_deadline() -> Result<()> {
+    QUERY_CONTROL.with(|active| {
+        if let Some(control) = active.borrow().as_ref() {
+            ensure!(
+                !control.cancelled.load(AtomicOrdering::Relaxed)
+                    && Instant::now() < control.deadline,
+                QueryDeadlineExceeded
+            );
+        }
+        Ok(())
+    })
+}
 
 enum SourceReplacement {
     Mirror,
@@ -1361,6 +1429,103 @@ impl Store {
         Ok(None)
     }
 
+    /// Extract a set's lookup fields directly from borrowed storage text. Large
+    /// remarks and other RPSL fields never become owned query result strings.
+    pub(crate) fn first_set_attributes(
+        &self,
+        class: &str,
+        key: &str,
+        sources: &[String],
+        remaining_bytes: &mut usize,
+    ) -> Result<Option<(String, crate::rpsl::lookup::LookupAttributes)>> {
+        ensure!(matches!(class, "as-set" | "route-set"), "invalid set class");
+        let read = self.db.begin_read()?;
+        let records = read.open_table(OBJECTS)?;
+        for source in sources {
+            check_query_deadline()?;
+            if let Some(text) = records.get((source.as_str(), class, key))? {
+                *remaining_bytes = remaining_bytes
+                    .checked_sub(text.value().len())
+                    .ok_or(QueryMaterializationLimit)?;
+                bound_set_lookup_values(text.value())?;
+                let attributes =
+                    lookup_attributes(class, text.value()).map_err(anyhow::Error::msg)?;
+                return Ok(Some((source.clone(), attributes)));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Resolve member-of and mnt-by from indexes. Descriptions, credentials and
+    /// unrelated attributes of member objects are neither read nor cloned.
+    pub(crate) fn visit_indirect_set_members(
+        &self,
+        source: &str,
+        key: &str,
+        as_set: bool,
+        maintainers: &[String],
+        remaining_lookups: &mut usize,
+        mut visit: impl FnMut(crate::rpsl::lookup::SetMember) -> Result<()>,
+    ) -> Result<()> {
+        use crate::rpsl::lookup::SetMember;
+        if maintainers.is_empty() {
+            return Ok(());
+        }
+        let any_maintainer = maintainers.iter().any(|mnt| mnt == "ANY");
+        let read = self.db.begin_read()?;
+        let inverse = read.open_table(INVERSE)?;
+        let classes: &[&str] = if as_set {
+            &["aut-num"]
+        } else {
+            &["route", "route6"]
+        };
+        for &class in classes {
+            let next_class = format!("{class}\0");
+            let lower = (source, "member-of", key, class, "");
+            let upper = (source, "member-of", key, next_class.as_str(), "");
+            for entry in inverse.range(lower..upper)? {
+                check_query_deadline()?;
+                *remaining_lookups = remaining_lookups.checked_sub(1).ok_or(QueryScanLimit)?;
+                let (identity, _) = entry?;
+                let (_, _, _, _, member_key) = identity.value();
+                let mut allowed = any_maintainer;
+                if !allowed {
+                    for maintainer in maintainers {
+                        check_query_deadline()?;
+                        *remaining_lookups =
+                            remaining_lookups.checked_sub(1).ok_or(QueryScanLimit)?;
+                        if inverse
+                            .get((source, "mnt-by", maintainer.as_str(), class, member_key))?
+                            .is_some()
+                        {
+                            allowed = true;
+                            break;
+                        }
+                    }
+                }
+                if !allowed {
+                    continue;
+                }
+                let member = if as_set {
+                    SetMember::Asn(
+                        member_key
+                            .strip_prefix("AS")
+                            .context("invalid indexed ASN")?
+                            .parse()?,
+                        None,
+                    )
+                } else {
+                    let (prefix, _) = member_key
+                        .rsplit_once("AS")
+                        .context("invalid indexed route")?;
+                    SetMember::Prefix(prefix.to_ascii_lowercase(), None)
+                };
+                visit(member)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Find routes at one canonical prefix in source priority order.
     /// IPv6 prefixes use uppercase hexadecimal, as in stored route identities.
     pub fn routes_at_prefix(
@@ -1501,15 +1666,21 @@ impl Store {
             return origins
                 .get((source.as_str(), class, origin))?
                 .take(limit)
-                .map(|prefix| Ok(prefix?.value().to_ascii_lowercase()))
+                .map(|prefix| {
+                    check_query_deadline()?;
+                    Ok(prefix?.value().to_ascii_lowercase())
+                })
                 .collect();
         }
         let mut seen = HashSet::new();
         let mut prefixes = Vec::new();
+        let mut remaining_scans = 2_000_000usize;
         for source in sources {
             // Each source has unique prefixes, so at most the current number of
             // results can repeat. Inspecting `limit` entries suffices to fill the cap.
             for prefix in origins.get((source.as_str(), class, origin))?.take(limit) {
+                check_query_deadline()?;
+                remaining_scans = remaining_scans.checked_sub(1).ok_or(QueryScanLimit)?;
                 let prefix = prefix?;
                 if !seen.contains(prefix.value()) && seen.insert(prefix.value().to_owned()) {
                     prefixes.push(prefix.value().to_ascii_lowercase());
@@ -1520,6 +1691,27 @@ impl Store {
             }
         }
         Ok(prefixes)
+    }
+
+    /// Visit indexed prefixes without materializing route objects or a second
+    /// per-origin result collection. The caller charges every visited row and
+    /// can stop the complete expansion by returning its budget error.
+    pub(crate) fn visit_origin_prefixes(
+        &self,
+        class: &str,
+        origin: &str,
+        sources: &[String],
+        mut visit: impl FnMut(&str) -> Result<()>,
+    ) -> Result<()> {
+        let read = self.db.begin_read()?;
+        let origins = read.open_multimap_table(ORIGINS)?;
+        for source in sources {
+            for prefix in origins.get((source.as_str(), class, origin))? {
+                check_query_deadline()?;
+                visit(prefix?.value())?;
+            }
+        }
+        Ok(())
     }
 
     /// Write raw RPSL from one committed source snapshot, including any sensitive attributes.
@@ -2497,6 +2689,35 @@ fn route_index_parts<'a>(class: &str, key: &'a str) -> Result<Option<(&'a str, &
 /// Stored snapshot records can be much larger than the public response budget.
 pub(crate) const MAX_QUERY_OBJECT_BYTES: usize = 2 * 1024 * 1024;
 
+/// Bound typed lookup extraction before allocating member vectors. Large
+/// irrelevant remarks are cheap, but millions of repeated members are not.
+fn bound_set_lookup_values(text: &str) -> Result<()> {
+    let mut remaining = crate::sets::MAX_RESULTS;
+    let mut lookup_field = false;
+    for line in text.lines() {
+        check_query_deadline()?;
+        if line.starts_with(['#', '%']) {
+            continue;
+        }
+        let value = if line.starts_with([' ', '\t', '+']) {
+            &line[1..]
+        } else if let Some((name, value)) = line.split_once(':') {
+            lookup_field = crate::rpsl::lookup::is_inverse_field(name);
+            value
+        } else {
+            lookup_field = false;
+            continue;
+        };
+        if lookup_field && !value.trim().is_empty() {
+            let count = value.bytes().filter(|&byte| byte == b',').count() + 1;
+            remaining = remaining
+                .checked_sub(count)
+                .ok_or(QueryMaterializationLimit)?;
+        }
+    }
+    Ok(())
+}
+
 #[derive(Debug)]
 pub(crate) struct QueryMaterializationLimit;
 
@@ -2575,6 +2796,63 @@ mod tests {
 
     const CRASH_TEST_DATABASE: &str = "RUST_IRRD_CRASH_TEST_DATABASE";
     const CRASH_TEST_READY: &[u8] = b"replacement in progress\n";
+
+    #[test]
+    fn set_lookup_preflight_bounds_duplicate_tokens_before_extraction() -> Result<()> {
+        let repeated = "AS1,".repeat(crate::sets::MAX_RESULTS);
+        let error = bound_set_lookup_values(&format!("as-set: AS-BIG\nmembers: {repeated}AS1\n"))
+            .unwrap_err();
+        assert!(error.is::<QueryMaterializationLimit>());
+        bound_set_lookup_values(&format!(
+            "as-set: AS-SMALL\nmembers: AS1\nremarks: {}\n",
+            "x".repeat(MAX_QUERY_OBJECT_BYTES + 1)
+        ))?;
+        Ok(())
+    }
+
+    #[test]
+    fn cancelled_index_scan_stops_before_next_row_and_restores_worker_context() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let store = Store::open(&directory.path().join("cancel.redb"))?;
+        store.replace_source(
+            "TEST",
+            ["192.0.2.0/24", "198.51.100.0/24"]
+                .into_iter()
+                .map(|prefix| {
+                    crate::rpsl::parse(&format!("route: {prefix}\norigin: AS64496\nsource: TEST\n"))
+                        .map_err(anyhow::Error::msg)
+                }),
+        )?;
+        let control = QueryControl::new(Duration::from_secs(10));
+        let cancel = control.cancel_on_drop();
+        let (ready, started) = std::sync::mpsc::channel();
+        let (resume, resumed) = std::sync::mpsc::channel();
+        let worker = thread::spawn(move || {
+            let mut visited = 0;
+            let result = control.run(|| {
+                store.visit_origin_prefixes("route", "AS64496", &["TEST".into()], |_| {
+                    visited += 1;
+                    if visited == 1 {
+                        ready.send(())?;
+                        resumed.recv()?;
+                    }
+                    Ok(())
+                })
+            });
+            (result, visited, check_query_deadline().is_ok())
+        });
+        started.recv_timeout(Duration::from_secs(2))?;
+        drop(cancel);
+        resume.send(())?;
+        let (result, visited, restored) = worker.join().expect("query worker panicked");
+        assert!(result.unwrap_err().is::<QueryDeadlineExceeded>());
+        assert_eq!(visited, 1);
+        assert!(restored);
+        let expired = QueryControl::new(Duration::ZERO)
+            .run(|| -> Result<()> { panic!("expired work must never start") });
+        assert!(expired.unwrap_err().is::<QueryDeadlineExceeded>());
+        Ok(())
+    }
 
     struct CrashChild(Child);
 

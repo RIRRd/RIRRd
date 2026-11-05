@@ -34,7 +34,7 @@ use zeroize::Zeroize;
 
 use crate::{
     rpsl::Object,
-    sets::{self, recursive_members_at_root, routes_for_as_set},
+    sets::{self, recursive_members_at_root, routes_for_as_set_with_budget},
     storage::{InverseFilter, Store},
 };
 
@@ -43,10 +43,10 @@ const MAX_HTTP_REQUESTS: usize = 8;
 const MAX_LOOKUPS: usize = 8;
 const MAX_RECORDS: usize = 8;
 const MAX_SET_NAMES: usize = 8;
-const MAX_PREFIXES: usize = 4096;
+const MAX_PREFIXES: usize = sets::MAX_RESULTS;
 const MAX_SET_ROOTS: usize = 32;
-const MAX_SET_MEMBERS: usize = 4096;
-const MAX_SET_MEMBER_BYTES: usize = 256 * 1024;
+const MAX_SET_MEMBERS: usize = sets::MAX_RESULTS;
+const MAX_SET_MEMBER_BYTES: usize = sets::MAX_RESULT_BYTES;
 const MAX_FILTER_VALUES: usize = 32;
 const MAX_FILTER_BYTES: usize = 512;
 const MAX_COMPLEXITY: usize = 24;
@@ -204,22 +204,28 @@ impl Lookup {
     async fn run<T: Send + 'static>(
         &self,
         view: Option<QueryView>,
+        control: Option<crate::storage::QueryControl>,
         work: impl FnOnce(&Store) -> Result<T> + Send + 'static,
     ) -> async_graphql::Result<T> {
         let permit = Arc::clone(&self.slots)
             .try_acquire_owned()
             .map_err(|_| Error::new("Too many concurrent lookups."))?;
         let store = Arc::clone(&self.store);
+        let control =
+            control.unwrap_or_else(|| crate::storage::QueryControl::new(Duration::from_secs(30)));
         spawn_blocking(move || {
             let _permit = permit;
             // Keep the coherent view even if the HTTP deadline cancels its caller.
             let _view = view;
-            work(&store)
+            control.run(|| work(&store))
         })
         .await
         .context("GraphQL lookup worker failed")
         .and_then(|result| result)
         .map_err(|error| {
+            if error.is::<crate::storage::QueryDeadlineExceeded>() {
+                return Error::new("Query timed out.");
+            }
             if error.is::<crate::storage::QueryScanLimit>() {
                 return Error::new("Query exceeds the indexed scan limit; narrow the keys, sources or object classes.");
             }
@@ -458,14 +464,18 @@ async fn objects(ctx: ResolverContext<'_>) -> async_graphql::Result<Option<Field
     }
 
     let records = lookup
-        .run(ctx.data_opt::<QueryView>().cloned(), move |store| {
-            let classes = classes.unwrap_or_default();
-            if filters.is_empty() {
-                store.exact_objects(&keys.unwrap_or_default(), &sources, &classes, limit)
-            } else {
-                store.filtered_objects(keys.as_deref(), &sources, &classes, &filters, limit)
-            }
-        })
+        .run(
+            ctx.data_opt::<QueryView>().cloned(),
+            ctx.data_opt::<crate::storage::QueryControl>().cloned(),
+            move |store| {
+                let classes = classes.unwrap_or_default();
+                if filters.is_empty() {
+                    store.exact_objects(&keys.unwrap_or_default(), &sources, &classes, limit)
+                } else {
+                    store.filtered_objects(keys.as_deref(), &sources, &classes, &filters, limit)
+                }
+            },
+        )
         .await?;
 
     let objects = records
@@ -541,6 +551,12 @@ fn prefix_values(
     )))
 }
 
+fn result_budget(ctx: &ResolverContext<'_>) -> Arc<sets::ResultBudget> {
+    ctx.data_opt::<Arc<sets::ResultBudget>>()
+        .cloned()
+        .unwrap_or_default()
+}
+
 async fn asn_prefixes(ctx: ResolverContext<'_>) -> async_graphql::Result<Option<FieldValue<'_>>> {
     let lookup = ctx.data::<Lookup>()?;
     let asns = ctx.args.try_get("asns")?.list()?;
@@ -553,31 +569,46 @@ async fn asn_prefixes(ctx: ResolverContext<'_>) -> async_graphql::Result<Option<
         .collect::<async_graphql::Result<Vec<_>>>()?;
     let sources = source_filter(&ctx, &lookup.sources)?;
     let family = ip_family(&ctx)?;
+    let budget = result_budget(&ctx);
     let rows = lookup
-        .run(ctx.data_opt::<QueryView>().cloned(), move |store| {
-            let mut remaining = MAX_PREFIXES;
-            let mut rows = Vec::with_capacity(asns.len());
-            for asn in asns {
-                let origin = format!("AS{asn}");
-                let mut prefixes = Vec::new();
-                for (class, ipv6) in [("route", false), ("route6", true)] {
-                    if family.is_none_or(|requested| requested == ipv6) {
-                        let routes =
-                            store.origin_prefixes(class, &origin, &sources, remaining + 1)?;
-                        if routes.len() > remaining {
-                            return Ok(None);
+        .run(
+            ctx.data_opt::<QueryView>().cloned(),
+            ctx.data_opt::<crate::storage::QueryControl>().cloned(),
+            move |store| {
+                let mut remaining = MAX_PREFIXES;
+                let mut remaining_scans = 2_000_000usize;
+                let mut rows = Vec::with_capacity(asns.len());
+                for asn in asns {
+                    let origin = format!("AS{asn}");
+                    let mut prefixes = Vec::new();
+                    let mut seen = HashSet::new();
+                    for (class, ipv6) in [("route", false), ("route6", true)] {
+                        if family.is_none_or(|requested| requested == ipv6) {
+                            store.visit_origin_prefixes(class, &origin, &sources, |prefix| {
+                                remaining_scans = remaining_scans
+                                    .checked_sub(1)
+                                    .ok_or(crate::storage::QueryScanLimit)?;
+                                let prefix = prefix.to_ascii_lowercase();
+                                if !seen.contains(&prefix) {
+                                    budget.charge(prefix.len() + 1)?;
+                                    remaining = remaining
+                                        .checked_sub(1)
+                                        .ok_or(crate::storage::QueryMaterializationLimit)?;
+                                    seen.insert(prefix.clone());
+                                    prefixes.push(prefix);
+                                }
+                                Ok(())
+                            })?;
                         }
-                        remaining -= routes.len();
-                        prefixes.extend(routes);
                     }
+                    rows.push(Prefixes {
+                        key: Value::from(asn),
+                        prefixes,
+                    });
                 }
-                rows.push(Prefixes {
-                    key: Value::from(asn),
-                    prefixes,
-                });
-            }
-            Ok(Some(rows))
-        })
+                Ok(Some(rows))
+            },
+        )
         .await?;
     prefix_values(rows)
 }
@@ -613,23 +644,35 @@ async fn as_set_prefixes(
     let sources = source_filter(&ctx, &lookup.sources)?;
     let family = ip_family(&ctx)?;
     let excluded = list_filter(&ctx, "excludeSets")?.unwrap_or_default();
+    let budget = result_budget(&ctx);
     let rows = lookup
-        .run(ctx.data_opt::<QueryView>().cloned(), move |store| {
-            let mut remaining = MAX_PREFIXES;
-            let mut rows = Vec::with_capacity(names.len());
-            for name in names {
-                let prefixes = routes_for_as_set(store, &sources, &name, family, &excluded)?;
-                if prefixes.len() > remaining {
-                    return Ok(None);
+        .run(
+            ctx.data_opt::<QueryView>().cloned(),
+            ctx.data_opt::<crate::storage::QueryControl>().cloned(),
+            move |store| {
+                let mut remaining = MAX_PREFIXES;
+                let mut rows = Vec::with_capacity(names.len());
+                for name in names {
+                    let prefixes = routes_for_as_set_with_budget(
+                        store,
+                        &sources,
+                        &name,
+                        family,
+                        &excluded,
+                        Some(budget.clone()),
+                    )?;
+                    if prefixes.len() > remaining {
+                        return Ok(None);
+                    }
+                    remaining -= prefixes.len();
+                    rows.push(Prefixes {
+                        key: Value::from(name),
+                        prefixes,
+                    });
                 }
-                remaining -= prefixes.len();
-                rows.push(Prefixes {
-                    key: Value::from(name),
-                    prefixes,
-                });
-            }
-            Ok(Some(rows))
-        })
+                Ok(Some(rows))
+            },
+        )
         .await?;
     prefix_values(rows)
 }
@@ -709,41 +752,52 @@ async fn recursive_set_members(
         .ok_or_else(|| Error::new(format!("depth must be between 0 and {}.", sets::MAX_DEPTH)))?;
     let depth = (depth != 0).then_some(depth);
     let excluded = list_filter(&ctx, "excludeSets")?.unwrap_or_default();
+    let budget = result_budget(&ctx);
     let rows = lookup
-        .run(ctx.data_opt::<QueryView>().cloned(), move |store| {
-            let root_sources = root_source
-                .as_ref()
-                .map_or(sources.as_slice(), std::slice::from_ref);
-            let mut rows = Vec::new();
-            let mut members_remaining = MAX_SET_MEMBERS;
-            let mut bytes_remaining = MAX_SET_MEMBER_BYTES;
-            for name in names {
-                for source in root_sources {
-                    let members = recursive_members_at_root(
-                        store, &sources, source, &name, depth, &excluded,
-                    )?;
-                    if members.is_none() && root_source.is_none() {
-                        continue;
+        .run(
+            ctx.data_opt::<QueryView>().cloned(),
+            ctx.data_opt::<crate::storage::QueryControl>().cloned(),
+            move |store| {
+                let root_sources = root_source
+                    .as_ref()
+                    .map_or(sources.as_slice(), std::slice::from_ref);
+                let mut rows = Vec::new();
+                let mut members_remaining = MAX_SET_MEMBERS;
+                let mut bytes_remaining = MAX_SET_MEMBER_BYTES;
+                for name in names {
+                    for source in root_sources {
+                        let members = recursive_members_at_root(
+                            store,
+                            &sources,
+                            source,
+                            &name,
+                            depth,
+                            &excluded,
+                            Some(budget.clone()),
+                        )?;
+                        if members.is_none() && root_source.is_none() {
+                            continue;
+                        }
+                        let members = members.unwrap_or_default();
+                        let bytes = members.iter().map(|member| member.len() + 1).sum::<usize>();
+                        if rows.len() == MAX_SET_ROOTS
+                            || members.len() > members_remaining
+                            || bytes > bytes_remaining
+                        {
+                            return Ok(None);
+                        }
+                        members_remaining -= members.len();
+                        bytes_remaining -= bytes;
+                        rows.push(SetMembers {
+                            rpsl_pk: name.clone(),
+                            root_source: source.clone(),
+                            members,
+                        });
                     }
-                    let members = members.unwrap_or_default();
-                    let bytes = members.iter().map(|member| member.len() + 1).sum::<usize>();
-                    if rows.len() == MAX_SET_ROOTS
-                        || members.len() > members_remaining
-                        || bytes > bytes_remaining
-                    {
-                        return Ok(None);
-                    }
-                    members_remaining -= members.len();
-                    bytes_remaining -= bytes;
-                    rows.push(SetMembers {
-                        rpsl_pk: name.clone(),
-                        root_source: source.clone(),
-                        members,
-                    });
                 }
-            }
-            Ok(Some(rows))
-        })
+                Ok(Some(rows))
+            },
+        )
         .await?
         .ok_or_else(|| Error::new("Set expansion result exceeds GraphQL limits."))?;
     Ok(Some(FieldValue::list(
@@ -869,28 +923,32 @@ async fn database_status(
     sources.retain(|source| seen.insert(source.clone()));
     let authoritative_sources = Arc::clone(&lookup.authoritative_sources);
     let rows = lookup
-        .run(ctx.data_opt::<QueryView>().cloned(), move |store| {
-            sources
-                .into_iter()
-                .map(|source| {
-                    let authoritative = authoritative_sources.contains(&source);
-                    let serial = store.source_serial(&source)?;
-                    let local_serial = store.source_local_serial(&source)?;
-                    let journal = store.nrtm3_journal_bounds(&source)?;
-                    let nrtm4 = store
-                        .nrtm4_state(&source)?
-                        .map(|state| (state.session_id, state.version));
-                    Ok(DatabaseStatus {
-                        source,
-                        authoritative,
-                        serial,
-                        local_serial,
-                        journal,
-                        nrtm4,
+        .run(
+            ctx.data_opt::<QueryView>().cloned(),
+            ctx.data_opt::<crate::storage::QueryControl>().cloned(),
+            move |store| {
+                sources
+                    .into_iter()
+                    .map(|source| {
+                        let authoritative = authoritative_sources.contains(&source);
+                        let serial = store.source_serial(&source)?;
+                        let local_serial = store.source_local_serial(&source)?;
+                        let journal = store.nrtm3_journal_bounds(&source)?;
+                        let nrtm4 = store
+                            .nrtm4_state(&source)?
+                            .map(|state| (state.session_id, state.version));
+                        Ok(DatabaseStatus {
+                            source,
+                            authoritative,
+                            serial,
+                            local_serial,
+                            journal,
+                            nrtm4,
+                        })
                     })
-                })
-                .collect::<Result<Vec<_>>>()
-        })
+                    .collect::<Result<Vec<_>>>()
+            },
+        )
         .await?;
     Ok(Some(FieldValue::list(
         rows.into_iter().map(FieldValue::owned_any),
@@ -1063,10 +1121,17 @@ async fn bound_host(State(listen_ip): State<IpAddr>, req: HttpRequest, next: Nex
     next.run(req).await
 }
 
-async fn bound_http(State(limits): State<HttpLimits>, req: HttpRequest, next: Next) -> Response {
+async fn bound_http(
+    State(limits): State<HttpLimits>,
+    mut req: HttpRequest,
+    next: Next,
+) -> Response {
     let Ok(_permit) = limits.slots.try_acquire() else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
+    let control = crate::storage::QueryControl::new(limits.timeout);
+    let _cancel = control.cancel_on_drop();
+    req.extensions_mut().insert(control);
     match tokio::time::timeout(limits.timeout, next.run(req)).await {
         Ok(response) => response,
         Err(_) => StatusCode::GATEWAY_TIMEOUT.into_response(),
@@ -1076,10 +1141,20 @@ async fn bound_http(State(limits): State<HttpLimits>, req: HttpRequest, next: Ne
 async fn execute(
     State(schema): State<Schema>,
     Extension(store): Extension<Arc<Store>>,
+    Extension(control): Extension<crate::storage::QueryControl>,
     Json(request): Json<Request>,
 ) -> impl IntoResponse {
     let view = Arc::new(store.query_gate().clone().read_owned().await);
-    Json(schema.execute(request.data(view)).await)
+    Json(
+        schema
+            .execute(
+                request
+                    .data(view)
+                    .data(Arc::new(sets::ResultBudget::default()))
+                    .data(control),
+            )
+            .await,
+    )
 }
 
 pub struct HttpServiceConfig {
@@ -1090,6 +1165,7 @@ pub struct HttpServiceConfig {
     pub dashboard: crate::dashboard::Metadata,
     pub whois_sources: Option<Vec<String>>,
     pub public_queries: bool,
+    pub public_policy: crate::config::PublicHttpPolicy,
 }
 
 pub async fn serve(
@@ -1106,6 +1182,7 @@ pub async fn serve(
         dashboard,
         whois_sources,
         public_queries,
+        public_policy,
     } = config;
     let schema = make_schema(store.clone(), sources.clone(), authoritative_sources)?;
     let mut app = Router::new()
@@ -1136,7 +1213,7 @@ pub async fn serve(
     app = app.merge(crate::dashboard::router(dashboard, store.clone())?);
     app = app.merge(crate::irr_api::router(store.clone(), sources, timeout));
     if public_queries {
-        app = crate::public_http::PublicHttp::new(timeout).wrap(app);
+        app = crate::public_http::PublicHttp::new(timeout, public_policy).wrap(app);
     }
     app = app.layer(middleware::from_fn_with_state(
         listener.local_addr()?.ip(),
@@ -1171,6 +1248,7 @@ mod tests {
             timeout: Duration::from_secs(2),
             whois_sources: None,
             public_queries: false,
+            public_policy: Default::default(),
             dashboard: crate::dashboard::Metadata {
                 mode: "live",
                 version: env!("CARGO_PKG_VERSION"),
@@ -1198,7 +1276,7 @@ mod tests {
         let (finish, wait) = std::sync::mpsc::channel();
         let task = tokio::spawn(async move {
             lookup
-                .run(Some(view), move |_| {
+                .run(Some(view), None, move |_| {
                     let _ = started.send(());
                     wait.recv_timeout(Duration::from_secs(5))?;
                     Ok(())
@@ -1638,6 +1716,34 @@ mod tests {
                 "filtered":[{"rpslPk":"AS-EXAMPLE","prefixes":[]}]
             })
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn prefix_aliases_share_one_output_budget_and_recover() -> Result<()> {
+        let (_directory, schema) = test_schema()?;
+        let query = r#"{
+            first: asnPrefixes(asns:[64496]) { prefixes }
+            second: asSetPrefixes(setNames:["AS-EXAMPLE"]) { prefixes }
+        }"#;
+        let response = schema
+            .execute(Request::new(query).data(Arc::new(sets::ResultBudget::new(4, 1024))))
+            .await;
+        assert!(
+            response
+                .errors
+                .iter()
+                .any(|error| error.message.contains("resource limits")),
+            "{:?}",
+            response.errors
+        );
+        let recovery = schema
+            .execute(
+                Request::new(r#"{ asnPrefixes(asns:[64496]) { prefixes } }"#)
+                    .data(Arc::new(sets::ResultBudget::new(3, 1024))),
+            )
+            .await;
+        assert!(recovery.errors.is_empty(), "{:?}", recovery.errors);
         Ok(())
     }
 

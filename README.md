@@ -149,9 +149,18 @@ printf '!mroute,192.0.2.0/24AS64496\n' | nc 127.0.0.1 4343
 
 Bare, route and inverse lookups return at most 16 objects. Object lookups also have
 a 2 MiB budget for raw text and identities, checked before copying database values.
-A single-AS origin lookup returns at most 4,096 distinct prefixes. Set expansion
-has separate traversal limits. Requests exceeding a limit fail as a whole with
-a query-limit error. Large mirrored records remain stored and exportable.
+A single-AS origin lookup or set expansion returns at most 262,144 distinct
+prefixes or members, with a 16 MiB unframed result budget. Recursive expansion
+also bounds depth (64), distinct sets (65,536), origins (131,072), visited values
+(2,000,000), indexed indirect-membership work (2,000,000), and set text/work bytes
+(64 MiB each). Prefixes and indirect membership use indexes without copying full
+route or aut-num records; set attributes are extracted from borrowed storage text.
+Lookup extraction checks at most 262,144 tokens per set before allocating member
+vectors. GraphQL aliases share one request-wide prefix/member result budget.
+Long scans check their request deadline and cancellation while processing indexes.
+These are per-query ceilings, not a total process-memory guarantee. Requests
+exceeding a limit fail as a whole with a query-limit error. Large mirrored records
+remain stored and exportable.
 The mirror parser validates record structure and identity. Indexing retains valid
 optional lookup values and reports malformed values that it skipped.
 

@@ -22,11 +22,17 @@ reverse proxy. Disable HTTP authoritative updates. The proxy must overwrite
 `/v1/whois/`, GET `/v1/irr/objects` and POST `/graphql/`. Never expose `/ui/*`.
 Local monitoring without the forwarded header is excluded from the public budget.
 
-The policy remains two requests/second with a 20-request burst, grouped by IPv4
+The default policy remains two requests/second with a 20-request burst, grouped by IPv4
 address or IPv6 /64. Client state is bounded to 4,096 entries; admitted HTTP work
 is bounded to 16 requests plus the existing per-interface query budgets. Full
 admission returns 503 with Retry-After; per-client exhaustion returns 429. It
-never queues rejected clients behind query work. Responses are bounded to 2 MiB.
+never queues rejected clients behind query work. Prefix responses are bounded to 20 MiB (16 MiB query output plus JSON framing),
+with a separate 64 MiB aggregate buffer budget. Admission and byte permits remain
+attached to prepared response bytes until transport consumes or drops them; slow
+consumers cannot accumulate unbounded completed replies. Raw object query bounds
+remain separate. A response exceeding the configured cap returns 422 without a
+partial answer. [Finite operator tuning and load checks](operations/HTTP_LOAD_TESTING.md)
+separate public fairness from isolated capacity testing.
 
 `/ui/http-stats.json` exposes aggregate counters on loopback only. Successful
 handler p95 excludes rejected requests and does not include TLS/network delivery.
