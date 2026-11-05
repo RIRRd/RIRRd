@@ -1359,6 +1359,7 @@ dependencies = [
  "clap",
  "flate2",
  "futures",
+ "http-body",
  "http-body-util",
  "md-5",
  "p256",

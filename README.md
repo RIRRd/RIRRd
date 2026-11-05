@@ -149,20 +149,25 @@ printf '!mroute,192.0.2.0/24AS64496\n' | nc 127.0.0.1 4343
 
 Bare, route and inverse lookups return at most 16 objects. Object lookups also have
 a 2 MiB budget for raw text and identities, checked before copying database values.
-A single-AS origin lookup or set expansion returns at most 262,144 distinct
-prefixes or members, with a 16 MiB unframed result budget. Recursive expansion
-also bounds depth (64), distinct sets (65,536), origins (131,072), visited values
-(2,000,000), indexed indirect-membership work (2,000,000), and set text/work bytes
-(64 MiB each). Prefixes and indirect membership use indexes without copying full
-route or aut-num records; set attributes are extracted from borrowed storage text.
-Lookup extraction checks at most 262,144 tokens per set before allocating member
-vectors. GraphQL aliases share one request-wide prefix/member result budget.
-Long scans check their request deadline and cancellation while processing indexes.
-These are per-query ceilings, not a total process-memory guarantee. Requests
-exceeding a limit fail as a whole with a query-limit error. Large mirrored records
-remain stored and exportable.
-The mirror parser validates record structure and identity. Indexing retains valid
-optional lookup values and reports malformed values that it skipped.
+Single-AS origin lookups and set-member queries allow up to 262,144 values and
+16 MiB of unframed output. AS-set **prefix** expansion has a separate finite
+budget of 4,000,000 distinct prefixes and 96 MiB, so large transit sets can return
+complete routing lists. GraphQL aliases share these request-wide budgets.
+Set traversal is bounded to 65,536 sets, 131,072 origins and depth 64; route
+expansion scans at most 16,000,000 values and 256 MiB of indexed work. Member
+expansion retains the smaller 2,000,000-value /64 MiB work budget. Indexed
+indirect membership and set text remain bounded independently to 2,000,000 rows
+and 64 MiB. Lookup extraction checks at most 262,144 tokens per set before
+allocating member vectors. Prefixes and indirect members use indexes without
+copying full RPSL records.
+
+Only one query above 262,144 collected prefixes may run at a time, across TCP,
+HTTP and GraphQL. Its lease remains held through serialization and response
+consumption, including slow readers; competing large queries receive an explicit
+capacity error and no partial answer. Smaller queries retain their ordinary
+concurrency. Absolute deadlines and cancellation stop index/traversal work.
+Operators serving very large transit sets may need a longer finite
+`io_timeout_seconds`; this does not change the result or memory limits.
 
 | Configuration | Purpose |
 |---|---|

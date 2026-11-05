@@ -20,6 +20,34 @@ The dashboard and its exported telemetry need a separate, reviewed proxy route.
 A private native-listener test verifies this contract; it does not validate a
 particular deployment's proxy, DNS or TLS configuration.
 
+## Response delivery lifetime
+
+The native HTTP compute deadline covers preparing the response. A private client
+that stops reading can retain its response bytes and the single heavy-query lease
+until transport drops the connection. Keep this listener restricted to trusted
+local processes. Public reverse proxies need a finite frontend response-write
+deadline in addition to their upstream header/read deadlines. For Caddy, merge
+this into the existing global options block, choosing a value above the native
+compute deadline plus the intended transfer budget:
+
+```caddyfile
+{
+    servers {
+        timeouts {
+            write 120s
+        }
+    }
+}
+```
+
+For a 60-second native compute deadline, a 75-second upstream header/read wait
+leaves time to forward a native deadline error; a separate 120-second frontend
+write deadline bounds stalled delivery. These are finite example values, not
+required values for every host. Private HTTP callers must use finite transfer
+timeouts and close cancelled connections. Response leases deliberately remain
+held while their bytes are still owned; releasing them early would break memory
+bounds. Discard interrupted downloads and retry the complete query.
+
 ## Finite configurable policy
 
 Omitting the policy table preserves two requests/second and a 20-request burst,
@@ -34,8 +62,8 @@ http_public_queries = true
 rate_per_second = 2
 burst = 20
 max_active = 16
-max_response_bytes = 20971520
-max_response_buffer_bytes = 67108864
+max_response_bytes = 134217728
+max_response_buffer_bytes = 268435456
 ```
 
 | Setting | Default | Accepted range / effect |
@@ -43,17 +71,21 @@ max_response_buffer_bytes = 67108864
 | `rate_per_second` | 2 | 1–10,000 accepted token attempts/second per client budget |
 | `burst` | 20 | 1–10,000 tokens; admitted attempts consume a token even if capacity is busy |
 | `max_active` | 16 | 1–16 public requests, including responses still retained by transport |
-| `max_response_bytes` | 20 MiB | 1 KiB–32 MiB per complete serialized response |
-| `max_response_buffer_bytes` | 64 MiB | At least `max_response_bytes`, at most 512 MiB across retained completed responses |
+| `max_response_bytes` | 128 MiB | 1 KiB–128 MiB per complete serialized response |
+| `max_response_buffer_bytes` | 256 MiB | At least `max_response_bytes`, at most 512 MiB across retained completed responses |
 
 The old 2 MiB public-response cap could reject larger valid prefix results.
-The new 20 MiB default accommodates the bounded 16 MiB prefix-query output and
-JSON framing. Raw object materialization still has separate limits. The response
+The new 128 MiB default accommodates bounded 96 MiB transit-prefix output and
+JSON framing. One shared heavy-query lease covers expansions beyond 262,144
+prefixes through calculation, serialization and final response-byte consumption,
+including private HTTP and TCP. Competing heavy work receives an explicit busy
+result; ordinary lookups retain their existing concurrency. Raw object materialization still has separate limits. The response
 budget is not a total process-memory cap: in-progress query workers, temporary
 serialization, database cache, sockets and runtime state consume additional RAM.
 The eight-query handler/lookup ceilings are unchanged, and cancellation does not
 stop a blocking worker already running. Its internal permit remains held until
-the worker completes. Do not size RAM using only the response-buffer figure.
+the worker completes. Do not size RAM using only the response-buffer figure. Operators may configure smaller response budgets,
+with explicit 422 replies for queries that exceed them.
 
 For a protected development capacity test, an explicit example is
 `rate_per_second = 1000`, `burst = 2000`, with the same other bounds. This raises

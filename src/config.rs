@@ -72,9 +72,10 @@ impl Default for PublicHttpPolicy {
             rate_per_second: 2,
             burst: 20,
             max_active: 16,
-            // Large prefix lists allow 16 MiB; leave room for JSON framing.
-            max_response_bytes: 20 * 1024 * 1024,
-            max_response_buffer_bytes: 64 * 1024 * 1024,
+            // Large transit-prefix lists allow 96 MiB plus JSON framing.
+            // Their shared heavy-query lease also bounds retained work.
+            max_response_bytes: 128 * 1024 * 1024,
+            max_response_buffer_bytes: 256 * 1024 * 1024,
         }
     }
 }
@@ -94,8 +95,8 @@ impl PublicHttpPolicy {
             "http_public_policy.max_active must be between 1 and 16"
         );
         ensure!(
-            (1024..=32 * 1024 * 1024).contains(&self.max_response_bytes),
-            "http_public_policy.max_response_bytes must be between 1024 and 33554432"
+            (1024..=128 * 1024 * 1024).contains(&self.max_response_bytes),
+            "http_public_policy.max_response_bytes must be between 1024 and 134217728"
         );
         ensure!(
             (self.max_response_bytes..=512 * 1024 * 1024).contains(&self.max_response_buffer_bytes),

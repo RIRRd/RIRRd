@@ -5,13 +5,16 @@ use std::{
     collections::{HashMap, HashSet},
     future::Future,
     net::IpAddr,
-    sync::{Arc, OnceLock},
+    sync::{
+        Arc, Mutex, OnceLock,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::Duration,
 };
 
 use anyhow::{Context, Result};
 use async_graphql::{
-    Error, Request, Value,
+    Error, ErrorExtensions, Request, Value,
     dynamic::{
         Field, FieldFuture, FieldValue, InputValue, Interface, InterfaceField,
         Object as GraphqlObject, ResolverContext, Scalar, Schema, TypeRef,
@@ -200,6 +203,44 @@ struct Lookup {
     slots: Arc<Semaphore>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum QueryFailure {
+    Limit,
+    Capacity,
+    Deadline,
+}
+impl QueryFailure {
+    fn code(self) -> &'static str {
+        match self {
+            Self::Limit => "RIRRD_RESOURCE_LIMIT",
+            Self::Capacity => "RIRRD_CAPACITY",
+            Self::Deadline => "RIRRD_QUERY_TIMEOUT",
+        }
+    }
+}
+fn query_error(kind: QueryFailure, message: impl Into<String>) -> Error {
+    Error::new(message).extend_with(|_, extensions| extensions.set("code", kind.code()))
+}
+fn server_query_error(kind: QueryFailure, message: &str) -> async_graphql::ServerError {
+    let mut error = async_graphql::ServerError::new(message, None);
+    let mut extensions = async_graphql::ErrorExtensionValues::default();
+    extensions.set("code", kind.code());
+    error.extensions = Some(extensions);
+    error
+}
+fn query_failure(error: &async_graphql::ServerError) -> Option<QueryFailure> {
+    match error.extensions.as_ref()?.get("code")? {
+        Value::String(code) if code == QueryFailure::Limit.code() => Some(QueryFailure::Limit),
+        Value::String(code) if code == QueryFailure::Capacity.code() => {
+            Some(QueryFailure::Capacity)
+        }
+        Value::String(code) if code == QueryFailure::Deadline.code() => {
+            Some(QueryFailure::Deadline)
+        }
+        _ => None,
+    }
+}
+
 impl Lookup {
     async fn run<T: Send + 'static>(
         &self,
@@ -209,7 +250,7 @@ impl Lookup {
     ) -> async_graphql::Result<T> {
         let permit = Arc::clone(&self.slots)
             .try_acquire_owned()
-            .map_err(|_| Error::new("Too many concurrent lookups."))?;
+            .map_err(|_| query_error(QueryFailure::Capacity, "Too many concurrent lookups."))?;
         let store = Arc::clone(&self.store);
         let control =
             control.unwrap_or_else(|| crate::storage::QueryControl::new(Duration::from_secs(30)));
@@ -223,14 +264,17 @@ impl Lookup {
         .context("GraphQL lookup worker failed")
         .and_then(|result| result)
         .map_err(|error| {
+            if error.is::<crate::storage::HeavyQueryBusy>() {
+                return query_error(QueryFailure::Capacity, "Large query capacity busy; retry later.");
+            }
             if error.is::<crate::storage::QueryDeadlineExceeded>() {
-                return Error::new("Query timed out.");
+                return query_error(QueryFailure::Deadline, "Query timed out.");
             }
             if error.is::<crate::storage::QueryScanLimit>() {
-                return Error::new("Query exceeds the indexed scan limit; narrow the keys, sources or object classes.");
+                return query_error(QueryFailure::Limit, "Query exceeds the indexed scan limit; narrow the keys, sources or object classes.");
             }
             if error.is::<sets::LimitExceeded>() || error.is::<crate::storage::QueryMaterializationLimit>() {
-                return Error::new("Query result exceeds resource limits.");
+                return query_error(QueryFailure::Limit, "Query result exceeds resource limits.");
             }
             tracing::error!(%error, "GraphQL lookup failed");
             Error::new("Lookup failed.")
@@ -388,7 +432,10 @@ fn list_filter(
     };
     let list = value.list()?;
     if list.len() > MAX_FILTER_VALUES {
-        return Err(Error::new(format!("Too many values for {name}.")));
+        return Err(query_error(
+            QueryFailure::Limit,
+            format!("Too many values for {name}."),
+        ));
     }
     let mut values = Vec::with_capacity(list.len());
     for entry in list.iter() {
@@ -437,7 +484,10 @@ async fn objects(ctx: ResolverContext<'_>) -> async_graphql::Result<Option<Field
         }
     }
     if keys.is_none() && filters.is_empty() {
-        return Err(Error::new("Your query must be more specific."));
+        return Err(query_error(
+            QueryFailure::Limit,
+            "Your query must be more specific.",
+        ));
     }
 
     let classes = list_filter(&ctx, "objectClass")?;
@@ -453,7 +503,12 @@ async fn objects(ctx: ResolverContext<'_>) -> async_graphql::Result<Option<Field
     let limit = usize::try_from(limit)
         .ok()
         .filter(|&limit| limit <= MAX_RECORDS)
-        .ok_or_else(|| Error::new(format!("recordLimit must be between 0 and {MAX_RECORDS}.")))?;
+        .ok_or_else(|| {
+            query_error(
+                QueryFailure::Limit,
+                format!("recordLimit must be between 0 and {MAX_RECORDS}."),
+            )
+        })?;
 
     if keys.as_ref().is_some_and(Vec::is_empty)
         || sources.is_empty()
@@ -491,7 +546,129 @@ async fn objects(ctx: ResolverContext<'_>) -> async_graphql::Result<Option<Field
 
 struct Prefixes {
     key: Value,
-    prefixes: Vec<String>,
+    prefixes: Arc<Vec<String>>,
+}
+
+// Dynamic GraphQL's generic list resolver allocates one future/context per
+// scalar. Millions of already-validated IP strings need only a value list.
+// This per-request extension runs after normal document/schema validation and
+// only intercepts our indexed prefix fields; aliases/directives keep their
+// normal execution and introspection behavior.
+struct PrefixListEntry {
+    values: Arc<Vec<String>>,
+    budget: Arc<sets::ResultBudget>,
+    routes: bool,
+    renders: AtomicUsize,
+}
+#[derive(Default)]
+struct PrefixListCache(
+    Mutex<HashMap<String, Arc<PrefixListEntry>>>,
+    Arc<sets::ResultBudget>,
+);
+struct PrefixListExtension(Arc<PrefixListCache>);
+struct PrefixLists;
+impl async_graphql::extensions::ExtensionFactory for PrefixLists {
+    fn create(&self) -> Arc<dyn async_graphql::extensions::Extension> {
+        Arc::new(PrefixListExtension(Arc::new(PrefixListCache::default())))
+    }
+}
+#[async_graphql::async_trait::async_trait]
+impl async_graphql::extensions::Extension for PrefixListExtension {
+    async fn execute(
+        &self,
+        ctx: &async_graphql::extensions::ExtensionContext<'_>,
+        operation_name: Option<&str>,
+        next: async_graphql::extensions::NextExecute<'_>,
+    ) -> async_graphql::Response {
+        let mut response = next.run(ctx, operation_name).await;
+        // Never expose another alias's completed prefixes alongside a failed
+        // bounded routing result. Clients must receive a complete answer or an
+        // explicit error, not a plausible partial configuration.
+        if response
+            .errors
+            .iter()
+            .any(|error| query_failure(error).is_some())
+        {
+            response.data = Value::Null;
+        }
+        response
+    }
+
+    async fn prepare_request(
+        &self,
+        ctx: &async_graphql::extensions::ExtensionContext<'_>,
+        request: Request,
+        next: async_graphql::extensions::NextPrepareRequest<'_>,
+    ) -> async_graphql::ServerResult<Request> {
+        next.run(ctx, request.data(self.0.clone())).await
+    }
+
+    async fn resolve(
+        &self,
+        ctx: &async_graphql::extensions::ExtensionContext<'_>,
+        info: async_graphql::extensions::ResolveInfo<'_>,
+        next: async_graphql::extensions::NextResolve<'_>,
+    ) -> async_graphql::ServerResult<Option<Value>> {
+        if !info.is_for_introspection
+            && info.name == "prefixes"
+            && matches!(info.parent_type, "ASNPrefixes" | "AsSetPrefixes")
+        {
+            let entry = info.path_node.parent.and_then(|parent| {
+                self.0
+                    .0
+                    .lock()
+                    .expect("prefix list cache")
+                    .get(&parent.to_string())
+                    .cloned()
+            });
+            if let Some(entry) = entry {
+                let additional = entry.renders.fetch_add(1, Ordering::Relaxed) != 0;
+                let control = ctx
+                    .data_opt::<crate::storage::QueryControl>()
+                    .cloned()
+                    .unwrap_or_else(|| crate::storage::QueryControl::new(Duration::from_secs(30)));
+                let result = spawn_blocking(move || {
+                    control.run(|| {
+                        entry
+                            .values
+                            .iter()
+                            .map(|value| {
+                                crate::storage::check_query_deadline()?;
+                                if additional {
+                                    if entry.routes {
+                                        entry.budget.charge_route(value.len() + 1)?;
+                                    } else {
+                                        entry.budget.charge(value.len() + 1)?;
+                                    }
+                                }
+                                Ok(Value::String(value.clone()))
+                            })
+                            .collect::<Result<Vec<_>>>()
+                            .map(Value::List)
+                    })
+                })
+                .await;
+                return match result {
+                    Ok(Ok(value)) => Ok(Some(value)),
+                    Ok(Err(error)) => {
+                        let (kind, message) = if error.is::<crate::storage::HeavyQueryBusy>() {
+                            (
+                                QueryFailure::Capacity,
+                                "Large query capacity busy; retry later.",
+                            )
+                        } else if error.is::<crate::storage::QueryDeadlineExceeded>() {
+                            (QueryFailure::Deadline, "Query timed out.")
+                        } else {
+                            (QueryFailure::Limit, "Query result exceeds resource limits.")
+                        };
+                        Err(server_query_error(kind, message))
+                    }
+                    Err(_) => Err(async_graphql::ServerError::new("Lookup failed.", None)),
+                };
+            }
+        }
+        next.run(ctx, info).await
+    }
 }
 
 fn prefix_type(name: &str, key: &str, key_type: &str) -> GraphqlObject {
@@ -542,10 +719,36 @@ fn ip_family(ctx: &ResolverContext<'_>) -> async_graphql::Result<Option<bool>> {
 }
 
 fn prefix_values(
+    ctx: &ResolverContext<'_>,
+    routes: bool,
     rows: Option<Vec<Prefixes>>,
 ) -> async_graphql::Result<Option<FieldValue<'static>>> {
-    let rows =
-        rows.ok_or_else(|| Error::new(format!("Result exceeds {MAX_PREFIXES} prefixes.")))?;
+    let rows = rows.ok_or_else(|| {
+        query_error(
+            QueryFailure::Limit,
+            "Query exceeds the prefix result budget.",
+        )
+    })?;
+    if let Some(cache) = ctx.data_opt::<Arc<PrefixListCache>>() {
+        let prefix = ctx
+            .path_node
+            .as_ref()
+            .map(ToString::to_string)
+            .unwrap_or_default();
+        let budget = result_budget(ctx);
+        let mut cache = cache.0.lock().expect("prefix list cache");
+        for (index, row) in rows.iter().enumerate() {
+            cache.insert(
+                format!("{prefix}.{index}"),
+                Arc::new(PrefixListEntry {
+                    values: row.prefixes.clone(),
+                    budget: budget.clone(),
+                    routes,
+                    renders: AtomicUsize::new(0),
+                }),
+            );
+        }
+    }
     Ok(Some(FieldValue::list(
         rows.into_iter().map(FieldValue::owned_any),
     )))
@@ -554,6 +757,10 @@ fn prefix_values(
 fn result_budget(ctx: &ResolverContext<'_>) -> Arc<sets::ResultBudget> {
     ctx.data_opt::<Arc<sets::ResultBudget>>()
         .cloned()
+        .or_else(|| {
+            ctx.data_opt::<Arc<PrefixListCache>>()
+                .map(|cache| cache.1.clone())
+        })
         .unwrap_or_default()
 }
 
@@ -561,7 +768,10 @@ async fn asn_prefixes(ctx: ResolverContext<'_>) -> async_graphql::Result<Option<
     let lookup = ctx.data::<Lookup>()?;
     let asns = ctx.args.try_get("asns")?.list()?;
     if asns.len() > MAX_FILTER_VALUES {
-        return Err(Error::new("Too many values for asns."));
+        return Err(query_error(
+            QueryFailure::Limit,
+            "Too many values for asns.",
+        ));
     }
     let asns = asns
         .iter()
@@ -603,20 +813,23 @@ async fn asn_prefixes(ctx: ResolverContext<'_>) -> async_graphql::Result<Option<
                     }
                     rows.push(Prefixes {
                         key: Value::from(asn),
-                        prefixes,
+                        prefixes: Arc::new(prefixes),
                     });
                 }
                 Ok(Some(rows))
             },
         )
         .await?;
-    prefix_values(rows)
+    prefix_values(&ctx, false, rows)
 }
 
 fn set_names(ctx: &ResolverContext<'_>) -> async_graphql::Result<Vec<String>> {
     let mut names = list_filter(ctx, "setNames")?.ok_or_else(|| Error::new("Missing setNames."))?;
     if names.len() > MAX_SET_NAMES {
-        return Err(Error::new("Too many values for setNames."));
+        return Err(query_error(
+            QueryFailure::Limit,
+            "Too many values for setNames.",
+        ));
     }
     if ctx
         .args
@@ -650,7 +863,7 @@ async fn as_set_prefixes(
             ctx.data_opt::<QueryView>().cloned(),
             ctx.data_opt::<crate::storage::QueryControl>().cloned(),
             move |store| {
-                let mut remaining = MAX_PREFIXES;
+                let mut remaining = sets::MAX_ROUTE_RESULTS;
                 let mut rows = Vec::with_capacity(names.len());
                 for name in names {
                     let prefixes = routes_for_as_set_with_budget(
@@ -667,14 +880,14 @@ async fn as_set_prefixes(
                     remaining -= prefixes.len();
                     rows.push(Prefixes {
                         key: Value::from(name),
-                        prefixes,
+                        prefixes: Arc::new(prefixes),
                     });
                 }
                 Ok(Some(rows))
             },
         )
         .await?;
-    prefix_values(rows)
+    prefix_values(&ctx, true, rows)
 }
 
 struct SetMembers {
@@ -749,7 +962,12 @@ async fn recursive_set_members(
     let depth = usize::try_from(depth)
         .ok()
         .filter(|&depth| depth <= sets::MAX_DEPTH)
-        .ok_or_else(|| Error::new(format!("depth must be between 0 and {}.", sets::MAX_DEPTH)))?;
+        .ok_or_else(|| {
+            query_error(
+                QueryFailure::Limit,
+                format!("depth must be between 0 and {}.", sets::MAX_DEPTH),
+            )
+        })?;
     let depth = (depth != 0).then_some(depth);
     let excluded = list_filter(&ctx, "excludeSets")?.unwrap_or_default();
     let budget = result_budget(&ctx);
@@ -799,7 +1017,12 @@ async fn recursive_set_members(
             },
         )
         .await?
-        .ok_or_else(|| Error::new("Set expansion result exceeds GraphQL limits."))?;
+        .ok_or_else(|| {
+            query_error(
+                QueryFailure::Limit,
+                "Set expansion result exceeds GraphQL limits.",
+            )
+        })?;
     Ok(Some(FieldValue::list(
         rows.into_iter().map(FieldValue::owned_any),
     )))
@@ -912,9 +1135,10 @@ async fn database_status(
     let lookup = ctx.data::<Lookup>()?;
     let mut sources = source_filter(&ctx, &lookup.sources)?;
     if sources.len() > MAX_FILTER_VALUES {
-        return Err(Error::new(format!(
-            "Select at most {MAX_FILTER_VALUES} sources for databaseStatus."
-        )));
+        return Err(query_error(
+            QueryFailure::Limit,
+            format!("Select at most {MAX_FILTER_VALUES} sources for databaseStatus."),
+        ));
     }
     if sources.is_empty() {
         return Ok(Some(FieldValue::list(Vec::<FieldValue<'_>>::new())));
@@ -1040,6 +1264,7 @@ fn make_schema(
     }
 
     let mut builder = Schema::build("Query", None, None)
+        .extension(PrefixLists)
         .data(Lookup {
             store,
             sources: sources.into(),
@@ -1131,9 +1356,18 @@ async fn bound_http(
     };
     let control = crate::storage::QueryControl::new(limits.timeout);
     let _cancel = control.cancel_on_drop();
-    req.extensions_mut().insert(control);
+    req.extensions_mut().insert(control.clone());
     match tokio::time::timeout(limits.timeout, next.run(req)).await {
-        Ok(response) => response,
+        Ok(mut response) => {
+            if response
+                .extensions()
+                .get::<crate::storage::QueryControl>()
+                .is_none()
+            {
+                response.extensions_mut().insert(control);
+            }
+            crate::public_http::retain_query_control(response)
+        }
         Err(_) => StatusCode::GATEWAY_TIMEOUT.into_response(),
     }
 }
@@ -1145,16 +1379,37 @@ async fn execute(
     Json(request): Json<Request>,
 ) -> impl IntoResponse {
     let view = Arc::new(store.query_gate().clone().read_owned().await);
-    Json(
-        schema
-            .execute(
-                request
-                    .data(view)
-                    .data(Arc::new(sets::ResultBudget::default()))
-                    .data(control),
-            )
-            .await,
-    )
+    let response = schema
+        .execute(
+            request
+                .data(view)
+                .data(Arc::new(sets::ResultBudget::default()))
+                .data(control),
+        )
+        .await;
+    let status = if response
+        .errors
+        .iter()
+        .any(|error| query_failure(error) == Some(QueryFailure::Capacity))
+    {
+        StatusCode::SERVICE_UNAVAILABLE
+    } else if response
+        .errors
+        .iter()
+        .any(|error| query_failure(error) == Some(QueryFailure::Deadline))
+    {
+        StatusCode::GATEWAY_TIMEOUT
+    } else {
+        StatusCode::OK
+    };
+    let mut response = (status, Json(response)).into_response();
+    if status == StatusCode::SERVICE_UNAVAILABLE {
+        response.headers_mut().insert(
+            axum::http::header::RETRY_AFTER,
+            axum::http::HeaderValue::from_static("1"),
+        );
+    }
+    response
 }
 
 pub struct HttpServiceConfig {
@@ -1716,6 +1971,90 @@ mod tests {
                 "filtered":[{"rpslPk":"AS-EXAMPLE","prefixes":[]}]
             })
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn graph_query_failures_use_typed_codes_and_discard_all_alias_data() -> Result<()> {
+        let (_directory, schema) = test_schema()?;
+        let query = "{ first: asnPrefixes(asns:[64496]) { prefixes } second: asnPrefixes(asns:[64496]) { prefixes } }";
+        let limited = schema
+            .execute(Request::new(query).data(Arc::new(sets::ResultBudget::new(3, 4096))))
+            .await;
+        assert_eq!(limited.data, Value::Null);
+        assert!(
+            limited
+                .errors
+                .iter()
+                .any(|error| query_failure(error) == Some(QueryFailure::Limit))
+        );
+        let expired = schema
+            .execute(Request::new(query).data(crate::storage::QueryControl::new(Duration::ZERO)))
+            .await;
+        assert_eq!(expired.data, Value::Null);
+        assert!(
+            expired
+                .errors
+                .iter()
+                .any(|error| query_failure(error) == Some(QueryFailure::Deadline))
+        );
+        let directory = tempfile::tempdir()?;
+        let saturated = Lookup {
+            store: Arc::new(Store::open(&directory.path().join("registry.redb"))?),
+            sources: Arc::new(["TEST".into()]),
+            authoritative_sources: Arc::new(HashSet::new()),
+            slots: Arc::new(Semaphore::new(0)),
+        };
+        let busy = schema.execute(Request::new(query).data(saturated)).await;
+        assert_eq!(busy.data, Value::Null);
+        assert!(
+            busy.errors
+                .iter()
+                .any(|error| query_failure(error) == Some(QueryFailure::Capacity))
+        );
+        let recovery = schema.execute(query).await;
+        assert!(recovery.errors.is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn prefix_scalar_fast_path_preserves_fragments_directives_and_alias_budgets() -> Result<()>
+    {
+        let (_directory, schema) = test_schema()?;
+        let query = r#"query($skip: Boolean!) {
+            origin: asnPrefixes(asns:[64496]) { asn ...PrefixFields }
+        }
+        fragment PrefixFields on ASNPrefixes {
+            first: prefixes
+            second: prefixes @skip(if:$skip)
+        }"#;
+        for (skip, budget, valid) in [(false, 6, true), (false, 5, false), (true, 3, true)] {
+            let response = schema
+                .execute(
+                    Request::new(query)
+                        .variables(async_graphql::Variables::from_json(json!({"skip":skip})))
+                        .data(Arc::new(sets::ResultBudget::new(budget, 4096))),
+                )
+                .await;
+            assert_eq!(response.errors.is_empty(), valid, "{:?}", response.errors);
+            if valid {
+                let value = serde_json::to_value(response.data)?;
+                assert_eq!(value["origin"][0]["first"].as_array().unwrap().len(), 3);
+                if skip {
+                    assert!(value["origin"][0].get("second").is_none());
+                } else {
+                    assert_eq!(value["origin"][0]["first"], value["origin"][0]["second"]);
+                }
+            } else {
+                assert_eq!(response.data, Value::Null);
+            }
+        }
+        // Invalid scalar selections are rejected by the ordinary GraphQL
+        // validator before the specialized value executor can run.
+        let invalid = schema
+            .execute("{ asnPrefixes(asns:[64496]) { prefixes { bogus } } }")
+            .await;
+        assert!(!invalid.errors.is_empty());
         Ok(())
     }
 

@@ -26,8 +26,10 @@ The default policy remains two requests/second with a 20-request burst, grouped 
 address or IPv6 /64. Client state is bounded to 4,096 entries; admitted HTTP work
 is bounded to 16 requests plus the existing per-interface query budgets. Full
 admission returns 503 with Retry-After; per-client exhaustion returns 429. It
-never queues rejected clients behind query work. Prefix responses are bounded to 20 MiB (16 MiB query output plus JSON framing),
-with a separate 64 MiB aggregate buffer budget. Admission and byte permits remain
+never queues rejected clients behind query work. Prefix responses are bounded to 128 MiB (96 MiB query output plus JSON framing),
+with a separate 256 MiB aggregate buffer budget. A single shared heavy-query lease
+limits expansions beyond 262,144 prefixes through their final output consumption;
+ordinary member and object-query budgets remain smaller. Admission and byte permits remain
 attached to prepared response bytes until transport consumes or drops them; slow
 consumers cannot accumulate unbounded completed replies. Raw object query bounds
 remain separate. A response exceeding the configured cap returns 422 without a

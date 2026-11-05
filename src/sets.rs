@@ -23,17 +23,51 @@ const MAX_VISITED_VALUES: usize = 2_000_000;
 const MAX_WORK_BYTES: usize = 64 * 1024 * 1024;
 pub(crate) const MAX_RESULTS: usize = 262_144;
 pub(crate) const MAX_RESULT_BYTES: usize = 16 * 1024 * 1024;
+// Large transit networks can contain millions of distinct prefixes. Keep their
+// bounded output separate from AS/member traversal and object lookup limits.
+pub(crate) const MAX_ROUTE_RESULTS: usize = 4_000_000;
+pub(crate) const MAX_ROUTE_BYTES: usize = 96 * 1024 * 1024;
+
+struct ExpansionLimits {
+    sets: usize,
+    origins: usize,
+    visited_values: usize,
+    work_bytes: usize,
+    results: usize,
+    result_bytes: usize,
+}
+
+impl Default for ExpansionLimits {
+    fn default() -> Self {
+        Self {
+            sets: MAX_SET_LOOKUPS,
+            origins: MAX_ORIGIN_LOOKUPS,
+            visited_values: MAX_VISITED_VALUES,
+            work_bytes: MAX_WORK_BYTES,
+            results: MAX_RESULTS,
+            result_bytes: MAX_RESULT_BYTES,
+        }
+    }
+}
 
 /// Shared by all prefix/member fields in one GraphQL request. Charge while
 /// collecting, so aliases cannot multiply each field's materialization cap.
 pub(crate) struct ResultBudget {
     values: AtomicUsize,
     bytes: AtomicUsize,
+    route_values: AtomicUsize,
+    route_bytes: AtomicUsize,
+    route_used: AtomicUsize,
+    heavy: std::sync::Mutex<Option<Arc<crate::storage::HeavyQueryLease>>>,
 }
 
 impl Default for ResultBudget {
     fn default() -> Self {
-        Self::new(MAX_RESULTS, MAX_RESULT_BYTES)
+        Self {
+            route_values: AtomicUsize::new(MAX_ROUTE_RESULTS),
+            route_bytes: AtomicUsize::new(MAX_ROUTE_BYTES),
+            ..Self::new(MAX_RESULTS, MAX_RESULT_BYTES)
+        }
     }
 }
 
@@ -42,10 +76,32 @@ impl ResultBudget {
         Self {
             values: AtomicUsize::new(values),
             bytes: AtomicUsize::new(bytes),
+            route_values: AtomicUsize::new(values),
+            route_bytes: AtomicUsize::new(bytes),
+            route_used: AtomicUsize::new(0),
+            heavy: std::sync::Mutex::new(None),
         }
     }
 
     pub(crate) fn charge(&self, bytes: usize) -> Result<()> {
+        self.consume(&self.values, 1)?;
+        self.consume(&self.bytes, bytes)?;
+        self.charge_route(bytes)
+    }
+
+    pub(crate) fn charge_route(&self, bytes: usize) -> Result<()> {
+        self.consume(&self.route_values, 1)?;
+        self.consume(&self.route_bytes, bytes)?;
+        if self.route_used.fetch_add(1, Ordering::Relaxed) >= MAX_RESULTS {
+            let mut lease = self.heavy.lock().expect("request result lease");
+            if lease.is_none() {
+                *lease = Some(crate::storage::acquire_heavy_query()?);
+            }
+        }
+        Ok(())
+    }
+
+    fn consume(&self, counter: &AtomicUsize, amount: usize) -> Result<()> {
         fn consume(counter: &AtomicUsize, amount: usize) -> Result<()> {
             let mut previous = counter.load(Ordering::Relaxed);
             loop {
@@ -63,9 +119,7 @@ impl ResultBudget {
                 }
             }
         }
-        consume(&self.values, 1)?;
-        consume(&self.bytes, bytes)?;
-        Ok(())
+        consume(counter, amount)
     }
 }
 
@@ -172,11 +226,12 @@ pub(crate) fn routes_for_as_set_with_budget(
     let name = name.to_uppercase();
     let mut expansion = Expansion::new(store, sources, excluded);
     expansion.result_budget = budget;
+    expansion.enable_routes();
     let Some(root) = find_set(store, sources, &name, true, &mut expansion.set_text_bytes)? else {
         return Ok(Vec::new());
     };
     expansion.expand(root, RecursiveMode::OriginPrefixes(family), None)?;
-    Ok(expansion.output.into_iter().collect())
+    expansion.finish_routes()
 }
 
 fn find_set(
@@ -248,12 +303,15 @@ struct Expansion<'a> {
     seen_sets: HashSet<String>,
     seen_origins: HashSet<u32>,
     output: BTreeSet<String>,
+    route_output: Option<HashSet<Box<str>>>,
+    heavy_lease: Option<Arc<crate::storage::HeavyQueryLease>>,
     output_bytes: usize,
     visited_values: usize,
     work_bytes: usize,
     set_text_bytes: usize,
     indirect_lookups: usize,
     result_budget: Option<Arc<ResultBudget>>,
+    limits: ExpansionLimits,
 }
 
 impl<'a> Expansion<'a> {
@@ -265,13 +323,40 @@ impl<'a> Expansion<'a> {
             seen_sets: HashSet::new(),
             seen_origins: HashSet::new(),
             output: BTreeSet::new(),
+            route_output: None,
+            heavy_lease: None,
             output_bytes: 0,
             visited_values: 0,
             work_bytes: 0,
             set_text_bytes: MAX_WORK_BYTES,
             indirect_lookups: MAX_VISITED_VALUES,
             result_budget: None,
+            limits: ExpansionLimits::default(),
         }
+    }
+
+    fn enable_routes(&mut self) {
+        self.route_output = Some(HashSet::new());
+        self.limits.results = MAX_ROUTE_RESULTS;
+        self.limits.result_bytes = MAX_ROUTE_BYTES;
+        self.limits.visited_values = 16_000_000;
+        self.limits.work_bytes = 256 * 1024 * 1024;
+    }
+
+    fn finish_routes(self) -> Result<Vec<String>> {
+        let mut values: Vec<String> = self
+            .route_output
+            .expect("route collector")
+            .into_iter()
+            .map(|value| {
+                crate::storage::check_query_deadline()?;
+                Ok(String::from(value))
+            })
+            .collect::<Result<_>>()?;
+        crate::storage::check_query_deadline()?;
+        values.sort_unstable();
+        crate::storage::check_query_deadline()?;
+        Ok(values)
     }
 
     fn expand(
@@ -285,7 +370,7 @@ impl<'a> Expansion<'a> {
         self.expand_members(root, mode, 0, limit == Some(1), &mut pending)?;
         while let Some((key, depth)) = pending.pop_front() {
             ensure!(
-                depth <= MAX_DEPTH && self.seen_sets.len() <= MAX_SET_LOOKUPS,
+                depth <= MAX_DEPTH && self.seen_sets.len() <= self.limits.sets,
                 LimitExceeded("set exceeds traversal limit")
             );
             let as_only = !matches!(mode, RecursiveMode::RouteMembers);
@@ -326,7 +411,7 @@ impl<'a> Expansion<'a> {
                     // fill the pending queue before their first expansion.
                     if self.seen_sets.insert(name.clone()) {
                         ensure!(
-                            self.seen_sets.len() <= MAX_SET_LOOKUPS,
+                            self.seen_sets.len() <= self.limits.sets,
                             LimitExceeded("set exceeds traversal limit")
                         );
                         pending.push_back((name, depth + 1));
@@ -353,7 +438,7 @@ impl<'a> Expansion<'a> {
             return Ok(());
         }
         ensure!(
-            self.seen_origins.len() <= MAX_ORIGIN_LOOKUPS,
+            self.seen_origins.len() <= self.limits.origins,
             LimitExceeded("set exceeds origin lookup limit")
         );
         let origin = format!("AS{number}");
@@ -375,20 +460,41 @@ impl<'a> Expansion<'a> {
         self.visited_values += 1;
         self.work_bytes += bytes;
         ensure!(
-            self.visited_values <= MAX_VISITED_VALUES && self.work_bytes <= MAX_WORK_BYTES,
+            self.visited_values <= self.limits.visited_values
+                && self.work_bytes <= self.limits.work_bytes,
             LimitExceeded("set exceeds expansion work limit")
         );
         Ok(())
     }
 
     fn insert(&mut self, value: String) -> Result<()> {
+        if let Some(output) = &mut self.route_output {
+            if output.contains(value.as_str()) {
+                return Ok(());
+            }
+            if output.len() == MAX_RESULTS && self.heavy_lease.is_none() {
+                self.heavy_lease = Some(crate::storage::acquire_heavy_query()?);
+            }
+            ensure!(
+                output.len() < self.limits.results
+                    && self.output_bytes + value.len() < self.limits.result_bytes,
+                LimitExceeded("set exceeds result limit")
+            );
+            if let Some(budget) = &self.result_budget {
+                budget.charge_route(value.len() + 1)?;
+            }
+            self.output_bytes += value.len() + 1;
+            output.insert(value.into_boxed_str());
+            return Ok(());
+        }
         if !self.output.contains(&value) {
             if let Some(budget) = &self.result_budget {
                 budget.charge(value.len() + 1)?;
             }
             self.output_bytes += value.len() + 1;
             ensure!(
-                self.output.len() < MAX_RESULTS && self.output_bytes <= MAX_RESULT_BYTES,
+                self.output.len() < self.limits.results
+                    && self.output_bytes <= self.limits.result_bytes,
                 LimitExceeded("set exceeds result limit")
             );
             self.output.insert(value);
@@ -401,7 +507,63 @@ impl<'a> Expansion<'a> {
 mod tests {
     use super::*;
     use crate::rpsl::parse_snapshot;
-    use anyhow::anyhow;
+
+    /// Offline operator diagnostic, never used by a public listener. Supply a
+    /// private config for an inactive database; the explicit probe profile has
+    /// finite bounds and an outer process timeout/memory cgroup is recommended.
+    #[test]
+    #[ignore = "requires an explicitly selected inactive operator database"]
+    fn measure_offline_large_set() -> Result<()> {
+        let path = std::env::var_os("RIRRD_QUERY_REVIEW_CONFIG")
+            .context("set RIRRD_QUERY_REVIEW_CONFIG")?;
+        let config = crate::config::Config::load(std::path::Path::new(&path))?;
+        let store =
+            Store::open_existing_with_cache(&config.database, config.database_cache_bytes())?;
+        let name =
+            std::env::var("RIRRD_QUERY_REVIEW_NAME").context("set RIRRD_QUERY_REVIEW_NAME")?;
+        let family = match std::env::var("RIRRD_QUERY_REVIEW_FAMILY").as_deref() {
+            Ok("4") => Some(false),
+            Ok("6") => Some(true),
+            Ok("all") => None,
+            _ => anyhow::bail!("set family to 4, 6 or all"),
+        };
+        let mut sources = config.sources.clone();
+        if let Ok(first) = std::env::var("RIRRD_QUERY_REVIEW_FIRST_SOURCE") {
+            ensure!(sources.contains(&first), "unknown preferred source");
+            sources.retain(|source| source != &first);
+            sources.insert(0, first);
+        }
+        let started = std::time::Instant::now();
+        let mut expansion = Expansion::new(&store, &sources, &[]);
+        expansion.enable_routes();
+        if std::env::var("RIRRD_QUERY_REVIEW_PROFILE").as_deref() == Ok("bounded-probe") {
+            expansion.limits = ExpansionLimits {
+                sets: 262_144,
+                origins: 1_000_000,
+                visited_values: 32_000_000,
+                work_bytes: 512 * 1024 * 1024,
+                results: 4_000_000,
+                result_bytes: 128 * 1024 * 1024,
+            };
+            expansion.set_text_bytes = 512 * 1024 * 1024;
+            expansion.indirect_lookups = 32_000_000;
+        }
+        let root = find_set(&store, &sources, &name, true, &mut expansion.set_text_bytes)?
+            .context("set missing")?;
+        let root_source = root.source.clone();
+        let result = expansion.expand(root, RecursiveMode::OriginPrefixes(family), None);
+        println!(
+            "{}",
+            serde_json::json!({"name":name,"root_source":root_source,"family":family,
+            "completed":result.is_ok(),"error":result.err().map(|error|error.to_string()),
+            "results":expansion.route_output.as_ref().map_or(expansion.output.len(), HashSet::len),"result_bytes":expansion.output_bytes,
+            "visited_sets":expansion.seen_sets.len(),"visited_origins":expansion.seen_origins.len(),
+            "visited_values":expansion.visited_values,"work_bytes":expansion.work_bytes,
+            "seconds":started.elapsed().as_secs_f64()})
+        );
+        Ok(())
+    }
+    use anyhow::{Context, anyhow};
 
     fn fixture(store: &Store, source: &str, objects: &[&str]) -> Result<()> {
         store.replace_source(
@@ -411,6 +573,28 @@ mod tests {
                     .map_err(|error| anyhow!(error))
             }),
         )?;
+        Ok(())
+    }
+
+    #[test]
+    fn route_collector_deduplicates_sorts_and_keeps_explicit_bounds() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let store = Store::open(&directory.path().join("registry.redb"))?;
+        let mut expansion = Expansion::new(&store, &[], &[]);
+        expansion.enable_routes();
+        expansion.limits.results = 2;
+        expansion.insert("2001:db8::/32".into())?;
+        expansion.insert("192.0.2.0/24".into())?;
+        expansion.insert("2001:db8::/32".into())?;
+        assert_eq!(
+            expansion.finish_routes()?,
+            ["192.0.2.0/24", "2001:db8::/32"]
+        );
+        let mut oversized = Expansion::new(&store, &[], &[]);
+        oversized.enable_routes();
+        oversized.limits.result_bytes = 8;
+        assert!(oversized.insert("192.0.2.0/24".into()).is_err());
+        assert!(oversized.route_output.as_ref().unwrap().is_empty());
         Ok(())
     }
 

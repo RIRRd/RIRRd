@@ -106,6 +106,62 @@ def main():
         for name, base in [('reference_graphql', args.reference_http), ('candidate_graphql', args.candidate_http)]:
             check(name, document, query.canonical(expected), lambda: graph(base, document))
 
+    # Exercise the scalar-list executor through the normal HTTP GraphQL API:
+    # aliases and row indexes must preserve identity, fragments/directives must
+    # keep standard execution, and a reused alias must never reuse another
+    # request's source data. Variables are sent as actual JSON variables.
+    alias_document = '''query($skip:Boolean!, $include:Boolean!) {
+      selected: asnPrefixes(asns:['''+str(FIRST_ASN)+','+str(SINGLE_ASN)+'''],sources:["LARGE"],ipVersion:4) {
+        asn ...PrefixFields
+      }
+    }
+    fragment PrefixFields on ASNPrefixes {
+      first: prefixes
+      second: prefixes @skip(if:$skip)
+      third: prefixes @include(if:$include)
+    }'''
+    first4 = [prefix(0, 4), prefix(1, 4)]
+    for skip, include in [(False, True), (True, False)]:
+        document = {'query': alias_document,
+                    'variables': {'skip': skip, 'include': include}}
+        rows = []
+        for asn, values in [(FIRST_ASN, first4), (SINGLE_ASN, single4)]:
+            row = {'asn': asn, 'first': values}
+            if not skip: row['second'] = values
+            if include: row['third'] = values
+            rows.append(row)
+        for name, base in [('reference_graphql_selection', args.reference_http), ('candidate_graphql_selection', args.candidate_http)]:
+            check(name, 'variables + fragment + child aliases; skip='+str(skip),
+                  query.canonical({'selected': rows}), lambda: graph(base, document))
+    document = '''query($omit:Boolean!) {
+      skipped: asnPrefixes(asns:[4200000000],sources:["LARGE"]) @skip(if:$omit) {prefixes}
+      sets: asSetPrefixes(setNames:["AS-LARGE-INDIRECT","AS-LARGE"],sources:["LARGE"],ipVersion:6) {
+        rpslPk ... on AsSetPrefixes { routes:prefixes __typename }
+      }
+    }'''
+    expected = {'sets': [
+        {'rpslPk': 'AS-LARGE-INDIRECT', 'routes': [prefix(i,6) for i in range(INDIRECT_MEMBERS)], '__typename': 'AsSetPrefixes'},
+        {'rpslPk': 'AS-LARGE', 'routes': v6, '__typename': 'AsSetPrefixes'},
+    ]}
+    for name, base in [('reference_graphql_selection', args.reference_http), ('candidate_graphql_selection', args.candidate_http)]:
+        check(name, 'skipped root and inline fragment across different set rows', query.canonical(expected),
+              lambda: graph(base, {'query': document, 'variables': {'omit': True}}))
+    for asn, values in [(FIRST_ASN, first4), (SINGLE_ASN, single4), (4_294_967_000, [])]:
+        document = '{isolation:asnPrefixes(asns:['+str(asn)+'],sources:["LARGE"],ipVersion:4){asn values:prefixes}}'
+        for name, base in [('reference_graphql_selection', args.reference_http), ('candidate_graphql_selection', args.candidate_http)]:
+            check(name, 'same response alias in a new request for AS'+str(asn),
+                  query.canonical({'isolation': [{'asn': asn, 'values': values}]}), lambda: graph(base, document))
+
+    validation_statuses = {}
+    def invalid_scalar_selection(base):
+        status, raw = query.http(base, '/graphql/', '{asnPrefixes(asns:[4200000000],sources:["LARGE"]){prefixes {bogus}}}')
+        validation_statuses['reference' if base == args.reference_http else 'candidate'] = status
+        value = json.loads(raw)
+        return status in [200, 400] and value.get('data') is None and bool(value.get('errors'))
+
+    for name, base in [('reference_graphql_validation', args.reference_http), ('candidate_graphql_validation', args.candidate_http)]:
+        check(name, 'invalid child selection on prefix scalar is rejected', True, lambda: invalid_scalar_selection(base))
+
     # Deliberate finite-budget behavior, not an upstream-equivalence assertion:
     # each alias fits the 262144-result budget, but together they exceed it.
     asns = ','.join([str(SINGLE_ASN)] * 32)
@@ -120,6 +176,8 @@ def main():
         return any('limit' in error.get('message', '').lower() for error in value.get('errors', []))
 
     check('candidate_result_budget', 'two aliases exceed aggregate prefix budget', True, reject_aggregate)
+    document = '{asnPrefixes(asns:['+asns+'],sources:["LARGE"],ipVersion:4){first:prefixes second:prefixes}}'
+    check('candidate_result_budget', 'two child aliases exceed aggregate prefix budget', True, reject_aggregate)
     check('candidate_recovery', f'!gAS{SINGLE_ASN} after aggregate rejection', single4,
           lambda: http(f'!gAS{SINGLE_ASN}', single4))
 
@@ -138,7 +196,9 @@ def main():
                     'root_ipv4_prefixes': len(v4), 'root_ipv6_prefixes': len(v6),
                     'single_origin_prefixes_per_family': ORIGINS,
                     'authorized_indirect_members': INDIRECT_MEMBERS},
-        'comparison_scope': '59 complete-answer checks with duplicates retained and exact TCP framing; 2 candidate-only aggregate-budget/recovery checks. Synthetic unfiltered source only.',
+        'comparison_scope': '59 complete-answer checks with duplicates retained and exact TCP framing; 14 shared GraphQL selection/validation checks; 3 candidate-only aggregate-budget/recovery checks. Synthetic unfiltered source only.',
+        'validation_statuses': validation_statuses,
+        'validation_scope': 'Invalid scalar child selections must reject with no data. HTTP validation status is reported separately; IRRd uses 400 and RIRRd uses GraphQL errors with 200.',
         'timings': measurements,
         'timing_scope': 'Serial correctness checks, including connection setup; not a throughput or sustained-load benchmark.',
     }

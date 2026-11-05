@@ -227,13 +227,18 @@ async fn http_query(State(state): State<HttpWhois>, request: Request) -> Respons
     };
     let control = crate::storage::QueryControl::new(state.deadline);
     let _cancel = control.cancel_on_drop();
+    let response_control = control.clone();
     let worker = with_query_view(state.store, move |store| {
         let _permit = permit;
         control.run(|| execute_http(query.trim(), store, &client))
     });
     match timeout(state.deadline, worker).await {
         Ok(Ok(Ok((StatusCode::NO_CONTENT, _)))) => StatusCode::NO_CONTENT.into_response(),
-        Ok(Ok(Ok((status, body)))) => (status, body).into_response(),
+        Ok(Ok(Ok((status, body)))) => {
+            let mut response = (status, body).into_response();
+            response.extensions_mut().insert(response_control);
+            crate::public_http::retain_query_control(response)
+        }
         Ok(Ok(Err(error))) if error.is::<crate::storage::QueryDeadlineExceeded>() => {
             StatusCode::GATEWAY_TIMEOUT.into_response()
         }
@@ -299,7 +304,9 @@ fn unframe_http(response: String, irrd: bool) -> Result<(StatusCode, String)> {
     if irrd {
         if let Some(error) = response.strip_prefix("F ") {
             return Ok((
-                if error == "Query timed out\n" {
+                if error == "Large query capacity busy; retry later\n" {
+                    StatusCode::SERVICE_UNAVAILABLE
+                } else if error == "Query timed out\n" {
                     StatusCode::GATEWAY_TIMEOUT
                 } else {
                     StatusCode::BAD_REQUEST
@@ -327,7 +334,9 @@ fn unframe_http(response: String, irrd: bool) -> Result<(StatusCode, String)> {
     }
     if let Some(error) = response.strip_prefix("%% ERROR: ") {
         return Ok((
-            if error.trim() == "Query timed out" {
+            if error.trim() == "Large query capacity busy; retry later" {
+                StatusCode::SERVICE_UNAVAILABLE
+            } else if error.trim() == "Query timed out" {
                 StatusCode::GATEWAY_TIMEOUT
             } else {
                 StatusCode::BAD_REQUEST
@@ -429,6 +438,7 @@ async fn handle(
         let prepared = text.and_then(|query| {
             ripe_modifiers(query, &access.sources, &mut selected, &mut persistent)
         });
+        let mut response_control = None;
         let response = match prepared.and_then(session_command) {
             Some(SessionCommand::Quit) => return,
             Some(SessionCommand::Persistent) => {
@@ -471,7 +481,7 @@ async fn handle(
                     {
                         "%% ERROR: Access denied\n\n\n".to_owned()
                     } else {
-                        let Some((response, returned_permit)) = lookup(
+                        let Some((response, returned_permit, control)) = lookup(
                             query,
                             store.clone(),
                             selected.clone(),
@@ -485,6 +495,7 @@ async fn handle(
                             return;
                         };
                         permit = returned_permit;
+                        response_control = Some(control);
                         response
                     }
                 } else {
@@ -506,6 +517,7 @@ async fn handle(
         {
             return;
         }
+        drop(response_control);
     }
 }
 
@@ -651,14 +663,15 @@ async fn lookup(
     client: Client,
     deadline: Duration,
     permit: ConnectionPermit,
-) -> Option<(String, ConnectionPermit)> {
+) -> Option<(String, ConnectionPermit, crate::storage::QueryControl)> {
     let nrtm = matches!(&query, Query::Nrtm3 { .. });
     let discovery = matches!(&query, Query::Nrtm3Sources);
     let irrd = query.uses_irrd_framing();
     let control = crate::storage::QueryControl::new(deadline);
     let _cancel = control.cancel_on_drop();
+    let worker_control = control.clone();
     let lookup = with_query_view(store, move |store| {
-        let result = control.run(|| execute(query, store, &sources, &excluded, &client));
+        let result = worker_control.run(|| execute(query, store, &sources, &excluded, &client));
         (result, permit)
     });
     let response = match timeout(deadline, lookup).await {
@@ -678,7 +691,7 @@ async fn lookup(
         }
         _ => return None,
     };
-    Some(response)
+    Some((response.0, response.1, control))
 }
 
 fn execute(
@@ -690,6 +703,12 @@ fn execute(
 ) -> Result<String> {
     let irrd = query.uses_irrd_framing();
     match execute_inner(query, store, sources, excluded, client) {
+        Err(error) if error.is::<crate::storage::HeavyQueryBusy>() => Ok(if irrd {
+            "F Large query capacity busy; retry later\n"
+        } else {
+            "%% ERROR: Large query capacity busy; retry later\n\n\n"
+        }
+        .to_owned()),
         Err(error) if error.is::<crate::storage::QueryDeadlineExceeded>() => Ok(if irrd {
             "F Query timed out\n"
         } else {
@@ -891,10 +910,21 @@ fn frame_irrd(body: &str) -> String {
 
 fn frame_values(values: Vec<String>) -> String {
     if values.is_empty() {
-        "D\n".to_owned()
-    } else {
-        frame_irrd(&values.join(" "))
+        return "D\n".to_owned();
     }
+    // Consume each owned value while framing, avoiding a second full joined
+    // payload alongside the final TCP response for multi-million-prefix sets.
+    let bytes = values.iter().map(|value| value.len() + 1).sum::<usize>();
+    let mut response = String::with_capacity(bytes + 32);
+    response.push_str(&format!("A{bytes}\n"));
+    for (index, value) in values.into_iter().enumerate() {
+        if index != 0 {
+            response.push(' ');
+        }
+        response.push_str(&value);
+    }
+    response.push_str("\nC\n");
+    response
 }
 
 /// Match `str::lines().join("\n")` without a line vector or copying ordinary

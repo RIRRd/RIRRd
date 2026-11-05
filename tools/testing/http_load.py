@@ -116,8 +116,8 @@ class PublicAdmission(unittest.TestCase):
             'rate_per_second': [0, 10001, -1, '"fast"', 'nan'],
             'burst': [0, 10001],
             'max_active': [0, 17],
-            'max_response_bytes': [0, 1023, 33554433],
-            'max_response_buffer_bytes': [0, 20971519, 536870913],
+            'max_response_bytes': [0, 1023, 134217729],
+            'max_response_buffer_bytes': [0, 134217727, 536870913],
             'unknown_option': [1],
         }
         base = self.registry.config.read_text().replace('registry.redb', 'must-not-exist.redb')

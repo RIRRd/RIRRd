@@ -4,13 +4,15 @@ use std::{
     collections::{HashMap, VecDeque},
     error::Error as _,
     net::IpAddr,
+    pin::Pin,
     sync::{Arc, Mutex},
+    task::{Context, Poll},
     time::{Duration, Instant},
 };
 
 use axum::{
     Json, Router,
-    body::{Body, Bytes, to_bytes},
+    body::{Body, Bytes, HttpBody, to_bytes},
     extract::{Request, State},
     http::{Method, StatusCode, header},
     middleware::{self, Next},
@@ -220,6 +222,71 @@ impl Drop for Active {
 struct AdmittedBytes {
     bytes: Bytes,
     _active: Active,
+    _query_control: Option<crate::storage::QueryControl>,
+}
+
+struct GuardedBytes<G> {
+    bytes: Bytes,
+    _guard: G,
+}
+impl<G> AsRef<[u8]> for GuardedBytes<G> {
+    fn as_ref(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
+struct GuardedBody<G> {
+    body: Body,
+    guard: G,
+}
+impl<G: Clone + Send + Sync + Unpin + 'static> HttpBody for GuardedBody<G> {
+    type Data = Bytes;
+    type Error = axum::Error;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+    ) -> Poll<Option<Result<http_body::Frame<Bytes>, Self::Error>>> {
+        let this = self.get_mut();
+        match Pin::new(&mut this.body).poll_frame(context) {
+            Poll::Ready(Some(Ok(frame))) => Poll::Ready(Some(Ok(frame.map_data(|bytes| {
+                Bytes::from_owner(GuardedBytes {
+                    bytes,
+                    _guard: this.guard.clone(),
+                })
+            })))),
+            other => other,
+        }
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.body.is_end_stream()
+    }
+
+    fn size_hint(&self) -> http_body::SizeHint {
+        // This wrapper does not change bytes. Preserve exact HTTP framing.
+        self.body.size_hint()
+    }
+}
+
+/// Keep a completed heavy query's lease through private/local HTTP delivery,
+/// including the final cloned data frame after Hyper has dropped the Body.
+pub(crate) fn retain_query_control(response: Response) -> Response {
+    let Some(control) = response
+        .extensions()
+        .get::<crate::storage::QueryControl>()
+        .cloned()
+    else {
+        return response;
+    };
+    let (parts, body) = response.into_parts();
+    Response::from_parts(
+        parts,
+        Body::new(GuardedBody {
+            body,
+            guard: control,
+        }),
+    )
 }
 impl AsRef<[u8]> for AdmittedBytes {
     fn as_ref(&self) -> &[u8] {
@@ -368,6 +435,12 @@ async fn admit(State(state): State<Arc<PublicHttp>>, request: Request, next: Nex
     let bytes = Bytes::from_owner(AdmittedBytes {
         bytes,
         _active: active,
+        // Public collection may concatenate frames into a new allocation;
+        // retain the lease independently of those original frame owners.
+        _query_control: parts
+            .extensions
+            .get::<crate::storage::QueryControl>()
+            .cloned(),
     });
     state.response(Response::from_parts(parts, Body::from(bytes)), started, id)
 }
@@ -375,6 +448,26 @@ async fn admit(State(state): State<Arc<PublicHttp>>, request: Request, next: Nex
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn response_guard_survives_body_consumption_and_last_byte_slice() {
+        use http_body_util::BodyExt;
+        let guard = Arc::new(());
+        let lifetime = Arc::downgrade(&guard);
+        let mut body = Body::new(GuardedBody {
+            body: Body::from("complete reply"),
+            guard,
+        });
+        assert_eq!(body.size_hint().exact(), Some(14));
+        let bytes = body.frame().await.unwrap().unwrap().into_data().unwrap();
+        assert_eq!(bytes, "complete reply");
+        drop(body);
+        assert!(lifetime.upgrade().is_some());
+        let slice = bytes.slice(1..);
+        drop(bytes);
+        assert!(lifetime.upgrade().is_some());
+        drop(slice);
+        assert!(lifetime.upgrade().is_none());
+    }
     #[test]
     fn burst_refill_and_clock_regression_are_bounded() {
         let mut limiter = Limiter::default();
@@ -697,7 +790,39 @@ mod tests {
     #[tokio::test]
     async fn slow_consumers_hold_admission_and_global_bytes_until_disconnect() {
         use std::sync::atomic::{AtomicUsize, Ordering};
-        use tokio::io::AsyncWriteExt;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
+        use tokio::sync::mpsc;
+
+        // Socket receive-buffer settings are hints: Windows can accept the
+        // entire response despite a small SO_RCVBUF. A bounded duplex transport
+        // drives the real Hyper HTTP path with deterministic backpressure.
+        struct BoundedListener(mpsc::Receiver<DuplexStream>);
+        impl axum::serve::Listener for BoundedListener {
+            type Io = DuplexStream;
+            type Addr = ();
+            async fn accept(&mut self) -> (Self::Io, Self::Addr) {
+                (self.0.recv().await.unwrap(), ())
+            }
+            fn local_addr(&self) -> std::io::Result<Self::Addr> {
+                Ok(())
+            }
+        }
+        async fn connect(sender: &mpsc::Sender<DuplexStream>) -> DuplexStream {
+            let (client, server) = tokio::io::duplex(1024);
+            sender.send(server).await.unwrap();
+            client
+        }
+        const REQUEST: &[u8] = b"GET /v1/whois/?q=!6AS64496 HTTP/1.1\r\nHost: localhost\r\nX-RIRRd-Client: 192.0.2.1\r\nConnection: close\r\n\r\n";
+        async fn complete_request(sender: &mpsc::Sender<DuplexStream>) -> String {
+            let mut client = connect(sender).await;
+            client.write_all(REQUEST).await.unwrap();
+            let mut reply = String::new();
+            tokio::time::timeout(Duration::from_secs(2), client.read_to_string(&mut reply))
+                .await
+                .unwrap()
+                .unwrap();
+            reply
+        }
         let size = 20 * 1024 * 1024;
         let policy = PublicHttpPolicy {
             max_active: 2,
@@ -720,13 +845,11 @@ mod tests {
                 }
             }),
         ));
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        let socket = tokio::net::TcpSocket::new_v4().unwrap();
-        socket.set_recv_buffer_size(1024).unwrap();
-        let mut slow = socket.connect(address).await.unwrap();
-        slow.write_all(b"GET /v1/whois/?q=!6AS64496 HTTP/1.1\r\nHost: localhost\r\nX-RIRRd-Client: 192.0.2.1\r\nConnection: close\r\n\r\n").await.unwrap();
+        let (connections, incoming) = mpsc::channel(4);
+        let server =
+            tokio::spawn(async move { axum::serve(BoundedListener(incoming), app).await.unwrap() });
+        let mut slow = connect(&connections).await;
+        slow.write_all(REQUEST).await.unwrap();
         tokio::time::timeout(Duration::from_secs(2), async {
             while state.metrics.lock().unwrap().successful != 1 {
                 tokio::time::sleep(Duration::from_millis(2)).await;
@@ -740,7 +863,7 @@ mod tests {
         assert_eq!(state.slots.available_permits(), 1);
         assert_eq!(state.response_bytes.available_permits(), 0);
         assert!(
-            request(address, "192.0.2.1")
+            complete_request(&connections)
                 .await
                 .starts_with("HTTP/1.1 503")
         );
@@ -759,7 +882,7 @@ mod tests {
         .unwrap();
         assert_eq!(state.response_bytes.available_permits(), size);
         assert_eq!(state.metrics.lock().unwrap().response_buffer_bytes, 0);
-        assert!(request(address, "192.0.2.1").await.ends_with("recovered"));
+        assert!(complete_request(&connections).await.ends_with("recovered"));
         server.abort();
     }
 }

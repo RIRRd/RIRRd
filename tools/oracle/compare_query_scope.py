@@ -44,7 +44,7 @@ def tcp(address, sources, query, exclude=None):
 
 
 def http(base, path, document=None):
-    data = json.dumps({'query': document}).encode() if document else None
+    data = json.dumps(document if isinstance(document, dict) else {'query': document}).encode() if document else None
     request = Request(base.rstrip('/')+path, data=data,
                       headers={'Content-Type': 'application/json'} if data else {})
     try:

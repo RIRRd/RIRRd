@@ -91,6 +91,7 @@ const NRTM3_RETAINED_OPERATIONS: u64 = 4096;
 pub(crate) struct QueryControl {
     deadline: Instant,
     cancelled: Arc<AtomicBool>,
+    heavy: Arc<std::sync::Mutex<Option<Arc<HeavyQueryLease>>>>,
 }
 
 thread_local! {
@@ -118,6 +119,7 @@ impl QueryControl {
         Self {
             deadline: Instant::now() + timeout,
             cancelled: Arc::new(AtomicBool::new(false)),
+            heavy: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -136,6 +138,50 @@ impl QueryControl {
         check_query_deadline()?;
         work()
     }
+}
+
+// One oversized prefix expansion may run/serialize at a time. Small lookups
+// retain their normal concurrency. The request control owns the lease beyond
+// the blocking worker, including TCP writes and HTTP body consumption.
+static HEAVY_QUERY_ACTIVE: AtomicBool = AtomicBool::new(false);
+pub(crate) struct HeavyQueryLease;
+impl Drop for HeavyQueryLease {
+    fn drop(&mut self) {
+        HEAVY_QUERY_ACTIVE.store(false, AtomicOrdering::Release);
+    }
+}
+#[derive(Debug)]
+pub(crate) struct HeavyQueryBusy;
+impl std::fmt::Display for HeavyQueryBusy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("large query capacity busy; retry later")
+    }
+}
+impl std::error::Error for HeavyQueryBusy {}
+
+pub(crate) fn acquire_heavy_query() -> Result<Arc<HeavyQueryLease>> {
+    QUERY_CONTROL.with(|active| {
+        let active = active.borrow();
+        let mut held = active
+            .as_ref()
+            .map(|control| control.heavy.lock().expect("query lease"));
+        if let Some(lease) = held.as_ref().and_then(|guard| guard.as_ref()) {
+            return Ok(lease.clone());
+        }
+        HEAVY_QUERY_ACTIVE
+            .compare_exchange(
+                false,
+                true,
+                AtomicOrdering::Acquire,
+                AtomicOrdering::Relaxed,
+            )
+            .map_err(|_| HeavyQueryBusy)?;
+        let lease = Arc::new(HeavyQueryLease);
+        if let Some(held) = held.as_mut() {
+            **held = Some(lease.clone());
+        }
+        Ok(lease)
+    })
 }
 
 pub(crate) fn check_query_deadline() -> Result<()> {
@@ -2796,6 +2842,25 @@ mod tests {
 
     const CRASH_TEST_DATABASE: &str = "RUST_IRRD_CRASH_TEST_DATABASE";
     const CRASH_TEST_READY: &[u8] = b"replacement in progress\n";
+
+    #[test]
+    fn oversized_query_lease_survives_workers_and_is_shared_by_request() -> Result<()> {
+        let first = QueryControl::new(Duration::from_secs(60));
+        let first_lease = first.run(acquire_heavy_query)?;
+        let another_field = first.run(acquire_heavy_query)?;
+        assert!(Arc::ptr_eq(&first_lease, &another_field));
+        let contender = QueryControl::new(Duration::from_secs(60));
+        assert!(contender.run(acquire_heavy_query).is_err());
+        drop(first_lease);
+        drop(another_field);
+        // The request owner still protects serialization / slow-reader output.
+        assert!(contender.run(acquire_heavy_query).is_err());
+        drop(first);
+        let recovered = contender.run(acquire_heavy_query)?;
+        drop(recovered);
+        drop(contender);
+        Ok(())
+    }
 
     #[test]
     fn set_lookup_preflight_bounds_duplicate_tokens_before_extraction() -> Result<()> {
