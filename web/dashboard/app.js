@@ -70,7 +70,7 @@
     let incremental = 0;
     for (const row of rows) {
       const [mode, warning] = health(row); if (mode === 'Incremental') incremental++;
-      const button = document.createElement('button'); button.type = 'button'; button.textContent = row.source; button.title = mode;
+      const button = document.createElement('button'); button.type = 'button'; button.textContent = row.source; button.title = mode; button.dataset.warning = String(warning); button.setAttribute('aria-label', row.source + ' · ' + mode);
       button.addEventListener('click', () => { el('source-detail').value = row.source; renderDetail(); location.hash = 'sources'; });
       el('overview-sources').append(button);
       if (!row.source.includes(filter)) continue;
@@ -85,7 +85,7 @@
     const names = rows.map(row => row.source);
     fillSelect('source-detail', names); fillSelect('browse-source', names);
     text('source-count', rows.length); text('source-summary', incremental + ' incremental · ' + (rows.length - incremental) + ' snapshot / other');
-    text('freshness-summary', incremental + ' incremental feeds. ' + (rows.length - incremental) + ' sources use scheduled snapshots or have a different update state.');
+    text('freshness-summary', incremental + ' sources follow incremental updates. ' + (rows.length - incremental) + ' use snapshots or another update state. Select a source to check its latest observation.');
     const retained = latest?.classes || metadata.retained_classes;
     text('sources-state', rows.length + ' configured sources' + (Array.isArray(retained) ? ' · ' + retained.length + ' retained object classes' : '')); renderDetail();
   }
@@ -160,12 +160,12 @@
     if (!metadata || loading || document.hidden) return;
     const selected = selectedPage();
     if (!force && !['overview', 'sources', 'system'].includes(selected)) return;
-    loading = true;
+    loading = true; el('refresh').disabled = true; text('refresh', 'Refreshing…');
     try {
       latest = await json(publicMode() ? 'live.json' : 'mirrors.json');
       if (publicMode() && latest.service !== 'online') throw new Error('Node service is unavailable');
       if (publicMode() && latest.observed_at && (!Number.isFinite(Date.parse(latest.observed_at)) || Math.abs(Date.now() - Date.parse(latest.observed_at)) > 90000)) throw new Error('The latest observation is stale or its clock cannot be verified');
-      text('mode-badge', metadata.node?.environment === 'development' ? 'Development' : publicMode() ? 'Live · Beta' : 'Private instance');
+      text('mode-badge', metadata.node?.environment === 'development' ? 'Development' : publicMode() ? 'Live · Beta' : 'Private instance'); el('mode-badge').classList.remove('warning');
       const totals = {};
       for (const group of Object.values(latest.class_counts || {})) for (const [name, value] of Object.entries(group)) totals[name] = (totals[name] || 0) + value;
       text('live-objects', count(latest.total_objects)); text('count-route', count(totals.route)); text('count-route6', count(totals.route6)); text('count-as-set', count(totals['as-set']));
@@ -197,8 +197,8 @@
       const observed = latest.observed_at ? new Date(latest.observed_at).toLocaleString() : 'Not reported';
       text('resource-observed', 'Observed ' + observed + (latest.run_kind === 'maintenance' ? ' · Maintenance-enabled daemon run' : latest.run_kind === 'serving' ? ' · Normal serving run' : ''));
       text('resource-note', publicMode() ? 'Counters cover this service. RSS and cgroup accounting differ; do not add them together. Other VM software is excluded.' : 'Host resource telemetry is not exposed by this local console. Use your operating-system service tools for host measurements.');
-    } catch (error) { if (publicMode()) text('mode-badge', 'Unavailable'); text('live-observed', 'Status unavailable: ' + error.message + '. Previously displayed figures may be stale.'); el('resource-metrics').classList.add('stale'); text('resource-observed', 'Live metrics unavailable. Last observation: ' + (latest?.observed_at ? new Date(latest.observed_at).toLocaleString() : 'unknown') + '. Displayed numbers may be stale.'); }
-    finally { loading = false; }
+    } catch (error) { if (publicMode()) { text('mode-badge', 'Unavailable'); el('mode-badge').classList.add('warning'); } text('live-observed', 'Status unavailable: ' + error.message + '. Previously displayed figures may be stale.'); el('resource-metrics').classList.add('stale'); text('resource-observed', 'Live metrics unavailable. Last observation: ' + (latest?.observed_at ? new Date(latest.observed_at).toLocaleString() : 'unknown') + '. Displayed numbers may be stale.'); }
+    finally { loading = false; el('refresh').disabled = false; text('refresh', 'Refresh'); }
   }
   function queryText() {
     const value = el('query-value').value.trim(), kind = el('query-kind').value, family = el('query-family').value;
@@ -225,7 +225,17 @@
       button.setAttribute('aria-pressed',String(active));
     });
 
-    el('query-family').disabled = !['origin', 'set'].includes(el('query-kind').value);
+    el('query-family').disabled = !['origin', 'set'].includes(kind);
+    const help = {
+      object: 'Look up an exact RPSL object or prefix. An IP address returns covering routes; the address determines IPv4 or IPv6.',
+      covering: 'Find registered routes that cover this IP address or prefix. The address determines IPv4 or IPv6.',
+      more: 'Find registered routes more specific than this prefix. The prefix determines IPv4 or IPv6.',
+      origin: 'Return ' + (family === '6' ? 'IPv6' : 'IPv4') + ' prefixes registered with this origin ASN.',
+      recursive: 'Expand nested AS-sets and return their ASNs. This returns membership, not prefixes.',
+      members: 'Return direct set members, including nested set names without expanding them.',
+      set: 'Expand the AS-set and return its members’ registered ' + (family === '6' ? 'IPv6' : 'IPv4') + ' prefixes.'
+    };
+    text('query-help', help[kind] + ' Select an explicit source for repeatable results.');
     try { command = "curl --fail '" + location.origin + requestPath(queryText()) + "'"; } catch { command = 'Choose a query above.'; }
     text('query-command', command);
   }
@@ -310,8 +320,8 @@
       text('instance-label', publicMode() ? 'Public read-only node' : 'Independent self-hosted instance'); el('community-link').hidden = !publicMode();
       text('mode-notice', publicMode() ? 'Public beta · Read-only queries. Source update times are listed individually.' : 'Self-hosted RIRRd console · Independent of the public community network. No community account or node listing is required.');
       if (metadata.node?.environment === 'development') {
-        text('mode-notice','Development · '+metadata.version+' · Independent mirror data; source freshness is listed individually. Not a production endpoint. Changes are untagged and not release packages.');
-        text('instance-label','Development · separate database');text('brand-caption','DEV BRANCH');el('community-link').href='https://irrd.tools/';
+        text('mode-notice','Development · '+metadata.version+' · Separate mirror database. Check source freshness before use. Not a production endpoint.');
+        text('instance-label','Development · separate database');text('brand-caption','Development console');el('community-link').href='https://irrd.tools/';
       }
       fillSelect('query-source' , metadata.http_sources || metadata.sources, true); commands(); el('query-value').value = sampleASN(); updateCommand(); el('query-submit').disabled = false;
       const taskName = new URLSearchParams(location.search).get('task');
