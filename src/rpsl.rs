@@ -39,62 +39,66 @@ impl fmt::Debug for Object {
 impl Object {
     /// Render for unprivileged queries. The stored text can contain credentials.
     pub fn public_text(&self) -> Cow<'_, str> {
-        let sensitive = |name: &str, value: &str| {
-            const OWNER_ID: &str = "registro.br ownerid:";
-            name.eq_ignore_ascii_case("auth")
-                || name.eq_ignore_ascii_case("rpki-ov-state")
-                || (name.eq_ignore_ascii_case("remarks")
-                    && value
-                        .trim_start()
-                        .get(..OWNER_ID.len())
-                        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(OWNER_ID)))
-        };
-        let private_marker = self.text.contains("-----BEGIN PGP PRIVATE KEY BLOCK-----");
-        let private_end = private_marker
-            && self
-                .text
-                .lines()
-                .any(|line| armor_value(line) == "-----END PGP PRIVATE KEY BLOCK-----");
-        let needs_filtering = self.text.lines().any(|line| {
-            line.starts_with(['#', '%'])
-                || (private_marker && private_key_start(line, private_end))
-                || line
-                    .split_once(':')
-                    .is_some_and(|(name, value)| sensitive(name, value))
-        });
-        if !needs_filtering {
-            return Cow::Borrowed(&self.text);
-        }
-
-        let mut result = String::with_capacity(self.text.len());
-        let mut suppress_continuations = false;
-        let mut private_block = false;
-        for segment in self.text.split_inclusive('\n') {
-            let line = segment.trim_end_matches(['\r', '\n']);
-            if private_block {
-                if armor_value(line) == "-----END PGP PRIVATE KEY BLOCK-----" {
-                    private_block = false;
-                }
-                continue;
-            }
-            if private_marker && private_key_start(line, private_end) {
-                private_block = true;
-                continue;
-            }
-            if line.starts_with(['#', '%']) {
-                continue;
-            }
-            if !is_continuation(line) {
-                suppress_continuations = line
-                    .split_once(':')
-                    .is_some_and(|(name, value)| sensitive(name, value));
-            }
-            if !suppress_continuations {
-                result.push_str(segment);
-            }
-        }
-        Cow::Owned(result)
+        public_text(&self.text)
     }
+}
+
+/// Render borrowed database text with the same public redaction as queries.
+pub(crate) fn public_text(text: &str) -> Cow<'_, str> {
+    let sensitive = |name: &str, value: &str| {
+        const OWNER_ID: &str = "registro.br ownerid:";
+        name.eq_ignore_ascii_case("auth")
+            || name.eq_ignore_ascii_case("rpki-ov-state")
+            || (name.eq_ignore_ascii_case("remarks")
+                && value
+                    .trim_start()
+                    .get(..OWNER_ID.len())
+                    .is_some_and(|prefix| prefix.eq_ignore_ascii_case(OWNER_ID)))
+    };
+    let private_marker = text.contains("-----BEGIN PGP PRIVATE KEY BLOCK-----");
+    let private_end = private_marker
+        && text
+            .lines()
+            .any(|line| armor_value(line) == "-----END PGP PRIVATE KEY BLOCK-----");
+    let needs_filtering = text.lines().any(|line| {
+        line.starts_with(['#', '%'])
+            || (private_marker && private_key_start(line, private_end))
+            || line
+                .split_once(':')
+                .is_some_and(|(name, value)| sensitive(name, value))
+    });
+    if !needs_filtering {
+        return Cow::Borrowed(text);
+    }
+
+    let mut result = String::with_capacity(text.len());
+    let mut suppress_continuations = false;
+    let mut private_block = false;
+    for segment in text.split_inclusive('\n') {
+        let line = segment.trim_end_matches(['\r', '\n']);
+        if private_block {
+            if armor_value(line) == "-----END PGP PRIVATE KEY BLOCK-----" {
+                private_block = false;
+            }
+            continue;
+        }
+        if private_marker && private_key_start(line, private_end) {
+            private_block = true;
+            continue;
+        }
+        if line.starts_with(['#', '%']) {
+            continue;
+        }
+        if !is_continuation(line) {
+            suppress_continuations = line
+                .split_once(':')
+                .is_some_and(|(name, value)| sensitive(name, value));
+        }
+        if !suppress_continuations {
+            result.push_str(segment);
+        }
+    }
+    Cow::Owned(result)
 }
 
 fn armor_value(line: &str) -> &str {

@@ -1527,6 +1527,10 @@ impl Store {
             "some routes are missing from the route prefix index"
         );
         let mut expected_counts = std::collections::BTreeMap::<(String, String), u64>::new();
+        // Object keys are ordered by source and class. Count each contiguous
+        // group without allocating two temporary strings for every record.
+        let mut count_group = (String::new(), String::new());
+        let mut group_count = 0;
         let mut indexed_attributes = 0;
         let mut indexed_inetnum_blocks = 0;
         let mut indexed_as_blocks = 0;
@@ -1534,9 +1538,15 @@ impl Store {
             maintenance::check_cancelled(cancel)?;
             let (identity, text) = entry?;
             let (source, class, key) = identity.value();
-            *expected_counts
-                .entry((source.into(), class.into()))
-                .or_default() += 1;
+            if (source, class) != (count_group.0.as_str(), count_group.1.as_str()) {
+                let next = (source.to_owned(), class.to_owned());
+                let previous = std::mem::replace(&mut count_group, next);
+                if group_count > 0 {
+                    expected_counts.insert(previous, group_count);
+                }
+                group_count = 0;
+            }
+            group_count += 1;
             if class == "inetnum"
                 && let Some(inetnum_cover) = &inetnum_cover
             {
@@ -1569,6 +1579,9 @@ impl Store {
                 );
                 indexed_attributes += 1;
             }
+        }
+        if group_count > 0 {
+            expected_counts.insert(count_group, group_count);
         }
         ensure!(
             inverse.len()? == indexed_attributes,
@@ -1660,18 +1673,10 @@ fn write_source_records(
     let records = read.open_table(OBJECTS)?;
     let mut count = 0;
     for entry in records.range((source, "", "")..(next_source.as_str(), "", ""))? {
-        let (identity, text) = entry?;
+        let (_, text) = entry?;
         let raw = text.value();
-        let object;
         let text = if public {
-            let (_, class, key) = identity.value();
-            object = Object {
-                source: source.to_owned(),
-                class: class.to_owned(),
-                key: key.to_owned(),
-                text: raw.to_owned(),
-            };
-            object.public_text()
+            crate::rpsl::public_text(raw)
         } else {
             Cow::Borrowed(raw)
         };
@@ -2455,6 +2460,99 @@ mod tests {
         } else {
             store.replace_source("TEST", [Ok(maintainer)])?;
         }
+        Ok(())
+    }
+
+    #[test]
+    fn public_export_borrows_large_records_and_redacts_sensitive_attributes() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = Store::open(&dir.path().join("export.redb"))?;
+        let policy = format!(
+            "filter-set: FLTR-LARGE\r\nfilter: {}\r\nsource: TEST\r\n",
+            "AS64496 OR ".repeat(100_000) + "AS64497"
+        );
+        let sensitive = "mntner: TEST-MNT\nauth: BCRYPT-PW private-fixture\n+ folded-secret\nremarks: registro.br ownerid: private-owner\n+ continued-owner\nrpki-ov-state: valid\nremarks: public remark\n# private comment\nsource: TEST\n";
+        store.replace_source(
+            "TEST",
+            [&policy, sensitive]
+                .into_iter()
+                .map(|text| crate::rpsl::parse_snapshot(text).map_err(anyhow::Error::msg)),
+        )?;
+        store.replace_source("OTHER", [Ok(object("OTHER", "aut-num", "AS64498"))])?;
+        let mut output = Vec::new();
+        assert_eq!(store.export_public_source("TEST", &mut output)?, (2, None));
+        let expected =
+            format!("{policy}\nmntner: TEST-MNT\nremarks: public remark\nsource: TEST\n\n");
+        assert_eq!(output, expected.as_bytes());
+        // An ordinary policy remains borrowed, including original CRLF bytes.
+        assert!(matches!(
+            crate::rpsl::public_text(&policy),
+            Cow::Borrowed(_)
+        ));
+        assert!(
+            store
+                .export_public_source("TEST", std::io::Cursor::new(&mut [0; 1][..]))
+                .is_err()
+        );
+        let mut raw = Vec::new();
+        assert_eq!(store.export_source("TEST", &mut raw)?, 2);
+        assert!(String::from_utf8(raw)?.contains("private-fixture"));
+        Ok(())
+    }
+
+    #[test]
+    fn verification_rejects_corrupt_counts_at_every_group_boundary() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = Store::open(&dir.path().join("counts.redb"))?;
+        store.replace_source(
+            "ALPHA",
+            [
+                Ok(object("ALPHA", "as-set", "AS-A")),
+                Ok(object("ALPHA", "as-set", "AS-B")),
+                Ok(object("ALPHA", "aut-num", "AS64496")),
+            ],
+        )?;
+        store.replace_source("OMEGA", [Ok(object("OMEGA", "aut-num", "AS64497"))])?;
+        assert_eq!(store.verify()?, 4);
+        // First, internal and final groups must all be counted independently.
+        for (source, class) in [
+            ("ALPHA", "as-set"),
+            ("ALPHA", "aut-num"),
+            ("OMEGA", "aut-num"),
+        ] {
+            let write = store.db.begin_write()?;
+            let previous = write
+                .open_table(CLASS_COUNTS)?
+                .insert((source, class), 999)?
+                .unwrap()
+                .value();
+            write.commit()?;
+            assert!(
+                store
+                    .verify()
+                    .unwrap_err()
+                    .to_string()
+                    .contains("object class counts")
+            );
+            let write = store.db.begin_write()?;
+            write
+                .open_table(CLASS_COUNTS)?
+                .insert((source, class), previous)?;
+            write.commit()?;
+            assert_eq!(store.verify()?, 4);
+        }
+        let write = store.db.begin_write()?;
+        write
+            .open_table(CLASS_COUNTS)?
+            .insert(("GHOST", "route"), 0)?;
+        write.commit()?;
+        assert!(
+            store
+                .verify()
+                .unwrap_err()
+                .to_string()
+                .contains("object class counts")
+        );
         Ok(())
     }
 
