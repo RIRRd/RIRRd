@@ -77,3 +77,20 @@ The 16 MiB profile used 13.18 MiB peak import CLI RSS. A separate per-file
 cache-eviction recheck recorded 22.16 MiB process PSS and 46.45 MiB cgroup peak,
 without OOM events. These bounds apply to the documented synthetic workload,
 not a minimum host requirement or a full-registry guarantee.
+
+## Reading resource graphs
+
+The console separates current application RSS from service filesystem cache.
+The service RAM ceiling is a limit, and the service peak is historical; neither
+is a reading of current application RAM. Cgroup totals include charged cache and
+kernel memory and do not sum with RSS. Clean inactive file cache is shown as an
+estimate of reclaimable pages. Shared pages can make RSS larger than memory
+charged to the service.
+
+Hosted telemetry defaults to the current daemon run and the last hour. Choose
+all recorded runs or a longer window to inspect earlier observations, including
+recorded maintenance. Graphs break at restarts and gaps; historical measurements
+are retained. Old or unavailable observations are marked stale. Allocated disk
+blocks and the database file's reserved length are shown separately where the
+host provides both figures. The standalone console leaves unsupported host
+metrics unreported.

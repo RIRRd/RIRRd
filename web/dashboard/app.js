@@ -3,10 +3,10 @@
   const el = id => document.getElementById(id);
   const text = (id, value) => { el(id).textContent = value; };
   const count = n => Number(n || 0).toLocaleString();
-  const bytes = n => Number.isFinite(n) ? (n / 1048576).toFixed(1) + ' MiB' : 'Not reported';
+  const bytes = n => Number.isFinite(n) ? n >= 1073741824 ? (n / 1073741824).toFixed(2) + ' GiB' : (n / 1048576).toFixed(1) + ' MiB' : 'Not reported';
   const pages = ['overview', 'query', 'sources', 'api', 'connect', 'system'];
   let metadata, latest, loading = false, currentResult = '', command = '', cursor = null, queryController;
-  let historyData, historyFetched = 0;
+  let historyData, historyFetched = 0, historyScope = 'run', historyWindow = 3600;
   const publicMode = () => metadata?.public_service === true;
   const selectedPage = () => pages.includes(location.hash.slice(1)) ? location.hash.slice(1) : 'overview';
   const sampleASN = () => metadata?.sources?.includes('EXAMPLE') ? 'AS64496' : 'AS3333';
@@ -122,8 +122,12 @@
   }
   function renderHistory() {
     if (!historyData) return;
-    const cutoff = Date.now() / 1000 - Number(el('history-range').value);
-    const samples = historyData.samples.filter(p => p.timestamp >= cutoff);
+    const cutoff = Date.now() / 1000 - historyWindow;
+    const started = latest?.process_started_at_unix_seconds;
+    const scoped = historyScope === 'run' && Number.isFinite(started);
+    const samples = historyData.samples.filter(p => p.timestamp >= cutoff && (!scoped ||
+      (p.timestamp >= started && (!p.run_id || !latest.process_run_id || p.run_id === latest.process_run_id))));
+    const events = (historyData.events || []).filter(e => e.end >= cutoff && (!scoped || e.end >= started));
     const charts = window.RIRRdCharts;
     const selected=selectedPage();
     if(selected==='overview'){
@@ -131,14 +135,20 @@
     charts.line(el('latency-chart'), samples, 'http_p95_ms', 'Recent HTTP p95 response time', v => v.toFixed(1) + ' ms');
     }
     if(selected==='system'){
-    charts.line(el('memory-chart'), samples, 'rss_bytes', 'Registry process resident memory', v => (v / 1048576).toFixed(0) + ' MiB');
-    charts.line(el('cpu-chart'), samples, 'cpu_percent', 'Registry CPU as a percentage of one core', v => v.toFixed(1) + '%');
+    charts.line(el('memory-chart'), samples, 'rss_bytes', 'Registry process resident memory', bytes, {events});
+    charts.line(el('cpu-chart'), samples, 'cpu_percent', 'Registry CPU as a percentage of one core', v => v.toFixed(2) + '%', {events});
     }
-    text('history-note', historyData.scope + ' Samples: ' + samples.length + '. Collection began ' + (historyData.samples[0] ? new Date(historyData.samples[0].timestamp * 1000).toLocaleString() : 'just now') + '.');
+    const note = (scoped ? 'Current daemon run, started ' + new Date(started * 1000).toLocaleString() : historyScope === 'run' ? 'Run identity unavailable; showing the selected time window' : 'All recorded runs, including maintenance') +
+      ' · ' + samples.length + ' measured samples. Gaps and restarts are not interpolated.';
+    text('history-note', note); text('resource-history-note', note);
+    const out = el('resource-events'); out.replaceChildren();
+    for (const event of events) {
+      const item = document.createElement('li'); item.textContent = event.label + ' · ' + new Date(event.start * 1000).toLocaleString() + ' to ' + new Date(event.end * 1000).toLocaleString() + ' · shaded in the charts'; out.append(item);
+    }
   }
   async function refreshHistory(force) {
     if (!publicMode()) return;
-    el('overview-history').hidden = false; el('resource-history').hidden = false;
+    el('overview-history').hidden = false; el('resource-history').hidden = false; el('resource-history-panel').hidden = false;
     try {
       if (force || Date.now() - historyFetched > 60000) {
         historyData = await json('history.json'); historyFetched = Date.now();
@@ -154,6 +164,7 @@
     try {
       latest = await json(publicMode() ? 'live.json' : 'mirrors.json');
       if (publicMode() && latest.service !== 'online') throw new Error('Node service is unavailable');
+      if (publicMode() && latest.observed_at && (!Number.isFinite(Date.parse(latest.observed_at)) || Math.abs(Date.now() - Date.parse(latest.observed_at)) > 90000)) throw new Error('The latest observation is stale or its clock cannot be verified');
       text('mode-badge', metadata.node?.environment === 'development' ? 'Development' : publicMode() ? 'Live · Beta' : 'Private instance');
       const totals = {};
       for (const group of Object.values(latest.class_counts || {})) for (const [name, value] of Object.entries(group)) totals[name] = (totals[name] || 0) + value;
@@ -167,11 +178,26 @@
       RIRRdCharts.bars(el('source-chart'), sourceRows().map(row => ({label:row.source,value:Object.values(classes(row)).reduce((n,v)=>n+v,0)})).sort((a,b)=>b.value-a.value), 'Committed IRR objects by source');
       if (['overview','system'].includes(selected) || force) await refreshHistory(force);
       el('resource-metrics').replaceChildren();
-      for (const [label, value, detail] of [['Process memory', bytes(latest.process_rss_bytes), 'Resident memory (RSS)'], ['Service memory', bytes(latest.cgroup_memory_bytes), 'Includes charged filesystem cache'], ['CPU, one-core scale', latest.cpu_percent_one_core == null ? 'Not reported' : latest.cpu_percent_one_core.toFixed(2) + '%', 'Sampled, not lifetime CPU'], ['Database file', latest.database_bytes == null ? 'Not reported' : (latest.database_bytes / 1073741824).toFixed(2) + ' GiB', 'Current database generation']]) {
+      el('resource-metrics').classList.remove('stale');
+      const cache = latest.service_file_cache_bytes, allocated = latest.database_allocated_bytes;
+      const rows = [['Application RAM', bytes(latest.process_rss_bytes), 'Current process resident memory (RSS)'],
+        [cache == null ? 'Service total' : 'Service file cache', bytes(cache ?? latest.cgroup_memory_bytes), cache == null ? 'Includes charged cache and kernel memory' : bytes(latest.service_reclaimable_cache_bytes) + ' clean inactive pages; reclaimable estimate'],
+        ['CPU · one core = 100%', latest.cpu_percent_one_core == null ? 'Waiting for a second sample' : latest.cpu_percent_one_core.toFixed(2) + '%', 'Current interval, not a lifetime peak'],
+        [allocated == null ? 'Database file' : 'Database on disk', (allocated ?? latest.database_bytes) == null ? 'Not reported' : ((allocated ?? latest.database_bytes) / 1073741824).toFixed(2) + ' GiB', allocated == null ? 'File length; allocated space unavailable' : (latest.database_bytes / 1073741824).toFixed(2) + ' GiB file length']];
+      for (const [label, value, detail] of rows) {
         const card = document.createElement('article'), name = document.createElement('span'), number = document.createElement('strong'), note = document.createElement('small'); name.textContent = label; number.textContent = value; note.textContent = detail; card.append(name, number, note); el('resource-metrics').append(card);
       }
-      text('resource-note', publicMode() ? 'Only this node’s service is measured here. Other VM software and reclaimable OS cache are separate.' : 'Host resource telemetry is not exposed by this local console. Use your operating-system service tools for host measurements.');
-    } catch (error) { if (publicMode()) text('mode-badge', 'Unavailable'); text('live-observed', 'Status unavailable: ' + error.message + '. Previously displayed figures may be stale.'); }
+      const accounting = el('resource-accounting'); accounting.replaceChildren();
+      for (const [label, value] of [['Service total · includes cache', bytes(latest.cgroup_memory_bytes)],
+        ['Service working set · estimate', bytes(latest.service_working_set_bytes)],
+        ['Service RAM ceiling · not usage', latest.service_memory_limit_bytes == null ? 'Not reported / unlimited' : (latest.service_memory_limit_bytes / 1073741824).toFixed(2) + ' GiB'],
+        ['Historical service peak · includes cache', bytes(latest.cgroup_memory_peak_bytes)]]) {
+        const term = document.createElement('dt'), definition = document.createElement('dd'); term.textContent = label; definition.textContent = value; accounting.append(term, definition);
+      }
+      const observed = latest.observed_at ? new Date(latest.observed_at).toLocaleString() : 'Not reported';
+      text('resource-observed', 'Observed ' + observed + (latest.run_kind === 'maintenance' ? ' · Maintenance-enabled daemon run' : latest.run_kind === 'serving' ? ' · Normal serving run' : ''));
+      text('resource-note', publicMode() ? 'Counters cover this service. RSS and cgroup accounting differ; do not add them together. Other VM software is excluded.' : 'Host resource telemetry is not exposed by this local console. Use your operating-system service tools for host measurements.');
+    } catch (error) { if (publicMode()) text('mode-badge', 'Unavailable'); text('live-observed', 'Status unavailable: ' + error.message + '. Previously displayed figures may be stale.'); el('resource-metrics').classList.add('stale'); text('resource-observed', 'Live metrics unavailable. Last observation: ' + (latest?.observed_at ? new Date(latest.observed_at).toLocaleString() : 'unknown') + '. Displayed numbers may be stale.'); }
     finally { loading = false; }
   }
   function queryText() {
@@ -300,7 +326,12 @@
       await refresh();
     } catch (error) { text('mode-notice', 'Unable to connect: ' + error.message); el('mode-notice').className = 'notice error'; }
   }
-  el('history-range').addEventListener('change', renderHistory);
+  document.querySelectorAll('[data-history-range]').forEach(control => control.addEventListener('change', () => {
+    historyWindow = Number(control.value); document.querySelectorAll('[data-history-range]').forEach(other => { other.value = control.value; }); renderHistory();
+  }));
+  document.querySelectorAll('[data-history-scope]').forEach(control => control.addEventListener('change', () => {
+    historyScope = control.value; document.querySelectorAll('[data-history-scope]').forEach(other => { other.value = control.value; }); renderHistory();
+  }));
   window.addEventListener('hashchange', page);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
   document.querySelectorAll('[data-task]').forEach(button => button.addEventListener('click', () => task(button.dataset.task)));
