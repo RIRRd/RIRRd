@@ -42,3 +42,13 @@ regexes = [
   '''^key-cert", "PGPKEY-A1B2C3D4"$''',
   '''^key-cert: PGPKEY-A1B2C3D4"$''',
 ]
+
+[[allowlists]]
+targetRules = ["private-key"]
+description = "Exact borrowed-text armor detection expression; no key material"
+condition = "AND"
+paths = ['''(^|/)src/rpsl\.rs$''']
+regexTarget = "match"
+regexes = [
+  '''^-----BEGIN PGP PRIVATE KEY BLOCK-----"\);\n    let private_end = private_marker\n        && text\n            \.lines\(\)\n            \.any\(\|line\| armor_value\(line\) == "-----END PGP PRIVATE KEY BLOCK-----$''',
+]
