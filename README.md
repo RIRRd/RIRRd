@@ -169,6 +169,15 @@ concurrency. Absolute deadlines and cancellation stop index/traversal work.
 Operators serving very large transit sets may need a longer finite
 `io_timeout_seconds`; this does not change the result or memory limits.
 
+GraphQL resolver resource failures return `data: null` with a stable `extensions.code`:
+`RIRRD_RESOURCE_LIMIT`, `RIRRD_CAPACITY`, or `RIRRD_QUERY_TIMEOUT`. Capacity
+responses use HTTP 503 with `Retry-After: 1`; deadlines use HTTP 504. HTTP
+admission or an outer timeout can reject before a GraphQL body is available. Query
+validation and ordinary GraphQL errors retain their normal response behavior.
+A source filter limits both set definitions and routes. To prefer one source's
+set definition while including routes from other registries, pass the complete
+source list in the desired priority order rather than selecting that source alone.
+
 | Configuration | Purpose |
 |---|---|
 | `database` | redb file. A relative path is resolved against the TOML file's parent. |
