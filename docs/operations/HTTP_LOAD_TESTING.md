@@ -117,6 +117,24 @@ TLS and network delivery. Rejected attempts never lower successful percentiles.
 Client cancellations before handler completion are counted separately; a worker
 may continue after its caller times out. Counters reset when the daemon restarts.
 
+## Queries during mirror updates
+
+Queries use a pinned committed redb snapshot for their entire calculation. A
+mirror transaction can prepare and commit updates while existing readers finish
+against their earlier view. Recursive sets, multiple origins, object lookups and
+GraphQL aliases cannot mix database revisions within one request. The next
+request captures the newly committed view.
+
+This removes the former wait behind the mirror writer's query gate. Previously,
+eight otherwise inexpensive requests could occupy the handler slots while a
+mirror commit was pending, causing subsequent requests to receive 503. Writer
+ordering remains serialized; query and output capacity limits still apply.
+Tests pause a real mirror transaction, exercise normal TCP/HTTP entry points
+before allowing it to commit, and verify both the old coherent answer and the
+new answer afterward. GraphQL tests commit between aliases and retain a single
+view across every resolver. Cancellation retains the view until background work
+ends, while completed response bodies retain no database snapshot.
+
 ## Repeatable synthetic regression
 
 The standard core CI profile runs the native HTTP load contracts on every build:

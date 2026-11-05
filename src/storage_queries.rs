@@ -37,7 +37,7 @@ impl Store {
             return Ok(Vec::new());
         }
         ensure!(!filters.is_empty(), "missing indexed query filter");
-        let read = self.db.begin_read()?;
+        let read = self.read_transaction()?;
         let records = read.open_table(OBJECTS)?;
         let inverse = read.open_table(INVERSE)?;
         let mut output = Vec::new();

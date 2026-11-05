@@ -169,6 +169,12 @@ concurrency. Absolute deadlines and cancellation stop index/traversal work.
 Operators serving very large transit sets may need a longer finite
 `io_timeout_seconds`; this does not change the result or memory limits.
 
+Each WHOIS or GraphQL request reads one committed database snapshot. Mirror
+updates can commit concurrently; recursive expansion and GraphQL aliases retain
+the same view throughout a response. The read snapshot is released when query
+calculation finishes, before a slow client consumes the prepared response.
+Writer ordering and authoritative-update transactions remain serialized.
+
 GraphQL resolver resource failures return `data: null` with a stable `extensions.code`:
 `RIRRD_RESOURCE_LIMIT`, `RIRRD_CAPACITY`, or `RIRRD_QUERY_TIMEOUT`. Capacity
 responses use HTTP 503 with `Retry-After: 1`; deadlines use HTTP 504. HTTP

@@ -17,7 +17,7 @@ use async_graphql::{
     Error, ErrorExtensions, Request, Value,
     dynamic::{
         Field, FieldFuture, FieldValue, InputValue, Interface, InterfaceField,
-        Object as GraphqlObject, ResolverContext, Scalar, Schema, TypeRef,
+        Object as GraphqlObject, ResolverContext, Scalar, Schema, SchemaBuilder, TypeRef,
     },
 };
 use axum::{
@@ -28,17 +28,13 @@ use axum::{
     response::{IntoResponse, Response},
     routing::post,
 };
-use tokio::{
-    net::TcpListener,
-    sync::{OwnedRwLockReadGuard, Semaphore},
-    task::spawn_blocking,
-};
+use tokio::{net::TcpListener, sync::Semaphore, task::spawn_blocking};
 use zeroize::Zeroize;
 
 use crate::{
     rpsl::Object,
     sets::{self, recursive_members_at_root, routes_for_as_set_with_budget},
-    storage::{InverseFilter, Store},
+    storage::{InverseFilter, QueryView, Store},
 };
 
 const MAX_HTTP_BYTES: usize = 16 * 1024;
@@ -193,8 +189,6 @@ fn camel_case(attribute: &str) -> String {
     result
 }
 
-type QueryView = Arc<OwnedRwLockReadGuard<()>>;
-
 #[derive(Clone)]
 struct Lookup {
     store: Arc<Store>,
@@ -244,7 +238,7 @@ fn query_failure(error: &async_graphql::ServerError) -> Option<QueryFailure> {
 impl Lookup {
     async fn run<T: Send + 'static>(
         &self,
-        view: Option<QueryView>,
+        view: QueryView,
         control: Option<crate::storage::QueryControl>,
         work: impl FnOnce(&Store) -> Result<T> + Send + 'static,
     ) -> async_graphql::Result<T> {
@@ -256,9 +250,9 @@ impl Lookup {
             control.unwrap_or_else(|| crate::storage::QueryControl::new(Duration::from_secs(30)));
         spawn_blocking(move || {
             let _permit = permit;
-            // Keep the coherent view even if the HTTP deadline cancels its caller.
-            let _view = view;
-            control.run(|| work(&store))
+            // Keep the same MVCC snapshot through nested store reads, including
+            // when an HTTP deadline drops the future before its worker exits.
+            view.run(|| control.run(|| work(&store)))
         })
         .await
         .context("GraphQL lookup worker failed")
@@ -520,7 +514,7 @@ async fn objects(ctx: ResolverContext<'_>) -> async_graphql::Result<Option<Field
 
     let records = lookup
         .run(
-            ctx.data_opt::<QueryView>().cloned(),
+            ctx.data::<QueryView>()?.clone(),
             ctx.data_opt::<crate::storage::QueryControl>().cloned(),
             move |store| {
                 let classes = classes.unwrap_or_default();
@@ -600,7 +594,24 @@ impl async_graphql::extensions::Extension for PrefixListExtension {
         request: Request,
         next: async_graphql::extensions::NextPrepareRequest<'_>,
     ) -> async_graphql::ServerResult<Request> {
-        next.run(ctx, request.data(self.0.clone())).await
+        // Pin one committed database generation for every alias and result row.
+        // The snapshot is request data, never a response/body extension: slow
+        // downloads retain their output lease without pinning old database pages.
+        let lookup = request
+            .data
+            .get(&std::any::TypeId::of::<Lookup>())
+            .and_then(|value| value.downcast_ref::<Lookup>())
+            .unwrap_or_else(|| ctx.data_unchecked::<Lookup>());
+        let store = lookup.store.clone();
+        let view = spawn_blocking(move || store.query_view())
+            .await
+            .context("GraphQL snapshot worker failed")
+            .and_then(|result| result)
+            .map_err(|error| {
+                tracing::error!(%error, "GraphQL snapshot failed");
+                async_graphql::ServerError::new("Lookup failed.", None)
+            })?;
+        next.run(ctx, request.data(self.0.clone()).data(view)).await
     }
 
     async fn resolve(
@@ -782,7 +793,7 @@ async fn asn_prefixes(ctx: ResolverContext<'_>) -> async_graphql::Result<Option<
     let budget = result_budget(&ctx);
     let rows = lookup
         .run(
-            ctx.data_opt::<QueryView>().cloned(),
+            ctx.data::<QueryView>()?.clone(),
             ctx.data_opt::<crate::storage::QueryControl>().cloned(),
             move |store| {
                 let mut remaining = MAX_PREFIXES;
@@ -860,7 +871,7 @@ async fn as_set_prefixes(
     let budget = result_budget(&ctx);
     let rows = lookup
         .run(
-            ctx.data_opt::<QueryView>().cloned(),
+            ctx.data::<QueryView>()?.clone(),
             ctx.data_opt::<crate::storage::QueryControl>().cloned(),
             move |store| {
                 let mut remaining = sets::MAX_ROUTE_RESULTS;
@@ -973,7 +984,7 @@ async fn recursive_set_members(
     let budget = result_budget(&ctx);
     let rows = lookup
         .run(
-            ctx.data_opt::<QueryView>().cloned(),
+            ctx.data::<QueryView>()?.clone(),
             ctx.data_opt::<crate::storage::QueryControl>().cloned(),
             move |store| {
                 let root_sources = root_source
@@ -1148,7 +1159,7 @@ async fn database_status(
     let authoritative_sources = Arc::clone(&lookup.authoritative_sources);
     let rows = lookup
         .run(
-            ctx.data_opt::<QueryView>().cloned(),
+            ctx.data::<QueryView>()?.clone(),
             ctx.data_opt::<crate::storage::QueryControl>().cloned(),
             move |store| {
                 sources
@@ -1184,6 +1195,16 @@ fn make_schema(
     sources: Vec<String>,
     authoritative_sources: HashSet<String>,
 ) -> Result<Schema> {
+    schema_builder(store, sources, authoritative_sources)
+        .finish()
+        .context("building GraphQL schema")
+}
+
+fn schema_builder(
+    store: Arc<Store>,
+    sources: Vec<String>,
+    authoritative_sources: HashSet<String>,
+) -> SchemaBuilder {
     let list = TypeRef::named_nn_list(TypeRef::STRING);
     let ip_version = TypeRef::named(TypeRef::INT);
     let mut object_query = Field::new(
@@ -1299,7 +1320,7 @@ fn make_schema(
         }
         builder = builder.register(object);
     }
-    builder.finish().context("building GraphQL schema")
+    builder
 }
 
 // HTTP is loopback-only. Reject arbitrary DNS names before any route (including
@@ -1374,15 +1395,12 @@ async fn bound_http(
 
 async fn execute(
     State(schema): State<Schema>,
-    Extension(store): Extension<Arc<Store>>,
     Extension(control): Extension<crate::storage::QueryControl>,
     Json(request): Json<Request>,
 ) -> impl IntoResponse {
-    let view = Arc::new(store.query_gate().clone().read_owned().await);
     let response = schema
         .execute(
             request
-                .data(view)
                 .data(Arc::new(sets::ResultBudget::default()))
                 .data(control),
         )
@@ -1520,7 +1538,15 @@ mod tests {
     async fn cancelled_graphql_worker_keeps_its_coherent_view_until_it_finishes() -> Result<()> {
         let directory = tempfile::tempdir()?;
         let store = Arc::new(Store::open(&directory.path().join("cancelled.redb"))?);
-        let view = Arc::new(store.query_gate().clone().read_owned().await);
+        store.replace_source(
+            "TEST",
+            [
+                crate::rpsl::parse("route: 192.0.2.0/24\norigin: AS64496\nsource: TEST\n")
+                    .map_err(anyhow::Error::msg),
+            ],
+        )?;
+        let view = store.query_view()?;
+        let lifetime = view.lifetime();
         let lookup = Lookup {
             store: store.clone(),
             sources: Arc::new([]),
@@ -1529,11 +1555,15 @@ mod tests {
         };
         let (started, ready) = tokio::sync::oneshot::channel();
         let (finish, wait) = std::sync::mpsc::channel();
+        let (finished, done) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {
             lookup
-                .run(Some(view), None, move |_| {
+                .run(view, None, move |store| {
+                    let before = store.origin_prefixes("route", "AS64496", &["TEST".into()], 8)?;
                     let _ = started.send(());
                     wait.recv_timeout(Duration::from_secs(5))?;
+                    let after = store.origin_prefixes("route", "AS64496", &["TEST".into()], 8)?;
+                    let _ = finished.send((before, after));
                     Ok(())
                 })
                 .await
@@ -1541,11 +1571,219 @@ mod tests {
         ready.await?;
         task.abort();
         assert!(task.await.unwrap_err().is_cancelled());
-        assert!(store.query_gate().try_write().is_err());
+        assert!(lifetime.upgrade().is_some());
+        // A cancelled caller does not prevent a concurrent writer committing,
+        // but its still-running worker must continue reading the original view.
+        let writer = store.clone();
+        spawn_blocking(move || {
+            writer.replace_source(
+                "TEST",
+                [
+                    crate::rpsl::parse("route: 203.0.113.0/24\norigin: AS64496\nsource: TEST\n")
+                        .map_err(anyhow::Error::msg),
+                ],
+            )
+        })
+        .await??;
         finish.send(())?;
-        let guard =
-            tokio::time::timeout(Duration::from_secs(5), store.query_gate().write()).await?;
-        drop(guard);
+        let (before, after) = tokio::time::timeout(Duration::from_secs(5), done).await??;
+        assert_eq!(before, vec!["192.0.2.0/24"]);
+        assert_eq!(after, before);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while lifetime.upgrade().is_some() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await?;
+        assert_eq!(
+            store.origin_prefixes("route", "AS64496", &["TEST".into()], 8)?,
+            vec!["203.0.113.0/24"]
+        );
+        Ok(())
+    }
+
+    struct CommitBetweenAliases {
+        store: Arc<Store>,
+        committed: Semaphore,
+        pending: std::sync::atomic::AtomicBool,
+        view_lifetime: Mutex<Option<std::sync::Weak<()>>>,
+    }
+    struct CommitBetweenAliasesFactory(Arc<CommitBetweenAliases>);
+
+    impl async_graphql::extensions::ExtensionFactory for CommitBetweenAliasesFactory {
+        fn create(&self) -> Arc<dyn async_graphql::extensions::Extension> {
+            self.0.clone()
+        }
+    }
+
+    #[async_graphql::async_trait::async_trait]
+    impl async_graphql::extensions::Extension for CommitBetweenAliases {
+        async fn prepare_request(
+            &self,
+            ctx: &async_graphql::extensions::ExtensionContext<'_>,
+            request: Request,
+            next: async_graphql::extensions::NextPrepareRequest<'_>,
+        ) -> async_graphql::ServerResult<Request> {
+            let view = request
+                .data
+                .get(&std::any::TypeId::of::<QueryView>())
+                .and_then(|value| value.downcast_ref::<QueryView>())
+                .unwrap();
+            *self.view_lifetime.lock().unwrap() = Some(view.lifetime());
+            next.run(ctx, request).await
+        }
+
+        async fn resolve(
+            &self,
+            ctx: &async_graphql::extensions::ExtensionContext<'_>,
+            info: async_graphql::extensions::ResolveInfo<'_>,
+            next: async_graphql::extensions::NextResolve<'_>,
+        ) -> async_graphql::ServerResult<Option<Value>> {
+            if info.parent_type != "Query" || !self.pending.load(Ordering::Acquire) {
+                return next.run(ctx, info).await;
+            }
+            if info.path_node.to_string() != "first" {
+                self.committed.acquire().await.unwrap().forget();
+                return next.run(ctx, info).await;
+            }
+            let first = next.run(ctx, info).await;
+            let store = self.store.clone();
+            let update = spawn_blocking(move || -> Result<()> {
+                use crate::nrtm3::{Kind, Operation};
+                let records = [
+                    (
+                        Kind::Delete,
+                        "route: 192.0.2.0/24\norigin: AS64496\nsource: TEST\n",
+                    ),
+                    (
+                        Kind::Add,
+                        "route: 203.0.113.0/24\norigin: AS64496\nsource: TEST\n",
+                    ),
+                    (
+                        Kind::Delete,
+                        "route: 198.51.100.0/24\norigin: AS64497\nsource: TEST\n",
+                    ),
+                    (
+                        Kind::Add,
+                        "route6: 2001:db8::/32\norigin: AS64497\nsource: TEST\n",
+                    ),
+                    (
+                        Kind::Add,
+                        "as-set: AS-COHERENT\nmembers: AS64497\nsource: TEST\n",
+                    ),
+                ];
+                let operations = records
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, (kind, text))| {
+                        Ok(Operation {
+                            kind,
+                            serial: index as u64 + 1,
+                            object: crate::rpsl::parse(text)?,
+                        })
+                    });
+                store.apply_nrtm3("TEST", (1, 5), Some(0), operations)?;
+                Ok(())
+            })
+            .await;
+            self.pending.store(false, Ordering::Release);
+            self.committed.add_permits(32);
+            update
+                .map_err(|error| async_graphql::ServerError::new(error.to_string(), None))?
+                .map_err(|error| async_graphql::ServerError::new(error.to_string(), None))?;
+            first
+        }
+    }
+
+    #[tokio::test]
+    async fn graphql_aliases_rows_sets_and_serials_share_one_snapshot_across_commit() -> Result<()>
+    {
+        let directory = tempfile::tempdir()?;
+        let store = Arc::new(Store::open(&directory.path().join("coherent.redb"))?);
+        store.replace_source(
+            "TEST",
+            [
+                "route: 192.0.2.0/24\norigin: AS64496\nsource: TEST\n",
+                "route: 198.51.100.0/24\norigin: AS64497\nsource: TEST\n",
+                "as-set: AS-COHERENT\nmembers: AS64496\nsource: TEST\n",
+            ]
+            .into_iter()
+            .map(|text| crate::rpsl::parse(text).map_err(anyhow::Error::msg)),
+        )?;
+        let extension = Arc::new(CommitBetweenAliases {
+            store: store.clone(),
+            committed: Semaphore::new(0),
+            pending: std::sync::atomic::AtomicBool::new(true),
+            view_lifetime: Mutex::new(None),
+        });
+        let schema = schema_builder(store, vec!["TEST".into()], HashSet::new())
+            .extension(CommitBetweenAliasesFactory(extension.clone()))
+            .finish()?;
+        let query = r#"{
+            first: asnPrefixes(asns:[64496,64497]) { asn prefixes }
+            second: asnPrefixes(asns:[64496,64497]) { asn prefixes }
+            sets: asSetPrefixes(setNames:["AS-COHERENT"]) { prefixes }
+            members: recursiveSetMembers(setNames:["AS-COHERENT"]) { members }
+            objects: rpslObjects(rpslPk:["AS-COHERENT"]) { ... on RPSLAsSet { members } }
+            state: databaseStatus(sources:["TEST"]) { serialNewestMirror serialOldestJournal serialNewestJournal }
+        }"#;
+        let response = tokio::time::timeout(Duration::from_secs(5), schema.execute(query)).await?;
+        assert!(response.errors.is_empty(), "{:?}", response.errors);
+        let old = json!([
+            {"asn":64496,"prefixes":["192.0.2.0/24"]},
+            {"asn":64497,"prefixes":["198.51.100.0/24"]}
+        ]);
+        assert_eq!(
+            response.data.into_json()?,
+            json!({
+                "first":old,"second":old,
+                "sets":[{"prefixes":["192.0.2.0/24"]}],
+                "members":[{"members":["AS64496"]}],
+                "objects":[{"members":["AS64496"]}],
+                "state":[{"serialNewestMirror":null,"serialOldestJournal":null,"serialNewestJournal":null}]
+            })
+        );
+        let response = schema.execute(query).await;
+        assert!(response.errors.is_empty(), "{:?}", response.errors);
+        let new = json!([
+            {"asn":64496,"prefixes":["203.0.113.0/24"]},
+            {"asn":64497,"prefixes":["2001:db8::/32"]}
+        ]);
+        assert_eq!(
+            response.data.into_json()?,
+            json!({
+                "first":new,"second":new,
+                "sets":[{"prefixes":["2001:db8::/32"]}],
+                "members":[{"members":["AS64497"]}],
+                "objects":[{"members":["AS64497"]}],
+                "state":[{"serialNewestMirror":5,"serialOldestJournal":1,"serialNewestJournal":5}]
+            })
+        );
+        // Keep the HTTP response body unconsumed. Its output lease may live on,
+        // but its completed calculation must no longer retain database pages.
+        let response = execute(
+            State(schema),
+            Extension(crate::storage::QueryControl::new(Duration::from_secs(5))),
+            Json(Request::new(query)),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(
+            extension
+                .view_lifetime
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .upgrade()
+                .is_none()
+        );
+        let body = axum::body::to_bytes(response.into_body(), 16 * 1024).await?;
+        assert_eq!(
+            serde_json::from_slice::<JsonValue>(&body)?["data"]["first"],
+            new
+        );
         Ok(())
     }
 
@@ -2226,7 +2464,7 @@ mod tests {
         let (stop, stopped) = oneshot::channel();
         let server = tokio::spawn(serve(
             listener,
-            store,
+            store.clone(),
             test_http_config(address, None),
             async move {
                 let _ = stopped.await;
@@ -2252,7 +2490,11 @@ mod tests {
         }
 
         let body = json!({"query":"{ rpslObjects(rpslPk:[\"AS64496\"]) { rpslPk } }"}).to_string();
+        // A mirror writer's mutation gate must not stop an unrelated GraphQL
+        // read from serving the latest committed MVCC snapshot over HTTP.
+        let writer = store.query_gate().clone().write_owned().await;
         let reply = request(address, &body).await?;
+        drop(writer);
         assert!(reply.starts_with("HTTP/1.1 200 "), "{reply}");
         assert!(reply.contains(r#""rpslObjects":[]"#), "{reply}");
         let reply = request(address, &" ".repeat(MAX_HTTP_BYTES + 1)).await?;
