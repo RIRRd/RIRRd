@@ -201,7 +201,7 @@ reproduces a real capacity difference with valid queries; small-fixture success
 does not establish large-query parity. The fixture SHA-256 is
 `cac8a073b2f5eedadbb27c93552af1bc4de1635cf20b81ab592631d59f5b150b`.
 
-The final local development qualification used executable SHA-256
+The first complete large-query development qualification used executable SHA-256
 `1c69f9435759dd9996a0346c5f9eccc46b8ce7e9652881c2d7c7f131010a92a2`
 and passed **all 401 assertions: 325 source-scope plus 76 large-query checks**.
 The run started at `2026-11-05T13:26:58Z` and took 10.411 seconds. Its dedicated
@@ -234,6 +234,41 @@ duplicated output exceeds the shared budget; this is a larger test workload than
 the earlier 386-assertion run. The final complete origin recovery query took
 8.336 ms. These figures describe the synthetic fixture, not the full public
 source database.
+
+## Concurrent mirror updates
+
+Development commit `bdf419b7a48c82af30d64ab28c0270a73ccdc109`, executable SHA-256
+`5dec06b990a9d73eabb7bc6ce7cad3c387eaf0b4bf9f6f9e9cc38d205d732f7e`, replaces
+the query-side writer gate with a committed redb snapshot for each request.
+Writer and authentication ordering remain serialized. Recursive traversal and
+all GraphQL aliases share one database view; completed bodies retain no database
+snapshot, and canceled workers retain their view only until calculation ends.
+
+Deterministic tests pause an actual NRTMv3 transaction between operations while
+normal TCP and HTTP queries return the complete old state. After commit, fresh
+requests see the replacement. A GraphQL test commits between aliases and checks
+origins, recursive sets, object fields and source serials against the same old
+view, followed by a fresh request seeing the new state. These are additional
+consistency contracts; they do not establish upstream equivalence for every
+possible concurrent schedule.
+
+The exact executable passed all **401 oracle assertions** again at
+`2026-11-05T14:40:03Z`, plus **324 core cases**, **49 browser cases** and
+**87 operator/proxy cases**. Two optional diagnostic tests remain explicitly
+skipped. The 39-check inactive full-data corpus returned the same complete answers
+across TCP, HTTP WHOIS and GraphQL, including a 3,514,991-prefix set. Its
+13,983,859 objects, all 21 source states and configuration were unchanged afterward.
+Peak process RSS was 648.5 MiB during that correctness sequence under a three-CPU,
+3 GiB service ceiling and 64 MiB database cache. The host filesystem cache was
+warm; this is not a cold-cache throughput or minimum-host-memory qualification.
+
+Passing CI for that source revision:
+[core, including Linux x86-64, ARM64 and Windows](https://github.com/RIRRd/RIRRd/actions/runs/42047284498),
+[pinned IRRd oracle](https://github.com/RIRRd/RIRRd/actions/runs/42047284602),
+[router/browser integration](https://github.com/RIRRd/RIRRd/actions/runs/42047284739),
+[deployment smoke](https://github.com/RIRRd/RIRRd/actions/runs/42047284459),
+[fuzz smoke](https://github.com/RIRRd/RIRRd/actions/runs/42047284517) and
+[source hygiene](https://github.com/RIRRd/RIRRd/actions/runs/42047284380).
 
 The implementation now streams indirect members, bounds direct lookup extraction
 before allocating typed member vectors, shares a prefix/member budget across
