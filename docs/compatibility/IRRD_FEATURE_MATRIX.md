@@ -1,6 +1,6 @@
 # IRRd 4 compatibility inventory
 
-Current removal, migration and test evidence: [IRR-only beta.2 checkpoint](../STATUS.md).
+Current removal, migration and test evidence: [development status](../STATUS.md).
 
 > Current scope (4 November 2026): RIRRd is an IRR-only daemon. Embedded RPKI,
 > RTR, origin-validation APIs and ROA-file admission were removed for beta.2.
@@ -35,6 +35,22 @@ open until the stated behaviour and safety checks are demonstrated.
 
 ## Current development
 
+Beta.4 adds authenticated `inetnum`, `inet6num` and `irt` updates, bringing the
+bounded authoritative profile to 18 of the 19 retained classes. The shared
+synthetic corpus and normal CLI/HTTP decisions are documented in
+[allocation/IRT qualification](AUTHORITATIVE_ALLOCATIONS.md). `key-cert` and
+OpenPGP, accounts/tokens, mail and remaining reference/lifecycle semantics stay
+open; supporting a class is not complete schema parity.
+
+[Named source groups](../operations/SOURCE_ALIASES.md) preserve ordered physical
+source precedence without granting a wider HTTP or update scope. Indexed GraphQL
+filters now include `members`, `mpMembers`, `person`, `role` and `origin` as well
+as the existing six reference filters. Bounded selectivity probes choose the
+smallest index for intersections, avoiding failures caused solely by selecting a
+broad maintainer index when another filter is selective. Query work, output and
+cancellation limits remain finite. Pinned-oracle differences, including empty
+aliases and normalized inverse matching, remain explicit in the fixture evidence.
+
 The [two-source query comparison](QUERY_SOURCE_PARITY.md) adds reproducible
 source-precedence, duplicate-identity, recursive/indirect AS-set, IPv4/IPv6 and
 all-19-class checks against the pinned official daemon. Its 325 assertions include
@@ -54,12 +70,13 @@ Internet-load qualification.
 The 5 November development review adds bounded indexed GraphQL inverse filters,
 WHOIS `!j` serial discovery, protected-name checks for dangling contact references,
 and atomic deletion of an object with its referrers. Public lookup materialization
-is bounded before copying database values. Queries and service writers acquire
-coherency guards without holding blocked worker threads; deterministic tests
-exercise single-worker lock ordering and cancellation. See the
+is bounded before copying database values. Queries now pin committed MVCC snapshots independently of mirror commits;
+service writers retain asynchronous ordering. Deterministic tests exercise
+commit visibility, GraphQL alias coherence and cancellation. See the
 [review and measurements](DEVELOPMENT_REVIEW_2026_11_05.md). These corrections do
-not close the remaining account, four authoritative-class, NRTMv4 server,
-live-policy or release-qualification gaps.
+not close the remaining account, key-cert/OpenPGP, NRTMv4 server,
+live-policy or production-qualification gaps. The beta.4 class additions below
+supersede the earlier four-class limitation.
 
 
 The [full-catalog checkpoint](../benchmarks/STORAGE_FULL_2026_11_05.md) records
@@ -217,10 +234,10 @@ before marking the object schema verified.
 | Capability | Reference and specification | Rust implementation and compatibility target | Security requirement | Required evidence | Status |
 | --- | --- | --- | --- | --- | --- |
 | WHOIS transports and framing | [WHOIS manual][whois], [RFC 3912][3912] | TCP and HTTP `/v1/whois/`. Reproduce separate RIPE-style and IRRd-style response framing, empty and error cases, CRLF, byte lengths and TCP connection mode. | Bounded read, timeout, connections and responses. Apply access policies consistently. | Byte-level and connection transcript comparisons, including non-ASCII, truncation, pipelining and slow clients. | Partial. [TCP tests](../../tests/smoke.rs) cover one-shot exact, no entries, sanitized object and unsupported query. Persistent TCP sessions and per-source query state now have local coverage. Loopback HTTP WHOIS shares bounded query resolution and returns unframed text. NRTMv3 journal access is confined to TCP. Broader oracle framing coverage remains open. |
-| IRRd command language | [WHOIS manual][whois] | Support `!!`, `!t`, `!a`, `!g`, `!6`, `!i`, `!j`, `!J`, `!m`, `!o`, `!n`, `!r`, `!s`, `!e`, `!v`, and the `!fno-*-filter` commands. Track source selection and recursion exclusions per connection. | Bound recursion, visited nodes and output. Redact authentication fields. | Oracle transcript for each command, each `!r` option, source priority, source aliases, state changes and filter controls. | Partial. Local tests cover exact keys, origins, covering and covered prefix lookups, inverse attributes, persistent source selection and bounded set expansion. The upstream runtime oracle and remaining commands are open. |
+| IRRd command language | [WHOIS manual][whois] | Support `!!`, `!t`, `!a`, `!g`, `!6`, `!i`, `!j`, `!J`, `!m`, `!o`, `!n`, `!r`, `!s`, `!e`, `!v`, and the `!fno-*-filter` commands. Track source selection and recursion exclusions per connection. | Bound recursion, visited nodes and output. Redact authentication fields. | Oracle transcript for each command, each `!r` option, source priority, source aliases, state changes and filter controls. | Partial. Local tests cover exact keys, origins, covering and covered prefix lookups, inverse attributes, persistent source selection and bounded set expansion. The pinned TCP/HTTP oracle covers the documented corpus, including named source groups. Remaining commands and live policy controls stay open. |
 | RIPE-style language | [WHOIS manual][whois] | Support `-l`, `-L`, `-M`, `-x`, `-i`, `-t`, `-q sources`, `-g`, `-k`, `-s`, `-a`, `-T`, `-K`, `-V` and free text. Match query precedence and response ordering. | Budget broad lookups, gate NRTM separately and filter sensitive content. | Golden queries for modifier combinations, ranges, class templates, malformed commands and mirror ACLs. | Open |
 | Set and prefix resolution | [Query resolver][resolver], [RFC 2622][2622], [RFC 4012][4012] | Shared resolver for exact, covering and covered prefixes, origin queries, explicit and indirect set membership, source precedence and aliases. | Bound recursion and enforce per-query budgets across both APIs. | Directed cycles, duplicate memberships, cross-source aliases, IPv4/v6 boundaries, malformed ranges and ordering comparison. | Partial. Local storage and TCP tests cover bounded origin, exact, covering and covered prefix queries, and explicit and indirect set expansion. Full interoperability remains open. |
-| GraphQL schema and results | [GraphQL manual][graphql], [pinned schema generator][schema], [GraphQL specification][gqlspec] | Match `rpslObjects`, `databaseStatus`, `asnPrefixes`, `asSetPrefixes` and `recursiveSetMembers`, including ASN/IP scalars, generated RPSL types, interfaces, contacts union, filters, `recordLimit`, relationship traversal, source/status fields and restricted journal resolution. | Cost limits include aliases and fragments. Enforce bounded depth, request size, output, time and concurrency. Restrict traces and journal data. | Canonicalized introspection diff and response/error cases, budget and ACL tests, batched resolver load tests. | Partial. [GraphQL tests](../../src/graphql.rs) cover bounded exact keys, configured-source/class filters, common and typed fields, redaction and alias cost. ASN prefixes, AS-set prefixes and recursive set members with source pinning have local tests. Database status exposes configured sources, retained journal bounds and committed replication cursors. Policy/router scalar fields have 32 field-type and four value-query comparisons against pinned IRRd in [the scale checkpoint](../benchmarks/LINUX_SYNTHETIC_100K.md). Additional filters, relationships and schema parity remain open. |
+| GraphQL schema and results | [GraphQL manual][graphql], [pinned schema generator][schema], [GraphQL specification][gqlspec] | Match `rpslObjects`, `databaseStatus`, `asnPrefixes`, `asSetPrefixes` and `recursiveSetMembers`, including ASN/IP scalars, generated RPSL types, interfaces, contacts union, filters, `recordLimit`, relationship traversal, source/status fields and restricted journal resolution. | Cost limits include aliases and fragments. Enforce bounded depth, request size, output, time and concurrency. Restrict traces and journal data. | Canonicalized introspection diff and response/error cases, budget and ACL tests, batched resolver load tests. | Partial. [GraphQL tests](../../src/graphql.rs) cover bounded exact keys, configured-source/class filters, common and typed fields, redaction and alias cost. ASN prefixes, AS-set prefixes and recursive set members with source pinning have local tests. Database status exposes physical sources and query aliases, retained journal bounds and committed replication cursors. Eleven indexed inverse filters use bounded intersections with selectivity probes. Policy/router scalar fields have 32 field-type and four value-query comparisons against pinned IRRd in [the scale checkpoint](../benchmarks/LINUX_SYNTHETIC_100K.md). Additional filters, relationships and schema parity remain open. |
 | GraphQL explorer | [HTTP routes][http], [v4.5.4 release notes][release] | Serve GraphiQL from `/graphql/` with local assets. | Content Security Policy and no external script dependency. | Browser query and CSP validation. | Open |
 
 For `!m` exact lookups, the pinned manual describes the key as case
@@ -247,7 +264,7 @@ includes cases for each behavior. [WHOIS manual][whois] ·
 
 | Capability | Reference and specification | Rust implementation and compatibility target | Security requirement | Required evidence | Status |
 | --- | --- | --- | --- | --- | --- |
-| Submission and reports | [Database changes manual][changes], [HTTP routes][http], [RFC 2725][2725] | Create/update/delete via HTTPS, CLI, web and inbound mail. Match validation, per-object outcomes and notification semantics for multi-object batches. Keep authoritative flags and separate source policy. | Explicit authorization on every object, safe dry-run semantics and no plaintext secrets in feedback. | Differential validation and multi-object cases for success, rejection, references between objects and transaction failure. | Partial. Atomic contact, organisation, existing-maintainer, aut-num, route and set updates through CLI and opt-in loopback HTTP. Local tests cover rollback, redacted reports and GraphQL visibility. |
+| Submission and reports | [Database changes manual][changes], [HTTP routes][http], [RFC 2725][2725] | Create/update/delete via HTTPS, CLI, web and inbound mail. Match validation, per-object outcomes and notification semantics for multi-object batches. Keep authoritative flags and separate source policy. | Explicit authorization on every object, safe dry-run semantics and no plaintext secrets in feedback. | Differential validation and multi-object cases for success, rejection, references between objects and transaction failure. | Partial. Atomic updates for 18 classes, including contacts, organisation, existing maintainers, aut-num, route/sets, inetnum, inet6num and irt, through CLI and opt-in loopback HTTP. Authoritative key-cert/OpenPGP remains open. Local tests cover rollback, redacted reports and GraphQL visibility. |
 | Maintainer authorization | [Database changes manual][changes], [object validation][validation], [RFC 2725][2725], [RFC 9580][9580] | Match old/new `mnt-by`, parent and route requirements, overrides, PGP signatures and key-certs, legacy password formats and their configured policy, API key scope and account authentication. | Bound total verification work and hash cost, including legacy stored hashes. Prevent cross-source authorization and strip credentials. | Permission matrix, known hashes, invalid signatures and UUIDs, source isolation and bounded-work tests from v4.5.4 security fixes. | Partial. Bounded bcrypt, old/new maintainer proofs and source isolation are tested locally. Route creation verifies the selected same-source parent and rejects ambiguity. AS-set and route-set creation requires a leading ASN and authenticates against a same-source parent when present. New aut-num creation requires the same-source covering AS-block maintainer and rejects ambiguous or missing allocations. AS-block allocation trust remains operator-configured. Other authentication schemes remain open. |
 | Protected names, references and suspension | [Object validation][validation], [suspension][suspension] | Validate strong and weak references. Protect deleted person, role and maintainer names. Support protected-name override, maintainer suspension and reactivation with status/journal handling. | Enforce operator-only controls and preserve audit history. | Oracle cases for attempted name takeover, in-use deletes, overrides and suspension/reactivation. | Partial. Strong-reference checks protect in-use contacts and maintainers in the supported classes. Deleted contact and maintainer names remain protected across reopen and purge. Suspension remains open. |
 | Notifications and history | [Database changes manual][changes], [web UI][ui], [RFC 5322][5322] | Match submission result format, contact discovery, notification reason, auth redaction and source-scoped change history. | Validate and unfold email headers safely, scope historical access and bound deliveries. | Recipient, malformed mail, multi-address header, cross-source history and repeat-notification tests. | Partial. Offline bounded source-scoped audit history records committed actions and identities. Notifications remain open. |

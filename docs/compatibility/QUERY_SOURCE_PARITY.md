@@ -270,6 +270,37 @@ Passing CI for that source revision:
 [fuzz smoke](https://github.com/RIRRd/RIRRd/actions/runs/42047284517) and
 [source hygiene](https://github.com/RIRRd/RIRRd/actions/runs/42047284380).
 
+### Deployed HTTPS mirror-commit check
+
+The same `bdf419b` / `5dec06b9…` artifact was tested through the development
+Caddy route on 5 November, 14:50:49–14:52:02 UTC. A 70-second run offered 230
+starts/s, at most 32 concurrent requests, no retries and no catch-up bursts.
+**16,078/16,078** started requests returned complete HTTP 200 responses; 22 planned
+slots were skipped by the driver. Each answer contained 54 IPv6 prefixes in 909
+bytes, SHA-256 `910eaff90f7475ad202573936f5ac4fa5820b352c9b63889be5d36198bdf52bb`.
+No 429/502/503/504, invalid answer or transport failure occurred; recovery was 5/5.
+
+| Successful request phase | p50 | p95 | p99 | Maximum |
+| --- | ---: | ---: | ---: | ---: |
+| Total, ms | 16.85 | 22.95 | 25.45 | 62.95 |
+| Post-TLS wait, ms | 2.45 | 4.23 | 5.64 | 21.49 |
+
+RADB committed serial 6868892 at 14:51:47.791097 UTC. All 460 requests starting
+within one second either side completed correctly, with post-TLS p95 4.07 ms and
+maximum 7.73 ms. RIPE and RIPE-NONAUTH also committed during the run. Native
+active requests and retained response bytes returned to zero, with no new native
+failure counters, Caddy error entries or sampled cgroup throttling.
+
+This used new TCP/TLS connections and pinned IPv6 while preserving certificate,
+SNI and hostname verification. Traffic originated on the hosting VM: it is
+**self-routed HTTPS evidence, not WAN or maximum-capacity qualification**. DNS
+lookup was excluded. The restarted daemon's sampled RSS was 20.79–21.30 MiB;
+this small-query workload is not comparable to the heavy-query peak above.
+The driver, proxy and daemon averaged 317.5%, 106.9% and 20.2% of one CPU core
+respectively. Other deliberate test loads and compilation were stopped; normal
+production and mirroring continued. Raw request/phase, recovery, memory and
+commit-window reports remain in private operator evidence outside Git.
+
 The implementation now streams indirect members, bounds direct lookup extraction
 before allocating typed member vectors, shares a prefix/member budget across
 GraphQL aliases, and checks cooperative deadlines/cancellation during large

@@ -1,6 +1,6 @@
 # RIRRd
 
-**Beta 0.1.0-beta.3** · [MIT license](LICENSE) · [Project website](https://rirrd.net/)
+**Beta 0.1.0-beta.4** · [MIT license](LICENSE) · [Project website](https://rirrd.net/)
 · [Community tools](https://irrd.tools/) · [Beta status](docs/BETA_STATUS.md)
 
 A Rust Internet Routing Registry daemon with embedded storage, bounded WHOIS,

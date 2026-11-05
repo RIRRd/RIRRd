@@ -1,4 +1,4 @@
-# RIRRd 0.1.0-beta.3
+# RIRRd 0.1.0-beta.4
 
 RIRRd is beta software. It aims to reduce the resources needed for a self-hosted
 Internet Routing Registry. This beta
@@ -8,9 +8,14 @@ of full IRRd parity, security qualification or production readiness.
 ## Available for evaluation
 
 - Embedded transactional IRR storage and bounded TCP WHOIS, HTTP WHOIS and GraphQL.
-- Source selection, IPv4/IPv6 origin queries, AS-set traversal and policy object browsing.
+- Ordered source selection and named source groups, IPv4/IPv6 origin queries,
+  AS-set traversal and policy object browsing.
 - NRTMv3 mirroring with atomic updates and source serial tracking.
 - Snapshot import/export, verified backup/restore and bounded authoritative updates.
+- Authenticated updates for 18 standard classes, including IPv4/IPv6 allocations
+  and IRT contacts; `key-cert`/OpenPGP authoring remains unsupported.
+- Coherent query snapshots during mirror commits, finite large-result budgets and
+  explicit failures instead of successful partial routing lists.
 - Independent self-hosted console and separate community website at irrd.tools.
 - Source, activity, resource graphs from observed data.
 
@@ -25,8 +30,10 @@ freshness. A source being loaded does not establish that its last check succeede
 
 ## Known gaps
 
-Authentication/account workflows, remaining class/reference behavior, OpenPGP,
-mail submission and notification workflows need further parity work. NRTMv4
+Accounts, scoped API tokens, override/suspension controls, maintainer provisioning,
+`key-cert`/OpenPGP, remaining attribute/reference behavior, mail submission and
+notification workflows need further parity work. Support for a class does not
+mean every upstream attribute or lifecycle is implemented. NRTMv4
 publication, scheduling, rollover, retention, recovery and bidirectional upstream
 interoperability are incomplete. Broader WHOIS/GraphQL behavior, live scope/route-preference suppression and journal transitions remain open.
 
