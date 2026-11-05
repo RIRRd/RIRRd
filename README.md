@@ -92,6 +92,9 @@ runs and container smoke checks also run per push/PR. Read [the testing guide](d
 or inspect [the recorded verification page](https://rirrd.net/testing/).
 The [latest optimization checkpoint](docs/benchmarks/OPTIMIZATION_2026_11_04.md)
 records exact artifacts, constrained-host measurements and observed trade-offs.
+The [current development review](docs/compatibility/DEVELOPMENT_REVIEW_2026_11_05.md)
+records query memory bounds, authorization/concurrency fixes, indexed API additions
+and before/after measurements, including unchanged or lower normal-query rates.
 The [full-catalog storage checkpoint](docs/benchmarks/STORAGE_FULL_2026_11_05.md)
 records a verified 28-to-20 GiB development database repack, preserving all
 21 sources and 19 retained object classes.
