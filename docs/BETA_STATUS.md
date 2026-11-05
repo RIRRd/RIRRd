@@ -1,4 +1,4 @@
-# RIRRd 0.1.0-beta.2
+# RIRRd 0.1.0-beta.3
 
 RIRRd is beta software. It aims to reduce the resources needed for a self-hosted
 Internet Routing Registry. This beta

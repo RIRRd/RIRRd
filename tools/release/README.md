@@ -1,7 +1,7 @@
 # Beta publication
 
 Canonical repository: **RIRRd/RIRRd**. Current candidate version:
-`0.1.0-beta.2`; notes: `docs/releases/v0.1.0-beta.2.md`.
+`0.1.0-beta.3`; notes: `docs/releases/v0.1.0-beta.3.md`.
 Use a reviewed PR into protected main. Never force-push main or bypass required
 reviews/checks. The first organization repository is initialized from the
 verified project history; subsequent changes use the normal protected PR path.
@@ -44,9 +44,11 @@ Keep runtime data, caches, private queues and credentials outside Git and assets
 
 ## Tagged beta
 
-Create a new matching `v0.1.0-beta.2` tag only at the verified release commit.
+Create a new matching `v0.1.0-beta.3` tag only at the verified release commit.
 Preserve historical tags rather than moving them. Beta publication calls the
-shared CI matrix, web, coverage, audit and workflow gates, then performs source
+shared CI matrix, web, coverage, audit and workflow gates, plus pinned upstream
+oracle, BIRD/FRR integration, Docker deployment and fuzz checks. The tag must be
+contained in protected main. It then performs source
 hygiene/tag checks and native x86-64/ARM64 DEB/RPM installation/systemd checks.
 Only passing packages become a GitHub prerelease with four archives, the
 installer and SHA256SUMS. DEB asset basenames replace `~` with `.` before hashing

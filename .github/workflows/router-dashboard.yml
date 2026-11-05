@@ -1,5 +1,6 @@
 name: Router tools and bundled dashboard
 on:
+  workflow_call:
   workflow_dispatch:
   push:
     branches: [main, dev, 'release/**', 'feature/**', 'fix/**']
