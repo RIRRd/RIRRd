@@ -85,6 +85,9 @@ removes data. The prior full-catalog repack remains the measured disk reduction.
 
 ## Release evidence
 
+The [beta.4 qualification](compatibility/BETA4_QUALIFICATION.md) records the exact candidate, passing CI,
+full-data checks, deployed HTTPS regression and measured performance trade-offs.
+
 The [beta.4 release notes](releases/v0.1.0-beta.4.md) describe the current
 candidate and required publication gates. The [query qualification](compatibility/QUERY_SOURCE_PARITY.md)
 records the prior MVCC and large-query checks with exact commits and CI evidence. Tests on dev add rate/refill boundaries, IPv6 grouping, bounded client

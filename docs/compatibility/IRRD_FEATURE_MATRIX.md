@@ -35,6 +35,9 @@ open until the stated behaviour and safety checks are demonstrated.
 
 ## Current development
 
+The [beta.4 qualification](BETA4_QUALIFICATION.md) records the exact candidate, passing CI,
+full-data checks, deployed HTTPS regression and measured performance trade-offs.
+
 Beta.4 adds authenticated `inetnum`, `inet6num` and `irt` updates, bringing the
 bounded authoritative profile to 18 of the 19 retained classes. The shared
 synthetic corpus and normal CLI/HTTP decisions are documented in
