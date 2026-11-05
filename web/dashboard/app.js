@@ -15,10 +15,17 @@
 
   async function json(url, options = {}) {
     const response = await fetch(url, {cache: 'no-store', signal: AbortSignal.timeout(15000), ...options});
-    if (!response.ok) throw new Error(response.status === 429 ? 'Too many requests. Wait a moment and retry.' : 'HTTP ' + response.status);
+    if (!response.ok) throw new Error(httpFailure(response.status));
     const value = await response.json();
     if (value.errors?.length) throw new Error(value.errors.map(error => error.message).join('; '));
     return value;
+  }
+  function httpFailure(status) {
+    if (status === 429) return 'Rate limit reached (HTTP 429). Wait before retrying; this is the per-client allowance.';
+    if (status === 503) return 'The node is busy or under maintenance (HTTP 503). Retry later; no usable result was returned.';
+    if (status === 504) return 'The query exceeded the node’s time budget (HTTP 504). Select a source or split the query.';
+    if (status === 422) return 'The response exceeds this node’s size budget (HTTP 422). Select a source or split the query; no partial result is provided.';
+    return 'Query failed (HTTP ' + status + '). Check the query type and source. For many raw objects, use the paginated source browser.';
   }
   function ago(value) {
     const seconds = Math.max(0, (Date.now() - new Date(value).getTime()) / 1000);
@@ -45,11 +52,16 @@
     if (row.state !== 'loaded') return ['Unavailable', true];
     const mirror = row.mirror;
     if (mirror) {
-      const stale = Date.now() / 1000 - mirror.checked_at_unix_seconds > Math.max(180, mirror.interval_seconds * 3);
-      return stale ? ['Check overdue', true] : mirror.state === 'following' ? ['Incremental', false] : ['Retrying mirror', true];
+      const checked = mirror.checked_at_unix_seconds, interval = mirror.interval_seconds;
+      if (!Number.isFinite(checked) || checked <= 0 || !Number.isFinite(interval) || interval <= 0 || checked > Date.now() / 1000 + 60) return ['Check unverified', true];
+      const stale = Date.now() / 1000 - checked > Math.max(180, interval * 3);
+      return stale ? ['Check overdue', true] : mirror.state === 'following' ? ['Live updates', false] : ['Retrying mirror', true];
     }
     if (!publicMode()) return ['Local dataset', false];
-    return [row.imported_at && Date.now() - Date.parse(row.imported_at) > 48 * 3600000 ? 'Snapshot overdue' : 'Scheduled snapshot', row.imported_at ? Date.now() - Date.parse(row.imported_at) > 48 * 3600000 : false];
+    const imported = Date.parse(row.imported_at);
+    if (!Number.isFinite(imported) || imported > Date.now() + 60000) return ['Snapshot age unknown', true];
+    const stale = Date.now() - imported > 48 * 3600000;
+    return stale ? ['Snapshot overdue', true] : ['Scheduled snapshot', false];
   }
   function sourceRows() {
     if (latest?.sources && Array.isArray(latest.sources)) return latest.sources;
@@ -69,7 +81,7 @@
     el('source-rows').replaceChildren(); el('overview-sources').replaceChildren();
     let incremental = 0;
     for (const row of rows) {
-      const [mode, warning] = health(row); if (mode === 'Incremental') incremental++;
+      const [mode, warning] = health(row); if (mode === 'Live updates') incremental++;
       const button = document.createElement('button'); button.type = 'button'; button.textContent = row.source; button.title = mode; button.dataset.warning = String(warning); button.setAttribute('aria-label', row.source + ' · ' + mode);
       button.addEventListener('click', () => { el('source-detail').value = row.source; renderDetail(); location.hash = 'sources'; });
       el('overview-sources').append(button);
@@ -79,13 +91,13 @@
       choose.addEventListener('click', () => { el('source-detail').value = row.source; renderDetail(); }); th.append(choose); tr.append(th);
       for (const value of [Object.keys(counts).length ? count(current) : row.objects == null ? '—' : count(row.objects), count(counts.route), count(counts.route6), count(counts['as-set'])]) { const td = document.createElement('td'); td.textContent = value; tr.append(td); }
       const state = document.createElement('td'); state.append(badge(mode, warning)); tr.append(state);
-      const check = document.createElement('td'), when = row.mirror?.checked_at_unix_seconds ? new Date(row.mirror.checked_at_unix_seconds * 1000).toISOString() : row.imported_at;
+      const check = document.createElement('td'), checked = new Date(row.mirror?.checked_at_unix_seconds * 1000), when = row.mirror ? Number.isFinite(checked.getTime()) ? checked.toISOString() : null : row.imported_at;
       check.textContent = when ? ago(when) : 'Unreported'; check.title = when || ''; tr.append(check); el('source-rows').append(tr);
     }
     const names = rows.map(row => row.source);
     fillSelect('source-detail', names); fillSelect('browse-source', names);
-    text('source-count', rows.length); text('source-summary', incremental + ' incremental · ' + (rows.length - incremental) + ' snapshot / other');
-    text('freshness-summary', incremental + ' sources follow incremental updates. ' + (rows.length - incremental) + ' use snapshots or another update state. Select a source to check its latest observation.');
+    text('source-count', rows.length); text('source-summary', incremental + ' live feeds · ' + (rows.length - incremental) + ' snapshot / other');
+    text('freshness-summary', incremental + ' sources follow live incremental updates. ' + (rows.length - incremental) + ' use snapshots or another update state. Select a source to check its latest observation.');
     const retained = latest?.classes || metadata.retained_classes;
     text('sources-state', rows.length + ' configured sources' + (Array.isArray(retained) ? ' · ' + retained.length + ' retained object classes' : '')); renderDetail();
   }
@@ -244,7 +256,7 @@
     const timeout = setTimeout(() => controller.abort(), 15000); el('query-submit').disabled = true; el('copy-result').disabled = true; text('query-status', 'Querying…'); text('result-count', '');
     try {
       const q = queryText(), kind = el('query-kind').value, source = el('query-source').value; updateCommand(); const response = await fetch(requestPath(q), {cache: 'no-store', signal: controller.signal});
-      if (!response.ok) throw new Error(response.status === 429 ? 'Rate limit reached. Wait a moment and retry.' : 'Query failed (HTTP ' + response.status + '). Narrow the request or check the query type.');
+      if (!response.ok) throw new Error(httpFailure(response.status));
       const raw = response.status === 204 ? '' : await response.text(); if (raw.length > 2097152) throw new Error('Result exceeds the display limit. Narrow the source or set.');
       if (queryController !== controller) return;
       const list = ['origin', 'set', 'members', 'recursive'].includes(kind);
