@@ -25,6 +25,9 @@ pub struct Config {
     pub worker_threads: Option<usize>,
     pub max_blocking_threads: Option<usize>,
     pub sources: Vec<String>,
+    /// Ordered query groups; alias members must be configured physical sources.
+    #[serde(default)]
+    pub source_aliases: crate::query_sources::SourceAliases,
     /// Optional HTTP query subset for source-specific distribution policies.
     pub http_sources: Option<Vec<String>>,
     /// Optional raw HTTP WHOIS service scope, independently of GraphQL exports.
@@ -223,6 +226,7 @@ impl Config {
             );
             ensure!(seen.insert(source), "duplicate configured source {source}");
         }
+        crate::query_sources::validate(&config.sources, &config.source_aliases)?;
         if let Some(sources) = &config.http_sources {
             let unique: HashSet<_> = sources.iter().collect();
             ensure!(

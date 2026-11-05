@@ -26,6 +26,7 @@ use tokio::{
 
 use crate::{
     config::Config,
+    query_sources::{self, SourceAliases},
     storage::{PrefixMatch, Store},
 };
 
@@ -44,6 +45,8 @@ struct ConnectionPermit {
 
 struct Access {
     sources: Arc<[String]>,
+    aliases: SourceAliases,
+    defaults: Arc<[String]>,
     nrtm3: HashMap<String, HashSet<IpAddr>>,
 }
 
@@ -156,11 +159,25 @@ struct HttpParameters {
 
 /// Serve unframed WHOIS results on the optional HTTP listener. NRTM transfer
 /// privileges belong only to the separate TCP listener and its peer ACL.
+#[cfg(test)]
 pub fn http_router(store: Arc<Store>, sources: Vec<String>, deadline: Duration) -> Router {
+    http_router_with_aliases(store, sources, SourceAliases::new(), deadline)
+}
+
+pub fn http_router_with_aliases(
+    store: Arc<Store>,
+    sources: Vec<String>,
+    aliases: SourceAliases,
+    deadline: Duration,
+) -> Router {
+    let aliases = query_sources::visible(&sources, &aliases);
+    let defaults = query_sources::available(&sources, &aliases).into();
     let state = HttpWhois {
         client: Client {
             access: Arc::new(Access {
                 sources: sources.into(),
+                aliases,
+                defaults,
                 nrtm3: HashMap::new(),
             }),
             peer: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
@@ -209,12 +226,25 @@ async fn http_query(State(state): State<HttpWhois>, request: Request) -> Respons
         if names.len() > 1024 || names.chars().any(char::is_control) {
             return invalid_query.into_response();
         }
-        let Some(sources) = select_sources(&names, &state.client.access.sources) else {
+        let Some(selected) = select_sources(
+            &names,
+            &state.client.access.sources,
+            &state.client.access.aliases,
+        ) else {
             return invalid_query.into_response();
         };
+        let sources = query_sources::expand(
+            &selected,
+            &state.client.access.sources,
+            &state.client.access.aliases,
+        )
+        .expect("validated source selection");
+        let aliases = query_sources::visible(&sources, &state.client.access.aliases);
         Client {
             access: Arc::new(Access {
                 sources: sources.into(),
+                aliases,
+                defaults: selected.into(),
                 nrtm3: HashMap::new(),
             }),
             peer: state.client.peer,
@@ -257,7 +287,7 @@ async fn http_query(State(state): State<HttpWhois>, request: Request) -> Respons
 
 fn execute_http(query: &str, store: &Store, client: &Client) -> Result<(StatusCode, String)> {
     let configured = &client.access.sources;
-    let mut sources = configured.clone();
+    let mut sources = client.access.defaults.clone();
     let mut persistent = false;
     let invalid = || {
         (
@@ -266,7 +296,13 @@ fn execute_http(query: &str, store: &Store, client: &Client) -> Result<(StatusCo
         )
     };
     let no_content = || (StatusCode::NO_CONTENT, String::new());
-    let Some(prepared) = ripe_modifiers(query, configured, &mut sources, &mut persistent) else {
+    let Some(prepared) = ripe_modifiers(
+        query,
+        configured,
+        &client.access.aliases,
+        &mut sources,
+        &mut persistent,
+    ) else {
         return Ok(invalid());
     };
     if let Some(command) = session_command(prepared) {
@@ -276,7 +312,9 @@ fn execute_http(query: &str, store: &Store, client: &Client) -> Result<(StatusCo
             | SessionCommand::ListExclusions
             | SessionCommand::Identify
             | SessionCommand::Noop => no_content(),
-            SessionCommand::SelectSources(names) if select_sources(names, configured).is_some() => {
+            SessionCommand::SelectSources(names)
+                if select_sources(names, configured, &client.access.aliases).is_some() =>
+            {
                 no_content()
             }
             SessionCommand::Exclude(names) if parse_exclusions(names).is_some() => no_content(),
@@ -375,6 +413,8 @@ pub async fn serve(
     let mut clients = JoinSet::new();
     let access = Arc::new(Access {
         sources: config.sources.clone().into(),
+        aliases: config.source_aliases.clone(),
+        defaults: query_sources::available(&config.sources, &config.source_aliases).into(),
         nrtm3: config.nrtm3_serve.clone(),
     });
 
@@ -418,7 +458,7 @@ async fn handle(
     let access = &client.access;
     let (read, mut write) = socket.into_split();
     let mut input = BufReader::new(read);
-    let mut selected = access.sources.clone();
+    let mut selected = access.defaults.clone();
     let mut excluded: Arc<[String]> = Arc::new([]);
     let mut persistent = false;
     let mut idle = deadline;
@@ -436,7 +476,13 @@ async fn handle(
         }
         let text = query_line(&line);
         let prepared = text.and_then(|query| {
-            ripe_modifiers(query, &access.sources, &mut selected, &mut persistent)
+            ripe_modifiers(
+                query,
+                &access.sources,
+                &access.aliases,
+                &mut selected,
+                &mut persistent,
+            )
         });
         let mut response_control = None;
         let response = match prepared.and_then(session_command) {
@@ -464,7 +510,7 @@ async fn handle(
                 None => format!("F Invalid value for timeout: {value}\n"),
             },
             Some(SessionCommand::SelectSources(requested)) => {
-                match select_sources(requested, &access.sources) {
+                match select_sources(requested, &access.sources, &access.aliases) {
                     Some(requested) => {
                         selected = requested.into();
                         "C\n".to_owned()
@@ -559,6 +605,7 @@ fn parse_timeout(value: &str) -> Option<Duration> {
 fn ripe_modifiers<'a>(
     mut query: &'a str,
     allowed: &Arc<[String]>,
+    aliases: &SourceAliases,
     selected: &mut Arc<[String]>,
     persistent: &mut bool,
 ) -> Option<&'a str> {
@@ -573,11 +620,11 @@ fn ripe_modifiers<'a>(
         match flag {
             "-s" => {
                 let (names, rest) = word(argument);
-                next_sources = Some(select_sources(names, allowed)?.into());
+                next_sources = Some(select_sources(names, allowed, aliases)?.into());
                 query = rest;
             }
             "-a" => {
-                next_sources = Some(allowed.clone());
+                next_sources = Some(query_sources::available(allowed, aliases).into());
                 query = argument;
             }
             "-k" => {
@@ -612,17 +659,20 @@ fn word(line: &str) -> (&str, &str) {
         .map_or((line, ""), |(head, rest)| (head, rest.trim_start()))
 }
 
-fn select_sources(requested: &str, allowed: &[String]) -> Option<Vec<String>> {
-    let mut selected = Vec::new();
-    for source in requested.split(',') {
-        let source = allowed
-            .iter()
-            .find(|name| name.eq_ignore_ascii_case(source))?;
-        if !selected.contains(source) {
-            selected.push(source.clone());
-        }
-    }
-    Some(selected)
+fn select_sources(
+    requested: &str,
+    allowed: &[String],
+    aliases: &SourceAliases,
+) -> Option<Vec<String>> {
+    // !s-lc reports selected logical names, including repetitions; resolution
+    // separately removes duplicate physical sources like the pinned upstream.
+    requested
+        .split(',')
+        .map(|source| {
+            let name = source.to_ascii_uppercase();
+            query_sources::known(&name, allowed, aliases).then_some(name)
+        })
+        .collect()
 }
 
 fn parse_exclusions(value: &str) -> Option<Vec<String>> {
@@ -701,8 +751,10 @@ fn execute(
     excluded: &[String],
     client: &Client,
 ) -> Result<String> {
+    let sources = query_sources::expand(sources, &client.access.sources, &client.access.aliases)
+        .context("invalid query source selection")?;
     let irrd = query.uses_irrd_framing();
-    match execute_inner(query, store, sources, excluded, client) {
+    match execute_inner(query, store, &sources, excluded, client) {
         Err(error) if error.is::<crate::storage::HeavyQueryBusy>() => Ok(if irrd {
             "F Large query capacity busy; retry later\n"
         } else {

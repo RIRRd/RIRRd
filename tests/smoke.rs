@@ -3214,3 +3214,114 @@ fn authoritative_references_reject_name_takeover_and_allow_atomic_deletion() {
         2
     );
 }
+
+#[test]
+fn source_aliases_preserve_priority_and_obey_transport_scope() {
+    let workspace = tempfile::tempdir().unwrap();
+    let config = workspace.path().join("aliases.toml");
+    let base = "database = \"aliases.redb\"\nsources = [\"FIRST\", \"SECOND\"]\nlisten = \"127.0.0.1:0\"\nhttp_listen = \"127.0.0.1:0\"\nmax_connections = 8\nio_timeout_seconds = 2\nmax_snapshot_bytes = 65536\n";
+    let aliases = "\n[source_aliases]\nGROUP = [\"SECOND\", \"FIRST\", \"SECOND\"]\nSINGLE = [\"FIRST\"]\nEMPTY = []\n";
+    fs::write(&config, format!("{base}{aliases}")).unwrap();
+    successful(cli(&config).args(["config", "check"]).output().unwrap());
+    for (source, asn, prefix) in [
+        ("FIRST", 64496, "192.0.2.0/24"),
+        ("SECOND", 64497, "198.51.100.0/24"),
+    ] {
+        let path = workspace.path().join("fixture.rpsl");
+        fs::write(&path, format!("as-set: AS-EXAMPLE\nmembers: AS{asn}\nsource: {source}\n\nroute: {prefix}\norigin: AS{asn}\nsource: {source}\n")).unwrap();
+        successful(
+            cli(&config)
+                .args(["import", "snapshot", "--source", source, "--file"])
+                .arg(path)
+                .output()
+                .unwrap(),
+        );
+    }
+    let (server, address) = Server::start(&config);
+    let reply = whois(
+        address,
+        b"!!\n!sGROUP,FIRST,GROUP\n!s-lc\n!iAS-EXAMPLE,1\n!a4AS-EXAMPLE\n!sUNKNOWN\n!s-lc\n!q\n",
+    );
+    assert_eq!(reply.matches("GROUP,FIRST,GROUP").count(), 2, "{reply}");
+    assert!(
+        reply.contains("AS64497")
+            && reply.contains("198.51.100.0/24")
+            && !reply.contains("192.0.2.0/24"),
+        "{reply}"
+    );
+    assert!(reply.contains("F"), "unknown alias must reject: {reply}");
+    assert!(whois(address, b"-s GROUP AS-EXAMPLE\n").contains("source: SECOND"));
+    assert!(whois(address, b"!jGROUP\n").contains("Database unknown"));
+    let empty = whois(address, b"!!\n!sEMPTY\n!iAS-EXAMPLE,1\n!q\n");
+    assert!(!empty.contains("AS64496") && !empty.contains("AS64497"));
+    drop(server);
+    let (server, address) = Server::start_listener(&config, "GraphQL listening");
+    let http = |query: &str| {
+        whois(
+            address,
+            format!(
+                "GET /v1/whois/?{query} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+            )
+            .as_bytes(),
+        )
+    };
+    assert!(http("q=!a4AS-EXAMPLE&sources=GROUP").contains("198.51.100.0/24"));
+    let graph = |query: &str| {
+        let body = serde_json::json!({"query":query}).to_string();
+        let raw=whois(address,format!("POST /graphql/ HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes());
+        serde_json::from_str::<Value>(raw.split_once("\r\n\r\n").unwrap().1).unwrap()
+    };
+    let result = graph(
+        "{asSetPrefixes(setNames:[\"AS-EXAMPLE\"],sources:[\"GROUP\",\"FIRST\"]){prefixes} databaseStatus(sources:[\"GROUP\"]){source source_type aliased_sources}}",
+    );
+    assert!(result.get("errors").is_none(), "{result}");
+    assert_eq!(
+        result["data"]["asSetPrefixes"][0]["prefixes"],
+        serde_json::json!(["198.51.100.0/24"])
+    );
+    assert_eq!(
+        result["data"]["databaseStatus"][0],
+        serde_json::json!({"source":"GROUP","source_type":"alias","aliased_sources":["SECOND","FIRST","SECOND"]})
+    );
+    assert!(
+        graph("{asnPrefixes(asns:[64496],sources:[\"UNKNOWN\"]){prefixes}}")
+            .get("errors")
+            .is_some()
+    );
+    drop(server);
+    // HTTP scope is an ACL over physical sources. Mixed aliases must not leak
+    // hidden sources or silently degrade into a different alias definition.
+    fs::write(
+        &config,
+        format!("{base}http_sources = [\"FIRST\"]\n{aliases}"),
+    )
+    .unwrap();
+    let (server, address) = Server::start_listener(&config, "GraphQL listening");
+    for alias in ["GROUP", "SECOND"] {
+        let raw=whois(address,format!("GET /v1/whois/?q=!a4AS-EXAMPLE&sources={alias} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").as_bytes());
+        assert!(raw.starts_with("HTTP/1.1 400 "), "{raw}");
+        let body=serde_json::json!({"query":format!("{{databaseStatus(sources:[\"{alias}\"]){{source}}}}")}).to_string();
+        let raw=whois(address,format!("POST /graphql/ HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes());
+        assert!(raw.contains("errors"), "{raw}");
+    }
+    let raw=whois(address,b"GET /v1/whois/?q=!a4AS-EXAMPLE&sources=SINGLE HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+    assert!(raw.starts_with("HTTP/1.1 200 ") && raw.contains("192.0.2.0/24"));
+    drop(server);
+    for invalid in [
+        "GROUP = [\"SINGLE\"]",
+        "GROUP = [\"MISSING\"]",
+        "FIRST = [\"SECOND\"]",
+        "lower = [\"FIRST\"]",
+    ] {
+        fs::write(&config, format!("{base}\n[source_aliases]\n{invalid}\n")).unwrap();
+        assert!(
+            !cli(&config)
+                .args(["config", "check"])
+                .output()
+                .unwrap()
+                .status
+                .success(),
+            "{invalid}"
+        );
+    }
+}

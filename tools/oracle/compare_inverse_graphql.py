@@ -34,6 +34,9 @@ cases = [
     ('memberOf:["AS64496:RTRS-DEMO"]', 1),
     ('mbrsByRef:["ANY"]', 1),
     ('mntBy:["differential-mnt"],objectClass:["route"]', 1),
+    ('mpMembers:["AS64496:RTRS-CHILD"]', 1),
+    ('role:["NONEXISTENT"]', 0),
+    ('origin:["AS64496"]', 2),
 ]
 for arguments, count in cases:
     document = '{rpslObjects(sources:["DIFFERENTIAL"],' + arguments + ') {rpslPk objectClass source}}'
@@ -43,7 +46,7 @@ for arguments, count in cases:
         rows[1], key=lambda row: json.dumps(row, sort_keys=True)), arguments
 
 document = '{__type(name:"Query"){fields{name args{name type{kind name ofType{kind name ofType{kind name}}}}}}}'
-fields = {'mntBy', 'adminC', 'techC', 'zoneC', 'memberOf', 'mbrsByRef'}
+fields = {'mntBy', 'adminC', 'techC', 'zoneC', 'memberOf', 'mbrsByRef', 'members', 'mpMembers', 'person', 'role', 'origin'}
 types = []
 for base in [args.reference, args.candidate]:
     objects = next(field for field in query(base, document)['__type']['fields'] if field['name'] == 'rpslObjects')

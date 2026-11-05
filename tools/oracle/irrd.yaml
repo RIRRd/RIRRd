@@ -22,6 +22,10 @@ irrd:
       max_connections: 1
   sources_default:
     - DIFFERENTIAL
+  source_aliases:
+    QUERY-GROUP: [QUERY-SECOND, QUERY-FIRST, QUERY-SECOND]
+    QUERY-EMPTY: []
+    QUERY-SINGLE: [QUERY-FIRST]
   sources:
     DIFFERENTIAL:
       authoritative: false
@@ -29,6 +33,8 @@ irrd:
       authoritative: true
     AUTH-OTHER:
       authoritative: true
+    QUERY-LOOKUP:
+      authoritative: false
     QUERY-FIRST:
       authoritative: false
     QUERY-SECOND:

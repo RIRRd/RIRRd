@@ -7,6 +7,16 @@ pub(crate) struct InverseFilter {
 }
 
 const MAX_FILTER_CANDIDATES: usize = 4096;
+// Includes selectivity probes, seeks and predicate point reads across every
+// selected source/filter. This is shared by the entire intersection.
+const MAX_FILTER_WORK: usize = 131_072;
+
+fn charge_work(remaining: &std::cell::Cell<usize>) -> Result<()> {
+    check_query_deadline()?;
+    let next = remaining.get().checked_sub(1).ok_or(QueryScanLimit)?;
+    remaining.set(next);
+    Ok(())
+}
 
 #[derive(Debug)]
 pub(crate) struct QueryScanLimit;
@@ -40,11 +50,71 @@ impl Store {
         let read = self.read_transaction()?;
         let records = read.open_table(OBJECTS)?;
         let inverse = read.open_table(INVERSE)?;
+        let origins = read.open_multimap_table(ORIGINS)?;
+        let work = std::cell::Cell::new(MAX_FILTER_WORK);
+        // Visit only index identities. Probes never decode object text, and
+        // stop as soon as the current best cardinality has been exceeded.
+        let visit = |filter: &InverseFilter,
+                     visitor: &mut dyn FnMut(&str, &str, &str) -> Result<bool>|
+         -> Result<()> {
+            for source in sources {
+                for value in &filter.values {
+                    if filter.field == "origin" {
+                        for class in ["route", "route6"] {
+                            if !classes.is_empty() && !classes.iter().any(|c| c == class) {
+                                continue;
+                            }
+                            charge_work(&work)?;
+                            for prefix in origins.get((source.as_str(), class, value.as_str()))? {
+                                charge_work(&work)?;
+                                let key = format!("{}{value}", prefix?.value());
+                                if visitor(source, class, &key)? {
+                                    return Ok(());
+                                }
+                            }
+                        }
+                    } else {
+                        let search_classes: Vec<&str> = if classes.is_empty() {
+                            vec![""]
+                        } else {
+                            classes.iter().map(String::as_str).collect()
+                        };
+                        for class in search_classes {
+                            charge_work(&work)?;
+                            let end_value = format!("{value}\0");
+                            let end_class = format!("{class}\0");
+                            let lower = (source.as_str(), filter.field, value.as_str(), class, "");
+                            let upper = if class.is_empty() {
+                                (source.as_str(), filter.field, end_value.as_str(), "", "")
+                            } else {
+                                (
+                                    source.as_str(),
+                                    filter.field,
+                                    value.as_str(),
+                                    end_class.as_str(),
+                                    "",
+                                )
+                            };
+                            for entry in inverse.range(lower..upper)? {
+                                charge_work(&work)?;
+                                let (identity, _) = entry?;
+                                let (source, _, _, class, key) = identity.value();
+                                if visitor(source, class, key)? {
+                                    return Ok(());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(())
+        };
         let mut output = Vec::new();
         let mut remaining_bytes = MAX_QUERY_OBJECT_BYTES;
         let mut seen = HashSet::new();
         let mut examined = 0;
         let mut consider = |source: &str, class: &str, key: &str| -> Result<bool> {
+            charge_work(&work)?;
             examined += 1;
             if examined > MAX_FILTER_CANDIDATES {
                 return Err(QueryScanLimit.into());
@@ -55,10 +125,20 @@ impl Store {
             for filter in filters {
                 let mut matched = false;
                 for value in &filter.values {
-                    if inverse
-                        .get((source, filter.field, value.as_str(), class, key))?
-                        .is_some()
-                    {
+                    charge_work(&work)?;
+                    // Canonical route keys encode the origin after the IP
+                    // prefix; preserve full source/class/key identity.
+                    let matches = if filter.field == "origin" {
+                        matches!(class, "route" | "route6")
+                            && key
+                                .rsplit_once("AS")
+                                .is_some_and(|(_, asn)| value.strip_prefix("AS") == Some(asn))
+                    } else {
+                        inverse
+                            .get((source, filter.field, value.as_str(), class, key))?
+                            .is_some()
+                    };
+                    if matches {
                         matched = true;
                         break;
                     }
@@ -79,11 +159,13 @@ impl Store {
             let exact = read.open_multimap_table(EXACT)?;
             let mut unique_keys = HashSet::new();
             for key in keys {
+                charge_work(&work)?;
                 let key = key.to_uppercase();
                 if !unique_keys.insert(key.clone()) {
                     continue;
                 }
                 for source in sources {
+                    charge_work(&work)?;
                     for class in exact.get((source.as_str(), key.as_str()))? {
                         if consider(source, class?.value(), &key)? {
                             return Ok(output);
@@ -92,44 +174,25 @@ impl Store {
                 }
             }
         } else {
-            let driver = filters
-                .iter()
-                .min_by_key(|filter| filter.values.len())
-                .unwrap();
-            for source in sources {
-                for value in &driver.values {
-                    // The class restriction is part of the seek: unrelated
-                    // classes do not consume the limited candidate budget.
-                    let search_classes: Vec<&str> = if classes.is_empty() {
-                        vec![""]
-                    } else {
-                        classes.iter().map(String::as_str).collect()
-                    };
-                    for class in search_classes {
-                        let end_value = format!("{value}\0");
-                        let end_class = format!("{class}\0");
-                        let lower = (source.as_str(), driver.field, value.as_str(), class, "");
-                        let upper = if class.is_empty() {
-                            (source.as_str(), driver.field, end_value.as_str(), "", "")
-                        } else {
-                            (
-                                source.as_str(),
-                                driver.field,
-                                value.as_str(),
-                                end_class.as_str(),
-                                "",
-                            )
-                        };
-                        for entry in inverse.range(lower..upper)? {
-                            let (identity, _) = entry?;
-                            let (source, _, _, class, key) = identity.value();
-                            if consider(source, class, key)? {
-                                return Ok(output);
-                            }
-                        }
+            let mut driver = &filters[0];
+            let mut best = MAX_FILTER_CANDIDATES + 1;
+            if filters.len() > 1 {
+                for filter in filters {
+                    let mut count = 0;
+                    visit(filter, &mut |_, _, _| {
+                        count += 1;
+                        Ok(count >= best)
+                    })?;
+                    if count < best {
+                        best = count;
+                        driver = filter;
+                    }
+                    if count == 0 {
+                        return Ok(output);
                     }
                 }
             }
+            visit(driver, &mut consider)?;
         }
         Ok(output)
     }
@@ -206,7 +269,100 @@ mod tests {
     }
 
     #[test]
-    fn bounded_intersection_refuses_partial_results() -> Result<()> {
+    fn origin_intersections_preserve_source_class_and_check_worker_cancellation() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = Store::open(&dir.path().join("origins.redb"))?;
+        for source in ["FIRST", "SECOND"] {
+            store.replace_source(
+                source,
+                [
+                    format!(
+                        "route: 192.0.2.0/24\norigin: AS64496\nmnt-by: COMMON\nsource: {source}\n"
+                    ),
+                    format!(
+                        "route6: 2001:db8::/32\norigin: AS64496\nmnt-by: COMMON\nsource: {source}\n"
+                    ),
+                    format!(
+                        "route: 192.0.2.0/24\norigin: AS64497\nmnt-by: OTHER\nsource: {source}\n"
+                    ),
+                ]
+                .into_iter()
+                .map(|text| crate::rpsl::parse(&text).map_err(anyhow::Error::msg)),
+            )?;
+        }
+        let sources = vec!["SECOND".into(), "FIRST".into()];
+        let filters = [
+            filter("origin", &["AS64496", "AS64496"]),
+            filter("mnt-by", &["COMMON"]),
+        ];
+        let rows = store.filtered_objects(None, &sources, &[], &filters, 8)?;
+        assert_eq!(
+            rows.iter()
+                .map(|row| (row.source.as_str(), row.class.as_str(), row.key.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                ("SECOND", "route", "192.0.2.0/24AS64496"),
+                ("SECOND", "route6", "2001:DB8::/32AS64496"),
+                ("FIRST", "route", "192.0.2.0/24AS64496"),
+                ("FIRST", "route6", "2001:DB8::/32AS64496")
+            ]
+        );
+        assert_eq!(
+            store
+                .filtered_objects(None, &sources, &[], &filters[..1], 8)?
+                .len(),
+            4
+        );
+        assert_eq!(
+            store
+                .filtered_objects(None, &sources, &["route6".into()], &filters, 8)?
+                .len(),
+            2
+        );
+        assert!(
+            store
+                .filtered_objects(
+                    Some(&["192.0.2.0/24AS64497".into()]),
+                    &sources,
+                    &[],
+                    &filters,
+                    8
+                )?
+                .is_empty()
+        );
+        // Cancellation is checked on every probe/seek/predicate operation,
+        // including after a worker has already captured its snapshot.
+        let view = store.query_view()?;
+        let control = QueryControl::new(Duration::from_secs(5));
+        let guard = control.cancel_on_drop();
+        view.run(|| {
+            control.run(|| {
+                let remaining = std::cell::Cell::new(3);
+                charge_work(&remaining)?;
+                drop(guard);
+                assert!(
+                    charge_work(&remaining)
+                        .unwrap_err()
+                        .is::<QueryDeadlineExceeded>()
+                );
+                assert!(
+                    store
+                        .filtered_objects(None, &sources, &[], &filters, 8)
+                        .unwrap_err()
+                        .is::<QueryDeadlineExceeded>()
+                );
+                Ok::<_, anyhow::Error>(())
+            })
+        })?;
+        assert!(check_query_deadline().is_ok());
+        let remaining = std::cell::Cell::new(1);
+        charge_work(&remaining)?;
+        assert!(charge_work(&remaining).unwrap_err().is::<QueryScanLimit>());
+        Ok(())
+    }
+
+    #[test]
+    fn cardinality_probe_finds_rare_match_and_broad_scan_stays_bounded() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let store = Store::open(&dir.path().join("bounded.redb"))?;
         store.replace_source(
@@ -224,12 +380,25 @@ mod tests {
             filter("mnt-by", &["MNT-A"]),
             filter("admin-c", &["MATCH-TEST"]),
         ];
+        assert_eq!(
+            store
+                .filtered_objects(None, &["TEST".into()], &[], &filters, 8)?
+                .len(),
+            1
+        );
+        // A single broad predicate still fails rather than yielding partial
+        // output when an internal caller asks beyond the finite scan cap.
         assert!(
             store
-                .filtered_objects(None, &["TEST".into()], &[], &filters, 8)
+                .filtered_objects(
+                    None,
+                    &["TEST".into()],
+                    &[],
+                    &filters[..1],
+                    MAX_FILTER_CANDIDATES + 2
+                )
                 .unwrap_err()
-                .to_string()
-                .contains("scan budget")
+                .is::<QueryScanLimit>()
         );
         assert_eq!(
             store

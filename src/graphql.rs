@@ -32,6 +32,7 @@ use tokio::{net::TcpListener, sync::Semaphore, task::spawn_blocking};
 use zeroize::Zeroize;
 
 use crate::{
+    query_sources::{self, SourceAliases},
     rpsl::Object,
     sets::{self, recursive_members_at_root, routes_for_as_set_with_budget},
     storage::{InverseFilter, QueryView, Store},
@@ -58,6 +59,11 @@ const INVERSE_FILTERS: &[(&str, &str)] = &[
     ("adminC", "admin-c"),
     ("techC", "tech-c"),
     ("zoneC", "zone-c"),
+    ("members", "members"),
+    ("mpMembers", "mp-members"),
+    ("person", "person"),
+    ("role", "role"),
+    ("origin", "origin"),
 ];
 
 const OBJECT_INTERFACE: &str = "RPSLObject";
@@ -447,8 +453,18 @@ fn source_filter(
     ctx: &ResolverContext<'_>,
     configured: &[String],
 ) -> async_graphql::Result<Vec<String>> {
+    let names = source_names(ctx, configured)?;
+    query_sources::expand(&names, configured, ctx.data_unchecked::<SourceAliases>())
+        .ok_or_else(|| Error::new("Unknown source."))
+}
+
+fn source_names(
+    ctx: &ResolverContext<'_>,
+    configured: &[String],
+) -> async_graphql::Result<Vec<String>> {
+    let aliases = ctx.data_unchecked::<SourceAliases>();
     let sources = list_filter(ctx, "sources")?.map_or_else(
-        || configured.to_vec(),
+        || query_sources::available(configured, aliases),
         |mut sources| {
             sources
                 .iter_mut()
@@ -456,7 +472,10 @@ fn source_filter(
             sources
         },
     );
-    if sources.iter().any(|source| !configured.contains(source)) {
+    if sources
+        .iter()
+        .any(|source| !query_sources::known(source, configured, aliases))
+    {
         return Err(Error::new("Unknown source."));
     }
     Ok(sources)
@@ -1041,6 +1060,7 @@ async fn recursive_set_members(
 
 struct DatabaseStatus {
     source: String,
+    alias: Option<Vec<String>>,
     authoritative: bool,
     serial: Option<u64>,
     local_serial: Option<u64>,
@@ -1062,29 +1082,40 @@ fn database_status_type() -> GraphqlObject {
     let int = TypeRef::named(TypeRef::INT);
     type StatusValue = fn(&DatabaseStatus) -> Option<Value>;
     let fields: [(&str, TypeRef, StatusValue); 12] = [
-        ("source_type", string.clone(), |_| {
-            Some(Value::from("regular"))
+        ("source_type", string.clone(), |status| {
+            Some(Value::from(if status.alias.is_some() {
+                "alias"
+            } else {
+                "regular"
+            }))
         }),
         ("source", string, |status| {
             Some(Value::from(status.source.as_str()))
         }),
         ("authoritative", boolean.clone(), |status| {
-            Some(Value::from(status.authoritative))
+            status
+                .alias
+                .is_none()
+                .then(|| Value::from(status.authoritative))
         }),
-        ("rpkiRovFilter", boolean.clone(), |_| {
-            Some(Value::from(false))
+        ("rpkiRovFilter", boolean.clone(), |status| {
+            status.alias.is_none().then(|| Value::from(false))
         }),
-        ("scopefilterEnabled", boolean.clone(), |_| {
-            Some(Value::from(false))
+        ("scopefilterEnabled", boolean.clone(), |status| {
+            status.alias.is_none().then(|| Value::from(false))
         }),
         ("localJournalKept", boolean.clone(), |status| {
-            Some(Value::from(
-                status.local_serial.is_some() || status.journal.is_some(),
-            ))
+            status
+                .alias
+                .is_none()
+                .then(|| Value::from(status.local_serial.is_some() || status.journal.is_some()))
         }),
         ("synchronisedSerials", boolean, |status| {
             let newest = status.journal.map(|(_, newest)| newest);
-            Some(Value::from(newest.is_some() && newest == status.serial))
+            status
+                .alias
+                .is_none()
+                .then(|| Value::from(newest.is_some() && newest == status.serial))
         }),
         ("serialOldestJournal", int.clone(), |status| {
             status_int(status.journal.map(|(oldest, _)| oldest))
@@ -1131,12 +1162,24 @@ fn database_status_type() -> GraphqlObject {
         ("nrtm4ServerLastSnapshotVersion", int),
         ("rpslDataUpdated", TypeRef::named(TypeRef::STRING)),
         ("lastUpdate", TypeRef::named(TypeRef::STRING)),
-        ("aliased_sources", TypeRef::named_nn_list(TypeRef::STRING)),
     ] {
         object = object.field(Field::new(name, ty, |_| {
             FieldFuture::new(async { Ok(None::<FieldValue<'_>>) })
         }));
     }
+    object = object.field(Field::new(
+        "aliased_sources",
+        TypeRef::named_nn_list(TypeRef::STRING),
+        |ctx| {
+            FieldFuture::new(async move {
+                let status = ctx.parent_value.try_downcast_ref::<DatabaseStatus>()?;
+                Ok(status
+                    .alias
+                    .as_ref()
+                    .map(|sources| FieldValue::list(sources.iter().map(FieldValue::value))))
+            })
+        },
+    ));
     object
 }
 
@@ -1144,7 +1187,7 @@ async fn database_status(
     ctx: ResolverContext<'_>,
 ) -> async_graphql::Result<Option<FieldValue<'_>>> {
     let lookup = ctx.data::<Lookup>()?;
-    let mut sources = source_filter(&ctx, &lookup.sources)?;
+    let mut sources = source_names(&ctx, &lookup.sources)?;
     if sources.len() > MAX_FILTER_VALUES {
         return Err(query_error(
             QueryFailure::Limit,
@@ -1157,6 +1200,7 @@ async fn database_status(
     let mut seen = HashSet::new();
     sources.retain(|source| seen.insert(source.clone()));
     let authoritative_sources = Arc::clone(&lookup.authoritative_sources);
+    let aliases = ctx.data_unchecked::<SourceAliases>().clone();
     let rows = lookup
         .run(
             ctx.data::<QueryView>()?.clone(),
@@ -1165,6 +1209,17 @@ async fn database_status(
                 sources
                     .into_iter()
                     .map(|source| {
+                        if let Some(members) = aliases.get(&source) {
+                            return Ok(DatabaseStatus {
+                                source,
+                                alias: Some(members.clone()),
+                                authoritative: false,
+                                serial: None,
+                                local_serial: None,
+                                journal: None,
+                                nrtm4: None,
+                            });
+                        }
                         let authoritative = authoritative_sources.contains(&source);
                         let serial = store.source_serial(&source)?;
                         let local_serial = store.source_local_serial(&source)?;
@@ -1174,6 +1229,7 @@ async fn database_status(
                             .map(|state| (state.session_id, state.version));
                         Ok(DatabaseStatus {
                             source,
+                            alias: None,
                             authoritative,
                             serial,
                             local_serial,
@@ -1190,6 +1246,7 @@ async fn database_status(
     )))
 }
 
+#[cfg(test)]
 fn make_schema(
     store: Arc<Store>,
     sources: Vec<String>,
@@ -1286,6 +1343,7 @@ fn schema_builder(
 
     let mut builder = Schema::build("Query", None, None)
         .extension(PrefixLists)
+        .data(SourceAliases::new())
         .data(Lookup {
             store,
             sources: sources.into(),
@@ -1432,6 +1490,7 @@ async fn execute(
 
 pub struct HttpServiceConfig {
     pub sources: Vec<String>,
+    pub source_aliases: SourceAliases,
     pub authoritative_sources: HashSet<String>,
     pub update_sources: Option<HashSet<String>>,
     pub timeout: Duration,
@@ -1449,6 +1508,7 @@ pub async fn serve(
 ) -> Result<()> {
     let HttpServiceConfig {
         sources,
+        source_aliases,
         authoritative_sources,
         update_sources,
         timeout,
@@ -1457,7 +1517,10 @@ pub async fn serve(
         public_queries,
         public_policy,
     } = config;
-    let schema = make_schema(store.clone(), sources.clone(), authoritative_sources)?;
+    let schema = schema_builder(store.clone(), sources.clone(), authoritative_sources)
+        .data(query_sources::visible(&sources, &source_aliases))
+        .finish()
+        .context("building GraphQL schema")?;
     let mut app = Router::new()
         .route("/graphql", post(execute))
         .route("/graphql/", post(execute))
@@ -1471,9 +1534,10 @@ pub async fn serve(
         ))
         .with_state(schema)
         .layer(Extension(store.clone()))
-        .merge(crate::whois::http_router(
+        .merge(crate::whois::http_router_with_aliases(
             store.clone(),
             whois_sources.unwrap_or_else(|| sources.clone()),
+            source_aliases,
             timeout,
         ));
     if let Some(update_sources) = update_sources {
@@ -1515,6 +1579,7 @@ mod tests {
         update_sources: Option<HashSet<String>>,
     ) -> HttpServiceConfig {
         HttpServiceConfig {
+            source_aliases: SourceAliases::new(),
             sources: vec!["TEST".into()],
             authoritative_sources: HashSet::new(),
             update_sources,

@@ -20,6 +20,7 @@ mod nrtm4_remote;
 mod nrtm4_state;
 mod nrtm_client;
 mod public_http;
+mod query_sources;
 mod route_policy;
 mod rpsl;
 mod scope;
@@ -842,6 +843,7 @@ async fn serve(
             store,
             graphql::HttpServiceConfig {
                 sources: sources.clone(),
+                source_aliases: config.source_aliases.clone(),
                 authoritative_sources: config.authoritative_sources.clone(),
                 update_sources,
                 timeout,
