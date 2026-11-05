@@ -29,3 +29,9 @@ irrd:
       authoritative: true
     AUTH-OTHER:
       authoritative: true
+    QUERY-FIRST:
+      authoritative: false
+    QUERY-SECOND:
+      authoritative: false
+    LARGE:
+      authoritative: false

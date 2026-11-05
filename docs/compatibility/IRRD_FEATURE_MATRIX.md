@@ -35,6 +35,22 @@ open until the stated behaviour and safety checks are demonstrated.
 
 ## Current development
 
+The [two-source query comparison](QUERY_SOURCE_PARITY.md) adds reproducible
+source-precedence, duplicate-identity, recursive/indirect AS-set, IPv4/IPv6 and
+all-19-class checks against the pinned official daemon. Its 325 assertions include
+two documented stricter input bounds; it does not claim identical error prose,
+unbounded query capacity, policy filtering or complete live-dataset equivalence.
+Matching source snapshots, serials, class scope and query settings are required
+before comparing two deployments.
+
+The additional [large-query corpus](QUERY_SOURCE_PARITY.md#large-query-regression-corpus)
+reproduces 32 beta.3 limit failures on valid requests. The development build passes
+all 59 reference/candidate complete-answer checks plus two candidate-only
+aggregate-budget/recovery checks: 1,300 child sets, 5,200 origins and 15,600 root
+prefixes, including source-safe indirect membership. The checkpoint records its
+exact binary hash, memory and timing scope; this is not full parity or sustained
+Internet-load qualification.
+
 The 5 November development review adds bounded indexed GraphQL inverse filters,
 WHOIS `!j` serial discovery, protected-name checks for dangling contact references,
 and atomic deletion of an object with its referrers. Public lookup materialization
