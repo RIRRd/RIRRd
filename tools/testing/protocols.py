@@ -39,6 +39,7 @@ class Protocols(unittest.TestCase):
         self.assertEqual(status, 200)
         return json.loads(raw)
 
+    @unittest.skipIf(os.name == "nt", "This check exercises POSIX SIGTERM; Windows terminate force-stops a process")
     def test_shutdown_during_online_repack_keeps_the_original_verifiable(self):
         registry = Registry()
         try:
