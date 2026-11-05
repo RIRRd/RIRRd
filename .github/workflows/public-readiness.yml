@@ -23,14 +23,15 @@ jobs:
           docker run --rm --network none --mount "type=bind,source=$RUNNER_TEMP/public-tree,target=/tree,readonly" \
             "$image" dir /tree --redact --config /tree/.gitleaks.toml
           # New secrets in the files with exact fixture exceptions must still fail.
-          mkdir -p "$RUNNER_TEMP/secret-canary/src" "$RUNNER_TEMP/secret-canary/tests" "$RUNNER_TEMP/secret-canary-report"
-          python3 - "$RUNNER_TEMP/secret-canary/src/rpsl.rs" "$RUNNER_TEMP/secret-canary/tests/smoke.rs" <<'PYTHON'
+          mkdir -p "$RUNNER_TEMP/secret-canary/src" "$RUNNER_TEMP/secret-canary/tests" "$RUNNER_TEMP/secret-canary/tools/oracle" "$RUNNER_TEMP/secret-canary-report"
+          python3 - "$RUNNER_TEMP/secret-canary/src/rpsl.rs" "$RUNNER_TEMP/secret-canary/tests/smoke.rs" "$RUNNER_TEMP/secret-canary/tools/oracle/query_scope_fixture.py" <<'PYTHON'
           import base64, os, sys
           from pathlib import Path
           label = "PGP " + "PRIVATE KEY BLOCK"
           body = base64.b64encode(os.urandom(48)).decode()
           Path(sys.argv[1]).write_text("-----BEGIN " + label + "-----\n" + body + "\n-----END " + label + "-----\n")
           Path(sys.argv[2]).write_text('const API_KEY = "' + os.urandom(32).hex() + '";\n')
+          Path(sys.argv[3]).write_text('API_KEY = "' + os.urandom(32).hex() + '"\n')
           PYTHON
           set +e
           docker run --rm --network none --mount "type=bind,source=$RUNNER_TEMP/secret-canary,target=/canary,readonly" \
@@ -45,4 +46,5 @@ jobs:
           rows = json.load(open(sys.argv[1]))
           assert any(row["RuleID"] == "private-key" and row["File"].endswith("src/rpsl.rs") for row in rows)
           assert any(row["RuleID"] == "generic-api-key" and row["File"].endswith("tests/smoke.rs") for row in rows)
+          assert any(row["RuleID"] == "generic-api-key" and row["File"].endswith("tools/oracle/query_scope_fixture.py") for row in rows)
           PYTHON
