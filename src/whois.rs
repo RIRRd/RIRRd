@@ -126,6 +126,7 @@ enum Query {
         end: Option<u64>,
     },
     Nrtm3Sources,
+    SerialRange(Option<Vec<String>>),
     Version,
 }
 
@@ -224,10 +225,9 @@ async fn http_query(State(state): State<HttpWhois>, request: Request) -> Respons
     let Ok(permit) = state.slots.try_acquire_owned() else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
-    let worker = tokio::task::spawn_blocking(move || {
+    let worker = with_query_view(state.store, move |store| {
         let _permit = permit;
-        let _view = state.store.query_gate().blocking_read();
-        execute_http(query.trim(), &state.store, &client)
+        execute_http(query.trim(), store, &client)
     });
     match timeout(state.deadline, worker).await {
         Ok(Ok(Ok((StatusCode::NO_CONTENT, _)))) => StatusCode::NO_CONTENT.into_response(),
@@ -615,6 +615,21 @@ fn parse_set_name(value: &str) -> Option<String> {
     .then(|| value.to_ascii_uppercase())
 }
 
+/// Wait for an immutable query view without occupying a blocking thread. Once
+/// started, the worker owns that view until it finishes even if the request
+/// deadline expires. The caller's single timeout covers both waiting and work.
+async fn with_query_view<T: Send + 'static>(
+    store: Arc<Store>,
+    work: impl FnOnce(&Store) -> T + Send + 'static,
+) -> Result<T, tokio::task::JoinError> {
+    let view = store.query_gate().clone().read_owned().await;
+    tokio::task::spawn_blocking(move || {
+        let _view = view;
+        work(&store)
+    })
+    .await
+}
+
 async fn lookup(
     query: Query,
     store: Arc<Store>,
@@ -627,9 +642,8 @@ async fn lookup(
     let nrtm = matches!(&query, Query::Nrtm3 { .. });
     let discovery = matches!(&query, Query::Nrtm3Sources);
     let irrd = query.uses_irrd_framing();
-    let lookup = tokio::task::spawn_blocking(move || {
-        let _view = store.query_gate().blocking_read();
-        let result = execute(query, &store, &sources, &excluded, &client);
+    let lookup = with_query_view(store, move |store| {
+        let result = execute(query, store, &sources, &excluded, &client);
         (result, permit)
     });
     let response = match timeout(deadline, lookup).await {
@@ -653,6 +667,30 @@ async fn lookup(
 }
 
 fn execute(
+    query: Query,
+    store: &Store,
+    sources: &[String],
+    excluded: &[String],
+    client: &Client,
+) -> Result<String> {
+    let irrd = query.uses_irrd_framing();
+    match execute_inner(query, store, sources, excluded, client) {
+        Err(error)
+            if error.is::<crate::sets::LimitExceeded>()
+                || error.is::<crate::storage::QueryMaterializationLimit>() =>
+        {
+            Ok(if irrd {
+                "F Too many results\n"
+            } else {
+                "%% ERROR: Too many results\n\n\n"
+            }
+            .to_owned())
+        }
+        result => result,
+    }
+}
+
+fn execute_inner(
     query: Query,
     store: &Store,
     sources: &[String],
@@ -707,15 +745,14 @@ fn execute(
             let matches = store.inverse(&field, &value, sources, MAX_RESULTS + 1)?;
             Ok(frame_objects(&matches, irrd))
         }
-        Query::Set { name, recursive } => {
-            let members = crate::sets::members(store, sources, &name, recursive, excluded)?;
-            Ok(frame_values(members))
-        }
-        Query::SetRoutes { name, family } => {
-            let prefixes = crate::sets::routes_for_as_set(store, sources, &name, family, excluded)?;
-            Ok(frame_values(prefixes))
-        }
+        Query::Set { name, recursive } => Ok(frame_values(crate::sets::members(
+            store, sources, &name, recursive, excluded,
+        )?)),
+        Query::SetRoutes { name, family } => Ok(frame_values(crate::sets::routes_for_as_set(
+            store, sources, &name, family, excluded,
+        )?)),
         Query::Nrtm3Sources => nrtm3_sources(store, client),
+        Query::SerialRange(requested) => source_serial_ranges(store, client, requested.as_deref()),
         Query::Nrtm3 { source, start, end } => {
             let Some((end, operations)) = store.nrtm3_journal(
                 &source,
@@ -761,6 +798,41 @@ fn execute(
             Ok(response)
         }
     }
+}
+
+/// Legacy `!j`: report the upstream cursor and whether a local journal exists.
+/// Journal existence does not grant replication permission; `-g` still checks
+/// the peer ACL. We have no persistent export serial, so omit that optional field.
+fn source_serial_ranges(
+    store: &Store,
+    client: &Client,
+    requested: Option<&[String]>,
+) -> Result<String> {
+    let requested = requested.unwrap_or(&client.access.sources);
+    let mut body = String::new();
+    let mut seen = HashSet::new();
+    for source in requested {
+        if !client.access.sources.contains(source) || !seen.insert(source) {
+            continue;
+        }
+        let journal = store.nrtm3_journal_bounds(source)?;
+        let kept = if journal.is_some() || store.source_local_serial(source)?.is_some() {
+            "Y"
+        } else {
+            "N"
+        };
+        if let Some(serial) = store.source_serial(source)? {
+            writeln!(body, "{source}:{kept}:0-{serial}")?;
+        } else {
+            writeln!(body, "{source}:{kept}:-")?;
+        }
+    }
+    for source in requested {
+        if !client.access.sources.contains(source) {
+            writeln!(body, "{source}:X:Database unknown")?;
+        }
+    }
+    Ok(frame_irrd(body.trim_end_matches('\n')))
 }
 
 fn nrtm3_sources(store: &Store, client: &Client) -> Result<String> {
@@ -862,6 +934,21 @@ fn parse_query(line: &[u8]) -> Option<Query> {
 fn parse_query_text(line: &str) -> Option<Query> {
     if line == "!v" {
         return Some(Query::Version);
+    }
+    if let Some(requested) = line.strip_prefix("!j") {
+        let sources = if requested == "-*" {
+            None
+        } else {
+            let sources = requested
+                .split(',')
+                .map(|source| {
+                    (source.len() <= 32 && crate::rpsl::generic_name(source))
+                        .then(|| source.to_ascii_uppercase())
+                })
+                .collect::<Option<Vec<_>>>()?;
+            Some(sources)
+        };
+        return Some(Query::SerialRange(sources));
     }
     if let Some(origin) = line.strip_prefix("!g") {
         return Some(Query::Origin {
@@ -1057,6 +1144,141 @@ fn parse_origin(value: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn waiting_queries_leave_blocking_workers_free_and_cancelled_work_keeps_its_view() -> Result<()>
+    {
+        let directory = tempfile::tempdir()?;
+        let store = Arc::new(Store::open(&directory.path().join("registry.redb"))?);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .max_blocking_threads(1)
+            .build()?;
+        runtime.block_on(async {
+            // A writer already holds the view. Waiting queries must leave the
+            // only blocking thread free, e.g. for that writer's commit work.
+            let writer = store.query_gate().clone().write_owned().await;
+            let mut pending = Box::pin(with_query_view(store.clone(), |_| 41));
+            std::future::poll_fn(|context| {
+                // Poll once explicitly to prove this query is waiting for the
+                // gate before checking the sole blocking worker is available.
+                assert!(std::future::Future::poll(pending.as_mut(), context).is_pending());
+                std::task::Poll::Ready(())
+            })
+            .await;
+            assert_eq!(
+                timeout(Duration::from_secs(2), tokio::task::spawn_blocking(|| 42)).await??,
+                42
+            );
+            drop(writer);
+            assert_eq!(timeout(Duration::from_secs(2), pending).await??, 41);
+
+            // Cancelling the async waiter does not cancel a blocking worker.
+            // Its read view must survive until the actual work has completed.
+            let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+            let (finish_tx, finish_rx) = std::sync::mpsc::channel();
+            let pending = tokio::spawn(with_query_view(store.clone(), move |_| {
+                let _ = started_tx.send(());
+                let _ = finish_rx.recv();
+            }));
+            timeout(Duration::from_secs(2), started_rx).await??;
+            pending.abort();
+            assert!(pending.await.unwrap_err().is_cancelled());
+            assert!(store.query_gate().try_write().is_err());
+            finish_tx.send(())?;
+            let _writer = timeout(Duration::from_secs(2), store.query_gate().write()).await?;
+            Ok::<_, anyhow::Error>(())
+        })?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn set_limits_fail_without_partial_answers_on_tcp_and_http() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let config_file = directory.path().join("irrd.toml");
+        std::fs::write(
+            &config_file,
+            "database = \"registry.redb\"\nsources = [\"TEST\"]\nlisten = \"127.0.0.1:0\"\nmax_connections = 4\nio_timeout_seconds = 2\nmax_snapshot_bytes = 131072\n",
+        )?;
+        let config = Config::load(&config_file)?;
+        let store = Arc::new(Store::open(&config.database)?);
+        let writer = Arc::clone(&store);
+        tokio::task::spawn_blocking(move || -> Result<()> {
+            writer.replace_source(
+                "TEST",
+                [("AS-LIMIT", 4096), ("AS-OVER", 4097)]
+                    .into_iter()
+                    .map(|(name, size)| {
+                        let members = (0..size)
+                            .map(|n| format!("AS{}", 64512 + n))
+                            .collect::<Vec<_>>()
+                            .join(",");
+                        crate::rpsl::parse(&format!(
+                            "as-set: {name}\nmembers: {members}\nsource: TEST\n"
+                        ))
+                        .map_err(anyhow::Error::msg)
+                    }),
+            )?;
+            Ok(())
+        })
+        .await??;
+        let tcp = TcpListener::bind("127.0.0.1:0").await?;
+        let tcp_address = tcp.local_addr()?;
+        let http = TcpListener::bind("127.0.0.1:0").await?;
+        let http_address = http.local_addr()?;
+        let (tcp_stop, stopped) = watch::channel(false);
+        let tcp_store = store.clone();
+        let tcp_server = tokio::spawn(async move { serve(tcp, &config, tcp_store, stopped).await });
+        let (http_stop, stopped) = tokio::sync::oneshot::channel();
+        let http_server = tokio::spawn(async move {
+            axum::serve(
+                http,
+                http_router(store, vec!["TEST".into()], Duration::from_secs(2)),
+            )
+            .with_graceful_shutdown(async {
+                let _ = stopped.await;
+            })
+            .await
+        });
+        for (query, encoded, exceeds) in [
+            ("!iAS-LIMIT", "%21iAS-LIMIT", false),
+            ("!iAS-OVER", "%21iAS-OVER", true),
+            ("!iAS-OVER,1", "%21iAS-OVER%2C1", true),
+        ] {
+            let mut socket = TcpStream::connect(tcp_address).await?;
+            socket.write_all(format!("{query}\n").as_bytes()).await?;
+            let mut response = String::new();
+            timeout(Duration::from_secs(3), socket.read_to_string(&mut response)).await??;
+            if exceeds {
+                assert_eq!(response, "F Too many results\n", "{query}");
+            } else {
+                let (status, values) = unframe_http(response, true)?;
+                assert_eq!(status, StatusCode::OK);
+                assert_eq!(values.split_whitespace().count(), 4096);
+            }
+            let mut socket = TcpStream::connect(http_address).await?;
+            socket.write_all(format!(
+                "GET /v1/whois/?q={encoded} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+            ).as_bytes()).await?;
+            let mut response = String::new();
+            timeout(Duration::from_secs(3), socket.read_to_string(&mut response)).await??;
+            let (headers, body) = response
+                .split_once("\r\n\r\n")
+                .context("invalid HTTP response")?;
+            if exceeds {
+                assert!(headers.starts_with("HTTP/1.1 400 "), "{headers}");
+                assert_eq!(body, "Too many results");
+            } else {
+                assert!(headers.starts_with("HTTP/1.1 200 "), "{headers}");
+                assert_eq!(body.split_whitespace().count(), 4096);
+            }
+        }
+        tcp_stop.send(true)?;
+        let _ = http_stop.send(());
+        timeout(Duration::from_secs(3), tcp_server).await???;
+        timeout(Duration::from_secs(3), http_server).await???;
+        Ok(())
+    }
 
     #[test]
     fn public_record_framing_preserves_line_endings_bytes_and_redaction() {
@@ -1284,6 +1506,11 @@ TEST = ["127.0.0.1"]
             ),
             ("-g OTHER:3:31-LAST\r\n", "%% ERROR: Access denied\n\n\n"),
             (
+                "!jtest,other,missing\n",
+                "A52\nTEST:Y:0-42\nOTHER:Y:0-31\nMISSING:X:Database unknown\nC\n",
+            ),
+            ("!j-*\n", "A35\nOTHER:Y:0-31\nEMPTY:N:-\nTEST:Y:0-42\nC\n"),
+            (
                 "-g TEST:3:43-LAST\r\n",
                 "% Warning: there are no newer updates available\n\n\n",
             ),
@@ -1375,6 +1602,14 @@ TEST = ["127.0.0.1"]
             ("?q=%21t1001", 400, "Invalid or unsupported query"),
             ("?q=%21%21", 204, ""),
             ("?q=%21s-lc", 200, "TEST,OTHER"),
+            (
+                "?q=%21jtest,other,missing",
+                200,
+                "TEST:Y:0-11\nOTHER:N:-\nMISSING:X:Database unknown",
+            ),
+            ("?q=%21j-*", 200, "TEST:Y:0-11\nOTHER:N:-"),
+            ("?q=%21j", 400, "Invalid or unsupported query"),
+            ("?q=%21jTEST%2C", 400, "Invalid or unsupported query"),
             ("?q=%21v%00", 400, "Queries may not contain null bytes"),
             ("?q=%21v%0A%21v", 400, "Invalid or unsupported query"),
             ("?q=-g+TEST%3A3%3A11-LAST", 400, "Access denied"),

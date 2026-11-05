@@ -148,6 +148,44 @@ class Protocols(unittest.TestCase):
         names = {f['name'] for f in data['data']['__schema']['queryType']['fields']}
         self.assertTrue({'rpslObjects','databaseStatus','asnPrefixes','asSetPrefixes','recursiveSetMembers'} <= names)
 
+    def test_graphql_inverse_filters_share_redaction_and_class_constraints(self):
+        rows = self.graphql('{rpslObjects(mntBy:["DOCS-MNT"],sources:["EXAMPLE"],objectClass:["route6"]){rpslPk objectClass source objectText}}')
+        self.assertNotIn('errors', rows)
+        self.assertTrue(rows['data']['rpslObjects'])
+        for row in rows['data']['rpslObjects']:
+            self.assertEqual(row['objectClass'], 'route6')
+            self.assertEqual(row['source'], 'EXAMPLE')
+            self.assertNotIn('auth:', row['objectText'].lower())
+        denied = self.graphql('{rpslObjects(mntBy:["DOCS-MNT"],sources:["UNCONFIGURED"]){rpslPk}}')
+        self.assertTrue(denied.get('errors'))
+        empty = self.graphql('{rpslObjects(mntBy:["DOCS-MNT"],techC:["ABSENT-TEST"]){rpslPk}}')
+        self.assertEqual(empty['data']['rpslObjects'], [])
+
+    def test_large_mirrored_record_is_retained_but_public_queries_fail_with_limits(self):
+        registry = Registry()
+        try:
+            registry.config.write_text(registry.config.read_text().replace('max_snapshot_bytes = 262144', 'max_snapshot_bytes = 4194304'))
+            fixture = registry.root / 'large-policy.rpsl'
+            fixture.write_text('filter-set: FLTR-LARGE\nfilter: ' + 'AS64496 OR ' * 220000 + 'AS64497\nsource: EXAMPLE\n')
+            registry.cli('import', 'snapshot', '--source', 'EXAMPLE', '--file', str(fixture))
+            registry.start()
+            self.assertEqual(registry.wire(b'!mfilter-set,FLTR-LARGE\n'), b'F Too many results\n')
+            status, raw, _ = registry.request('/v1/whois/?q=%21mfilter-set%2CFLTR-LARGE')
+            self.assertEqual(status, 400)
+            self.assertIn(b'Too many results', raw)
+            status, raw, _ = registry.request('/graphql/', 'POST', json.dumps({'query':'{rpslObjects(rpslPk:["FLTR-LARGE"]){objectText}}'}), {'Content-Type':'application/json'})
+            self.assertEqual(status, 200)
+            self.assertIn('resource limits', json.loads(raw)['errors'][0]['message'])
+            self.assertLess(len(raw), 1024)
+            self.assertIn(b'rust-irrd', registry.wire(b'!v\n'))
+            registry.stop()
+            exported = registry.root / 'export.rpsl'
+            registry.cli('export', 'snapshot', '--source', 'EXAMPLE', '--file', str(exported), '--include-sensitive')
+            self.assertEqual(exported.read_text().rstrip(), fixture.read_text().rstrip())
+            registry.cli('database', 'verify')
+        finally:
+            registry.close()
+
     def test_graphql_unknown_source_is_an_error(self):
         self.assertTrue(self.graphql('{ rpslObjects(sources:["ABSENT"]) { rpslPk } }').get('errors'))
 

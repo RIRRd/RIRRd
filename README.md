@@ -142,8 +142,15 @@ printf '!mroute,192.0.2.0/24AS64496\n' | nc 127.0.0.1 4343
 | `-s <source-list>`, `-a`, `-V <client>` | RIPE-style source selection, source reset and client identification. |
 | `-q sources` | List configured sources, retained NRTMv3 journal bounds and whether the peer may mirror each source. |
 | `!v`, `!n<client>` | Report version or acknowledge client identification. |
+| `!j<source-list>`, `!j-*` | Report retained journal availability and serial bounds, or unknown-source status. Export serials are omitted because they are not persisted. |
 
-Bare, route and inverse lookups return at most 16 objects. A single-AS origin lookup returns at most 4,096 distinct prefixes. Set expansion has separate traversal limits. Requests exceeding a limit fail as a whole. The mirror parser validates record structure and identity. Indexing retains valid optional lookup values and reports malformed values that it skipped.
+Bare, route and inverse lookups return at most 16 objects. Object lookups also have
+a 2 MiB budget for raw text and identities, checked before copying database values.
+A single-AS origin lookup returns at most 4,096 distinct prefixes. Set expansion
+has separate traversal limits. Requests exceeding a limit fail as a whole with
+a query-limit error. Large mirrored records remain stored and exportable.
+The mirror parser validates record structure and identity. Indexing retains valid
+optional lookup values and reports malformed values that it skipped.
 
 | Configuration | Purpose |
 |---|---|
@@ -158,7 +165,7 @@ Bare, route and inverse lookups return at most 16 objects. A single-AS origin lo
 | `max_connections_per_ip` | Optional concurrent WHOIS limit per client IP, at most the global limit. |
 | `connection_limit_exempt_ips` | Optional list of up to 256 exact IPv4 or IPv6 addresses exempt from the per-IP limit. The global limit still applies. |
 | `io_timeout_seconds` | Deadline per read, lookup or write, 1–300 seconds. |
-| `max_snapshot_bytes` | Uncompressed input byte limit, 1 byte–64 GiB. Individual records are limited to 64 KiB. |
+| `max_snapshot_bytes` | Uncompressed input byte limit, 1 byte–64 GiB. Authoritative submission records are limited to 64 KiB; mirror snapshot records can be up to 8 MiB. Public object lookups have a separate 2 MiB materialization budget. |
 
 Import accepts local UTF-8 RPSL in plain text or gzip. Each successful import replaces the named source atomically. Empty, malformed, duplicate or wrong-source input fails the import. Stop the local daemon before running import, export or verification commands because redb takes exclusive process ownership of the database file. The verifier checks stored identities against both indexes.
 
@@ -192,7 +199,7 @@ With `http_listen` enabled, send a URL-encoded WHOIS command in the `q` paramete
 
 ## GraphQL
 
-Set `http_listen = "127.0.0.1:8080"` in TOML. Send JSON by POST to `/graphql/` with a `query` field. The implemented subset accepts bounded exact-key queries through `rpslObjects`, prefix queries through `asnPrefixes` and `asSetPrefixes`, set expansion through `recursiveSetMembers`, and configured-source and replication metadata through `databaseStatus`. The optional `rootSource` argument selects the root independently of the source order used for nested set lookups. For example:
+Set `http_listen = "127.0.0.1:8080"` in TOML. Send JSON by POST to `/graphql/` with a `query` field. The implemented subset accepts bounded exact-key and indexed inverse queries through `rpslObjects`, prefix queries through `asnPrefixes` and `asSetPrefixes`, set expansion through `recursiveSetMembers`, and configured-source and replication metadata through `databaseStatus`. The optional `rootSource` argument selects the root independently of the source order used for nested set lookups. For example:
 
 ```graphql
 {

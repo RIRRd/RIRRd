@@ -25,13 +25,17 @@ use axum::{
     response::{IntoResponse, Response},
     routing::post,
 };
-use tokio::{net::TcpListener, sync::Semaphore, task::spawn_blocking};
+use tokio::{
+    net::TcpListener,
+    sync::{OwnedRwLockReadGuard, Semaphore},
+    task::spawn_blocking,
+};
 use zeroize::Zeroize;
 
 use crate::{
     rpsl::Object,
     sets::{self, recursive_members_at_root, routes_for_as_set},
-    storage::Store,
+    storage::{InverseFilter, Store},
 };
 
 const MAX_HTTP_BYTES: usize = 16 * 1024;
@@ -47,6 +51,15 @@ const MAX_FILTER_VALUES: usize = 32;
 const MAX_FILTER_BYTES: usize = 512;
 const MAX_COMPLEXITY: usize = 24;
 const MAX_DEPTH: usize = 8;
+
+const INVERSE_FILTERS: &[(&str, &str)] = &[
+    ("mntBy", "mnt-by"),
+    ("memberOf", "member-of"),
+    ("mbrsByRef", "mbrs-by-ref"),
+    ("adminC", "admin-c"),
+    ("techC", "tech-c"),
+    ("zoneC", "zone-c"),
+];
 
 const OBJECT_INTERFACE: &str = "RPSLObject";
 const OBJECT_TYPES: &[(&str, &str)] = &[
@@ -177,6 +190,8 @@ fn camel_case(attribute: &str) -> String {
     result
 }
 
+type QueryView = Arc<OwnedRwLockReadGuard<()>>;
+
 #[derive(Clone)]
 struct Lookup {
     store: Arc<Store>,
@@ -188,6 +203,7 @@ struct Lookup {
 impl Lookup {
     async fn run<T: Send + 'static>(
         &self,
+        view: Option<QueryView>,
         work: impl FnOnce(&Store) -> Result<T> + Send + 'static,
     ) -> async_graphql::Result<T> {
         let permit = Arc::clone(&self.slots)
@@ -196,12 +212,20 @@ impl Lookup {
         let store = Arc::clone(&self.store);
         spawn_blocking(move || {
             let _permit = permit;
+            // Keep the coherent view even if the HTTP deadline cancels its caller.
+            let _view = view;
             work(&store)
         })
         .await
         .context("GraphQL lookup worker failed")
         .and_then(|result| result)
         .map_err(|error| {
+            if error.is::<crate::storage::QueryScanLimit>() {
+                return Error::new("Query exceeds the indexed scan limit; narrow the keys, sources or object classes.");
+            }
+            if error.is::<sets::LimitExceeded>() || error.is::<crate::storage::QueryMaterializationLimit>() {
+                return Error::new("Query result exceeds resource limits.");
+            }
             tracing::error!(%error, "GraphQL lookup failed");
             Error::new("Lookup failed.")
         })
@@ -393,9 +417,22 @@ fn source_filter(
 
 async fn objects(ctx: ResolverContext<'_>) -> async_graphql::Result<Option<FieldValue<'_>>> {
     let lookup = ctx.data::<Lookup>()?;
-    let Some(keys) = list_filter(&ctx, "rpslPk")? else {
+    let keys = list_filter(&ctx, "rpslPk")?;
+    let mut filters = Vec::new();
+    for &(argument, field) in INVERSE_FILTERS {
+        if let Some(values) = list_filter(&ctx, argument)? {
+            let mut seen = HashSet::new();
+            let values = values
+                .into_iter()
+                .map(|value| value.to_uppercase())
+                .filter(|value| seen.insert(value.clone()))
+                .collect();
+            filters.push(InverseFilter { field, values });
+        }
+    }
+    if keys.is_none() && filters.is_empty() {
         return Err(Error::new("Your query must be more specific."));
-    };
+    }
 
     let classes = list_filter(&ctx, "objectClass")?;
     let sources = source_filter(&ctx, &lookup.sources)?;
@@ -412,7 +449,7 @@ async fn objects(ctx: ResolverContext<'_>) -> async_graphql::Result<Option<Field
         .filter(|&limit| limit <= MAX_RECORDS)
         .ok_or_else(|| Error::new(format!("recordLimit must be between 0 and {MAX_RECORDS}.")))?;
 
-    if keys.is_empty()
+    if keys.as_ref().is_some_and(Vec::is_empty)
         || sources.is_empty()
         || classes.as_ref().is_some_and(Vec::is_empty)
         || limit == 0
@@ -421,7 +458,14 @@ async fn objects(ctx: ResolverContext<'_>) -> async_graphql::Result<Option<Field
     }
 
     let records = lookup
-        .run(move |store| store.exact_objects(&keys, &sources, &classes.unwrap_or_default(), limit))
+        .run(ctx.data_opt::<QueryView>().cloned(), move |store| {
+            let classes = classes.unwrap_or_default();
+            if filters.is_empty() {
+                store.exact_objects(&keys.unwrap_or_default(), &sources, &classes, limit)
+            } else {
+                store.filtered_objects(keys.as_deref(), &sources, &classes, &filters, limit)
+            }
+        })
         .await?;
 
     let objects = records
@@ -510,7 +554,7 @@ async fn asn_prefixes(ctx: ResolverContext<'_>) -> async_graphql::Result<Option<
     let sources = source_filter(&ctx, &lookup.sources)?;
     let family = ip_family(&ctx)?;
     let rows = lookup
-        .run(move |store| {
+        .run(ctx.data_opt::<QueryView>().cloned(), move |store| {
             let mut remaining = MAX_PREFIXES;
             let mut rows = Vec::with_capacity(asns.len());
             for asn in asns {
@@ -570,7 +614,7 @@ async fn as_set_prefixes(
     let family = ip_family(&ctx)?;
     let excluded = list_filter(&ctx, "excludeSets")?.unwrap_or_default();
     let rows = lookup
-        .run(move |store| {
+        .run(ctx.data_opt::<QueryView>().cloned(), move |store| {
             let mut remaining = MAX_PREFIXES;
             let mut rows = Vec::with_capacity(names.len());
             for name in names {
@@ -666,7 +710,7 @@ async fn recursive_set_members(
     let depth = (depth != 0).then_some(depth);
     let excluded = list_filter(&ctx, "excludeSets")?.unwrap_or_default();
     let rows = lookup
-        .run(move |store| {
+        .run(ctx.data_opt::<QueryView>().cloned(), move |store| {
             let root_sources = root_source
                 .as_ref()
                 .map_or(sources.as_slice(), std::slice::from_ref);
@@ -825,7 +869,7 @@ async fn database_status(
     sources.retain(|source| seen.insert(source.clone()));
     let authoritative_sources = Arc::clone(&lookup.authoritative_sources);
     let rows = lookup
-        .run(move |store| {
+        .run(ctx.data_opt::<QueryView>().cloned(), move |store| {
             sources
                 .into_iter()
                 .map(|source| {
@@ -860,18 +904,20 @@ fn make_schema(
 ) -> Result<Schema> {
     let list = TypeRef::named_nn_list(TypeRef::STRING);
     let ip_version = TypeRef::named(TypeRef::INT);
+    let mut object_query = Field::new(
+        "rpslObjects",
+        TypeRef::named_nn_list(OBJECT_INTERFACE),
+        |ctx| FieldFuture::new(objects(ctx)),
+    )
+    .argument(InputValue::new("rpslPk", list.clone()))
+    .argument(InputValue::new("objectClass", list.clone()))
+    .argument(InputValue::new("sources", list.clone()))
+    .argument(InputValue::new("recordLimit", TypeRef::named(TypeRef::INT)));
+    for &(argument, _) in INVERSE_FILTERS {
+        object_query = object_query.argument(InputValue::new(argument, list.clone()));
+    }
     let root = GraphqlObject::new("Query")
-        .field(
-            Field::new(
-                "rpslObjects",
-                TypeRef::named_nn_list(OBJECT_INTERFACE),
-                |ctx| FieldFuture::new(objects(ctx)),
-            )
-            .argument(InputValue::new("rpslPk", list.clone()))
-            .argument(InputValue::new("objectClass", list.clone()))
-            .argument(InputValue::new("sources", list.clone()))
-            .argument(InputValue::new("recordLimit", TypeRef::named(TypeRef::INT))),
-        )
+        .field(object_query)
         .field(
             Field::new(
                 "databaseStatus",
@@ -1032,8 +1078,8 @@ async fn execute(
     Extension(store): Extension<Arc<Store>>,
     Json(request): Json<Request>,
 ) -> impl IntoResponse {
-    let _view = store.query_gate().read().await;
-    Json(schema.execute(request).await)
+    let view = Arc::new(store.query_gate().clone().read_owned().await);
+    Json(schema.execute(request.data(view)).await)
 }
 
 pub struct HttpServiceConfig {
@@ -1135,6 +1181,39 @@ mod tests {
                 database_cache_mib: 64,
             },
         }
+    }
+
+    #[tokio::test]
+    async fn cancelled_graphql_worker_keeps_its_coherent_view_until_it_finishes() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let store = Arc::new(Store::open(&directory.path().join("cancelled.redb"))?);
+        let view = Arc::new(store.query_gate().clone().read_owned().await);
+        let lookup = Lookup {
+            store: store.clone(),
+            sources: Arc::new([]),
+            authoritative_sources: Arc::new(HashSet::new()),
+            slots: Arc::new(Semaphore::new(1)),
+        };
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let (finish, wait) = std::sync::mpsc::channel();
+        let task = tokio::spawn(async move {
+            lookup
+                .run(Some(view), move |_| {
+                    let _ = started.send(());
+                    wait.recv_timeout(Duration::from_secs(5))?;
+                    Ok(())
+                })
+                .await
+        });
+        ready.await?;
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert!(store.query_gate().try_write().is_err());
+        finish.send(())?;
+        let guard =
+            tokio::time::timeout(Duration::from_secs(5), store.query_gate().write()).await?;
+        drop(guard);
+        Ok(())
     }
 
     fn test_schema() -> Result<(tempfile::TempDir, Schema)> {
@@ -1425,6 +1504,55 @@ mod tests {
             serde_json::to_value(route.data)?,
             json!({"rpslObjects":[{"route6":"2001:db8::/32","origin":"AS64496"}]})
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn inverse_object_filters_combine_with_keys_classes_and_sources() -> Result<()> {
+        let (_directory, schema) = test_schema()?;
+        for (arguments, expected) in [
+            (r#"mntBy:["test-mnt","extra-mnt"]"#, vec!["AS64496"]),
+            (
+                r#"mntBy:["TEST-MNT"],rpslPk:["AS64496"],objectClass:["aut-num"]"#,
+                vec!["AS64496"],
+            ),
+            (r#"mntBy:["TEST-MNT"],sources:["OTHER"]"#, vec![]),
+            (r#"mntBy:["TEST-MNT"],objectClass:["route"]"#, vec![]),
+            (r#"mntBy:["TEST-MNT"],techC:["ABSENT-TEST"]"#, vec![]),
+            (r#"memberOf:["AS64496:RTRS-DEMO"]"#, vec!["R1.EXAMPLE"]),
+            (r#"mbrsByRef:["ANY"]"#, vec!["AS64496:RTRS-DEMO"]),
+            (r#"mntBy:[]"#, vec![]),
+            (r#"mntBy:["TEST-MNT"],recordLimit:0"#, vec![]),
+        ] {
+            let query = format!("{{ rpslObjects({arguments}) {{ rpslPk }} }}");
+            let response = schema.execute(query).await;
+            assert!(
+                response.errors.is_empty(),
+                "{arguments}: {:?}",
+                response.errors
+            );
+            let data = serde_json::to_value(response.data)?;
+            let keys: Vec<_> = data["rpslObjects"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|row| row["rpslPk"].as_str().unwrap())
+                .collect();
+            assert_eq!(keys, expected, "{arguments}");
+        }
+        for arguments in [
+            r#"mntBy:["TEST-MNT"],sources:["UNKNOWN"]"#,
+            r#"mntBy:[""]"#,
+            "mntBy:null",
+        ] {
+            assert!(
+                !schema
+                    .execute(format!("{{rpslObjects({arguments}){{rpslPk}}}}"))
+                    .await
+                    .errors
+                    .is_empty()
+            );
+        }
         Ok(())
     }
 

@@ -74,6 +74,7 @@ jobs:
           python3 tools/oracle/compare_policy_set_auth.py
           python3 tools/oracle/compare_organisation_graphql.py
           python3 tools/oracle/compare_policy_graphql.py
+          python3 tools/oracle/compare_inverse_graphql.py
           python3 tools/differential_whois.py --reference 127.0.0.1:8043 --candidate 127.0.0.1:9043 --allow-filtered-auth-omission --normalize-attribute-padding
           python3 tools/differential_whois.py --http --reference 127.0.0.1:8000 --candidate 127.0.0.1:9080 --allow-filtered-auth-omission --normalize-attribute-padding
       - name: Print oracle logs on failure

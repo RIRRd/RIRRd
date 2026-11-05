@@ -73,6 +73,28 @@ Check both the HTTP status and GraphQL `errors` field. The
 
 ## Browse object classes
 
+Development also supports indexed GraphQL object filters. Replace the example
+maintainer with the name you want to query:
+
+```sh
+curl --fail https://dev.rirrd.net/graphql/ -H 'Content-Type: application/json' \
+  --data '{"query":"{ rpslObjects(mntBy:[\"EXAMPLE-MNT\"],sources:[\"RIPE\"],objectClass:[\"as-set\"],recordLimit:8) { rpslPk source objectText } }"}'
+```
+
+Supported inverse filters are `mntBy`, `memberOf`, `mbrsByRef`, `adminC`, `techC`
+and `zoneC`. Values within a filter are alternatives; different filters must
+all match. They can be combined with `rpslPk`, source and class filters. Reads
+use one database snapshot and existing indexes, and return at most eight objects.
+Restrictive intersections that inspect over 4,096 candidates fail as a whole;
+narrow the keys, sources or classes instead of treating that error as no match.
+An explicitly empty filter matches nothing; null means no filter. This bounded
+profile does not provide the complete upstream GraphQL filter schema.
+
+Development object queries check a 2 MiB raw text/identity budget before copying
+records. An oversized query returns a limit error, never a partial routing list.
+Larger mirrored objects remain in storage and can be exported by the operator.
+The key browsing endpoint below can list their identities without loading text.
+
 ```sh
 curl --fail --get --data-urlencode 'source=RIPE' --data-urlencode 'class=as-set' \
   --data-urlencode 'limit=30' https://irrd.tools/v1/irr/objects

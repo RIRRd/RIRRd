@@ -33,7 +33,38 @@ handler p95 excludes rejected requests and does not include TLS/network delivery
 `Server-Timing` and an anonymous request sequence help distinguish native query
 latency from front-proxy and network delay. No query-result cache is introduced.
 
-## Evidence
+## Query and update hardening — 5 November development
+
+The development branch adds indexed GraphQL object filters (`mntBy`, `memberOf`,
+`mbrsByRef`, `adminC`, `techC`, `zoneC`) and WHOIS `!j` journal-range discovery.
+Inverse predicates intersect in one committed snapshot before applying the result
+limit. There is a 4,096-candidate work ceiling; exceeding it fails the field rather
+than returning an incomplete intersection. See [API commands](operations/API_COMMANDS.md).
+
+Public object lookups check a 2 MiB raw-text/identity budget before allocating
+owned records. This is per storage lookup, not a whole-process or GraphQL-request
+memory ceiling. Snapshot import can still retain 8 MiB records, and operator
+exports preserve them. Authoritative submissions retain their 64 KiB record limit.
+Set and object limits return explicit client errors without partial routing lists.
+
+WHOIS waits for query views asynchronously. Mirroring and HTTP submissions also
+acquire their write guards asynchronously before scheduling mutation work. Started
+workers retain their guards after request cancellation, avoiding both incoherent
+reads and blocking-pool lock inversion. Single-worker regressions cover both
+writer paths. Synchronous mirror network fetching can still occupy a blocking
+worker until its timeout; a one-worker pool is not a low-latency mirror profile.
+
+Authoritative contact creation now rejects handles already referenced by existing
+objects, even without a deletion tombstone. Atomic deletion can remove an object
+and all its referrers together; remaining or cross-source references still deny
+the change. These are specific authorization corrections, not account parity.
+
+Verification groups already-sorted source/class counts without allocating group
+keys per row. Public snapshot export sanitizes borrowed raw text instead of
+cloning each entire object first. Neither change alters the on-disk schema or
+removes data. The prior full-catalog repack remains the measured disk reduction.
+
+## Release evidence
 
 [Beta.2 qualification](https://github.com/RIRRd/RIRRd/actions/runs/41813943576)
 passed all 11 release jobs. The release was qualified before the current dev

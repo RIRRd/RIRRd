@@ -8,6 +8,7 @@ use std::{
     net::{Ipv4Addr, Ipv6Addr},
     ops::RangeInclusive,
     path::Path,
+    sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -17,7 +18,7 @@ use redb::{
     ReadTransaction, ReadableMultimapTable, ReadableTable, ReadableTableMetadata, Table,
     TableDefinition, TableHandle, WriteTransaction,
 };
-use tokio::sync::RwLock;
+use tokio::sync::{OwnedRwLockWriteGuard, RwLock};
 
 use crate::{
     authoritative::{Change, authorize},
@@ -30,6 +31,10 @@ use crate::{
 
 #[path = "storage_maintenance.rs"]
 mod maintenance;
+
+#[path = "storage_queries.rs"]
+mod queries;
+pub(crate) use queries::{InverseFilter, QueryScanLimit};
 
 type Identity<'a> = (&'a str, &'a str, &'a str);
 type ExactKey = (&'static str, &'static str);
@@ -103,7 +108,7 @@ pub struct AuditEntry {
 
 pub struct Store {
     db: Database,
-    query_gate: RwLock<()>,
+    query_gate: Arc<RwLock<()>>,
     legacy_md5_sources: HashSet<String>,
     route_policy: RoutePolicy,
     mirror_status:
@@ -278,7 +283,7 @@ impl Store {
     pub(crate) fn from_database(db: Database) -> Self {
         Self {
             db,
-            query_gate: RwLock::new(()),
+            query_gate: Arc::new(RwLock::new(())),
             legacy_md5_sources: HashSet::new(),
             route_policy: RoutePolicy::default(),
             mirror_status: std::sync::Mutex::new(std::collections::BTreeMap::new()),
@@ -286,7 +291,7 @@ impl Store {
     }
 
     /// Hold a read guard across a service query that performs multiple reads.
-    pub fn query_gate(&self) -> &RwLock<()> {
+    pub fn query_gate(&self) -> &Arc<RwLock<()>> {
         &self.query_gate
     }
 
@@ -367,6 +372,35 @@ impl Store {
         base: u64,
         classes: &HashSet<String>,
     ) -> Result<()> {
+        let _gate = self.query_gate.blocking_write();
+        self.confirm_mirror_base_inner(source, base, classes)
+    }
+
+    pub(crate) fn confirm_mirror_base_with_guard(
+        &self,
+        source: &str,
+        base: u64,
+        classes: &HashSet<String>,
+        guard: &OwnedRwLockWriteGuard<()>,
+    ) -> Result<()> {
+        self.require_write_guard(guard)?;
+        self.confirm_mirror_base_inner(source, base, classes)
+    }
+
+    fn require_write_guard(&self, guard: &OwnedRwLockWriteGuard<()>) -> Result<()> {
+        ensure!(
+            Arc::ptr_eq(OwnedRwLockWriteGuard::rwlock(guard), &self.query_gate),
+            "write guard belongs to a different registry"
+        );
+        Ok(())
+    }
+
+    fn confirm_mirror_base_inner(
+        &self,
+        source: &str,
+        base: u64,
+        classes: &HashSet<String>,
+    ) -> Result<()> {
         let source = canonical_source(source)?;
         ensure!(
             !classes.is_empty()
@@ -378,7 +412,6 @@ impl Store {
         let mut policy = classes.iter().map(String::as_str).collect::<Vec<_>>();
         policy.sort_unstable();
         let policy = policy.join(",");
-        let _gate = self.query_gate.blocking_write();
         let mut write = self.db.begin_write()?;
         write.set_durability(Durability::Immediate);
         {
@@ -561,10 +594,44 @@ impl Store {
         classes: Option<&HashSet<String>>,
         should_start: impl FnOnce() -> bool,
     ) -> Result<u64> {
+        let _gate = self.query_gate.blocking_write();
+        self.apply_nrtm3_filtered_inner(
+            source,
+            declared,
+            initial_base,
+            operations,
+            classes,
+            should_start,
+        )
+    }
+
+    pub(crate) fn apply_nrtm3_filtered_with_guard(
+        &self,
+        source: &str,
+        declared: (u64, u64),
+        initial_base: Option<u64>,
+        operations: impl IntoIterator<Item = Result<Operation, String>>,
+        classes: Option<&HashSet<String>>,
+        guard: &OwnedRwLockWriteGuard<()>,
+    ) -> Result<u64> {
+        self.require_write_guard(guard)?;
+        self.apply_nrtm3_filtered_inner(source, declared, initial_base, operations, classes, || {
+            true
+        })
+    }
+
+    fn apply_nrtm3_filtered_inner(
+        &self,
+        source: &str,
+        declared: (u64, u64),
+        initial_base: Option<u64>,
+        operations: impl IntoIterator<Item = Result<Operation, String>>,
+        classes: Option<&HashSet<String>>,
+        should_start: impl FnOnce() -> bool,
+    ) -> Result<u64> {
         let source = canonical_source(source)?;
         let (start, end) = declared;
         ensure!(start > 0 && end >= start, "invalid NRTMv3 serial range");
-        let _gate = self.query_gate.blocking_write();
         ensure!(should_start(), "NRTMv3 apply cancelled before write");
         let mut write = self.db.begin_write()?;
         write.set_durability(Durability::Immediate);
@@ -854,11 +921,31 @@ impl Store {
     pub fn apply_authoritative_report(
         &self,
         source: &str,
+        changes: Vec<Change>,
+        passwords: &[String],
+    ) -> Result<Vec<&'static str>> {
+        let _gate = self.query_gate.blocking_write();
+        self.apply_authoritative_report_inner(source, changes, passwords)
+    }
+
+    pub(crate) fn apply_authoritative_report_with_guard(
+        &self,
+        source: &str,
+        changes: Vec<Change>,
+        passwords: &[String],
+        guard: &OwnedRwLockWriteGuard<()>,
+    ) -> Result<Vec<&'static str>> {
+        self.require_write_guard(guard)?;
+        self.apply_authoritative_report_inner(source, changes, passwords)
+    }
+
+    fn apply_authoritative_report_inner(
+        &self,
+        source: &str,
         mut changes: Vec<Change>,
         passwords: &[String],
     ) -> Result<Vec<&'static str>> {
         let source = canonical_source(source)?;
-        let _gate = self.query_gate.blocking_write();
         let mut write = self.db.begin_write()?;
         write.set_durability(Durability::Immediate);
         let mut actions = Vec::new();
@@ -1166,14 +1253,16 @@ impl Store {
         let exact = read.open_multimap_table(EXACT)?;
         let records = read.open_table(OBJECTS)?;
         let mut objects = Vec::new();
+        let mut remaining_bytes = MAX_QUERY_OBJECT_BYTES;
         for key in keys {
             for source in sources {
                 for entry in exact.get((source.as_str(), key.as_str()))? {
                     let entry = entry?;
                     let class = entry.value();
                     if classes.is_empty() || classes.iter().any(|filter| filter == class) {
-                        let object = read_object(&records, source, class, &key)?
-                            .context("exact lookup index points to a missing object")?;
+                        let object =
+                            read_query_object(&records, source, class, &key, &mut remaining_bytes)?
+                                .context("exact lookup index points to a missing object")?;
                         objects.push(object);
                         if objects.len() == limit {
                             return Ok(objects);
@@ -1206,6 +1295,7 @@ impl Store {
         let records = read.open_table(OBJECTS)?;
         let inverse = read.open_table(INVERSE)?;
         let mut objects = Vec::new();
+        let mut remaining_bytes = MAX_QUERY_OBJECT_BYTES;
         for source in sources {
             let source = source.as_str();
             let lower = (source, field.as_str(), value.as_str(), "", "");
@@ -1213,7 +1303,7 @@ impl Store {
             for entry in inverse.range(lower..upper)?.take(limit - objects.len()) {
                 let (identity, _) = entry?;
                 let (source, _, _, class, key) = identity.value();
-                let object = read_object(&records, source, class, key)?
+                let object = read_query_object(&records, source, class, key, &mut remaining_bytes)?
                     .context("inverse lookup index points to a missing object")?;
                 objects.push(object);
             }
@@ -1234,6 +1324,7 @@ impl Store {
         let records = read.open_table(OBJECTS)?;
         let origins = read.open_multimap_table(ORIGINS)?;
         let mut routes = Vec::new();
+        let mut remaining_bytes = MAX_QUERY_OBJECT_BYTES;
         for source in sources {
             for class in ["route", "route6"] {
                 for prefix in origins
@@ -1242,8 +1333,9 @@ impl Store {
                 {
                     let prefix = prefix?;
                     let key = format!("{}{origin}", prefix.value());
-                    let route = read_object(&records, source, class, &key)?
-                        .context("route origin index points to a missing route")?;
+                    let route =
+                        read_query_object(&records, source, class, &key, &mut remaining_bytes)?
+                            .context("route origin index points to a missing route")?;
                     routes.push(route);
                 }
                 if routes.len() == limit {
@@ -1258,8 +1350,11 @@ impl Store {
     pub fn first(&self, class: &str, key: &str, sources: &[String]) -> Result<Option<Object>> {
         let read = self.db.begin_read()?;
         let records = read.open_table(OBJECTS)?;
+        let mut remaining_bytes = MAX_QUERY_OBJECT_BYTES;
         for source in sources {
-            if let Some(object) = read_object(&records, source, class, key)? {
+            if let Some(object) =
+                read_query_object(&records, source, class, key, &mut remaining_bytes)?
+            {
                 return Ok(Some(object));
             }
         }
@@ -1283,18 +1378,20 @@ impl Store {
         let read = self.db.begin_read()?;
         let records = read.open_table(OBJECTS)?;
         let mut routes = Vec::new();
+        let mut remaining_bytes = MAX_QUERY_OBJECT_BYTES;
         for source in sources {
             let lower = (source.as_str(), class, start.as_str());
             let upper = (source.as_str(), class, end.as_str());
             for entry in records.range(lower..upper)?.take(limit - routes.len()) {
                 let (identity, text) = entry?;
                 let (source, class, key) = identity.value();
-                routes.push(Object {
-                    source: source.to_owned(),
-                    class: class.to_owned(),
-                    key: key.to_owned(),
-                    text: text.value().to_owned(),
-                });
+                routes.push(materialize_query_object(
+                    source,
+                    class,
+                    key,
+                    text.value(),
+                    &mut remaining_bytes,
+                )?);
             }
             if routes.len() == limit {
                 break;
@@ -1323,13 +1420,15 @@ impl Store {
         let records = read.open_table(OBJECTS)?;
         let prefixes = read.open_table(PREFIXES)?;
         let mut routes = Vec::new();
+        let mut remaining_bytes = MAX_QUERY_OBJECT_BYTES;
         let mut collect = |range: RangeInclusive<PrefixKey<'_>>| -> Result<usize> {
             for entry in prefixes.range(range)?.take(limit - routes.len()) {
                 let (index_key, _) = entry?;
                 let (source, class, network, length, origin) = index_key.value();
                 let key = route_key(class, network, length, origin)?;
-                let object = read_object(&records, source, class, &key)?
-                    .context("route prefix index points to a missing route")?;
+                let object =
+                    read_query_object(&records, source, class, &key, &mut remaining_bytes)?
+                        .context("route prefix index points to a missing route")?;
                 routes.push(object);
             }
             Ok(routes.len())
@@ -2394,6 +2493,60 @@ fn route_index_parts<'a>(class: &str, key: &'a str) -> Result<Option<(&'a str, &
     Ok(Some((prefix, &key[prefix.len()..])))
 }
 
+/// Bound raw object text and owned identities before public query materialization.
+/// Stored snapshot records can be much larger than the public response budget.
+pub(crate) const MAX_QUERY_OBJECT_BYTES: usize = 2 * 1024 * 1024;
+
+#[derive(Debug)]
+pub(crate) struct QueryMaterializationLimit;
+
+impl std::fmt::Display for QueryMaterializationLimit {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("query object byte limit exceeded")
+    }
+}
+
+impl std::error::Error for QueryMaterializationLimit {}
+
+fn materialize_query_object(
+    source: &str,
+    class: &str,
+    key: &str,
+    text: &str,
+    remaining_bytes: &mut usize,
+) -> Result<Object> {
+    // Do not clone any record content until every owned string fits. A failure
+    // aborts the whole lookup rather than returning a truncated object list.
+    let bytes = text
+        .len()
+        .checked_add(source.len())
+        .and_then(|bytes| bytes.checked_add(class.len()))
+        .and_then(|bytes| bytes.checked_add(key.len()))
+        .ok_or(QueryMaterializationLimit)?;
+    *remaining_bytes = remaining_bytes
+        .checked_sub(bytes)
+        .ok_or(QueryMaterializationLimit)?;
+    Ok(Object {
+        source: source.to_owned(),
+        class: class.to_owned(),
+        key: key.to_owned(),
+        text: text.to_owned(),
+    })
+}
+
+pub(crate) fn read_query_object(
+    records: &impl ReadableTable<Identity<'static>, &'static str>,
+    source: &str,
+    class: &str,
+    key: &str,
+    remaining_bytes: &mut usize,
+) -> Result<Option<Object>> {
+    let Some(text) = records.get((source, class, key))? else {
+        return Ok(None);
+    };
+    materialize_query_object(source, class, key, text.value(), remaining_bytes).map(Some)
+}
+
 fn read_object(
     records: &impl ReadableTable<Identity<'static>, &'static str>,
     source: &str,
@@ -2463,40 +2616,146 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn public_export_borrows_large_records_and_redacts_sensitive_attributes() -> Result<()> {
+    #[tokio::test]
+    async fn service_write_guards_are_bound_to_the_registry_and_not_reacquired() -> Result<()> {
         let dir = tempfile::tempdir()?;
-        let store = Store::open(&dir.path().join("export.redb"))?;
-        let policy = format!(
-            "filter-set: FLTR-LARGE\r\nfilter: {}\r\nsource: TEST\r\n",
-            "AS64496 OR ".repeat(100_000) + "AS64497"
+        let store = Store::open(&dir.path().join("one.redb"))?;
+        let other = Store::open(&dir.path().join("two.redb"))?;
+        store.replace_source("TEST", [Ok(object("TEST", "aut-num", "AS64496"))])?;
+        let classes = HashSet::from([String::from("aut-num")]);
+        let guard = Arc::clone(store.query_gate()).write_owned().await;
+        // These must return immediately using the already held gate. Trying to
+        // acquire a second write lock would deadlock the service worker.
+        store.confirm_mirror_base_with_guard("TEST", 10, &classes, &guard)?;
+        assert_eq!(
+            store.apply_nrtm3_filtered_with_guard(
+                "TEST",
+                (11, 11),
+                None,
+                [Ok(Operation {
+                    kind: Kind::Add,
+                    serial: 11,
+                    object: object("TEST", "aut-num", "AS64497")
+                })],
+                Some(&classes),
+                &guard,
+            )?,
+            11
         );
-        let sensitive = "mntner: TEST-MNT\nauth: BCRYPT-PW private-fixture\n+ folded-secret\nremarks: registro.br ownerid: private-owner\n+ continued-owner\nrpki-ov-state: valid\nremarks: public remark\n# private comment\nsource: TEST\n";
-        store.replace_source(
-            "TEST",
-            [&policy, sensitive]
-                .into_iter()
-                .map(|text| crate::rpsl::parse_snapshot(text).map_err(anyhow::Error::msg)),
-        )?;
-        store.replace_source("OTHER", [Ok(object("OTHER", "aut-num", "AS64498"))])?;
+        for error in [
+            other
+                .confirm_mirror_base_with_guard("TEST", 10, &classes, &guard)
+                .unwrap_err(),
+            other
+                .apply_nrtm3_filtered_with_guard("TEST", (11, 11), None, [], Some(&classes), &guard)
+                .unwrap_err(),
+            other
+                .apply_authoritative_report_with_guard("TEST", vec![], &[], &guard)
+                .unwrap_err(),
+        ] {
+            assert!(error.to_string().contains("different registry"));
+        }
+        drop(guard);
+        assert_eq!(store.source_serial("TEST")?, Some(11));
+        assert_eq!(store.verify()?, 2);
+        assert_eq!(other.verify()?, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn public_queries_bound_large_record_materialization_without_changing_storage() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = Store::open(&dir.path().join("bounded.redb"))?;
+        let text = format!(
+            "route: 192.0.2.0/24\norigin: AS64496\nmnt-by: TEST-MNT\nremarks: {}\nsource: TEST\n",
+            "x".repeat(MAX_QUERY_OBJECT_BYTES),
+        );
+        let object = crate::rpsl::parse_snapshot(&text).map_err(anyhow::Error::msg)?;
+        let key = object.key.clone();
+        store.replace_source("TEST", [Ok(object)])?;
+        let sources = [String::from("TEST")];
+        let limit = |error: anyhow::Error| assert!(error.is::<QueryMaterializationLimit>());
+        limit(store.first("route", &key, &sources).unwrap_err());
+        limit(store.exact(&key, &sources, 17).unwrap_err());
+        limit(store.exact_objects(&[key], &sources, &[], 17).unwrap_err());
+        limit(
+            store
+                .inverse("mnt-by", "TEST-MNT", &sources, 129)
+                .unwrap_err(),
+        );
+        limit(
+            store
+                .inverse("origin", "AS64496", &sources, 17)
+                .unwrap_err(),
+        );
+        limit(
+            store
+                .routes_at_prefix("route", "192.0.2.0/24", &sources, 17)
+                .unwrap_err(),
+        );
+        limit(
+            store
+                .routes_matching_prefix(
+                    "route",
+                    "192.0.2.0/25",
+                    PrefixMatch::AllCovering,
+                    &sources,
+                    17,
+                )
+                .unwrap_err(),
+        );
+        // Mirror/import, verification and offline public/raw exports keep the
+        // full snapshot record despite its public query materialization limit.
+        assert_eq!(store.verify()?, 1);
         let mut output = Vec::new();
-        assert_eq!(store.export_public_source("TEST", &mut output)?, (2, None));
-        let expected =
-            format!("{policy}\nmntner: TEST-MNT\nremarks: public remark\nsource: TEST\n\n");
-        assert_eq!(output, expected.as_bytes());
-        // An ordinary policy remains borrowed, including original CRLF bytes.
-        assert!(matches!(
-            crate::rpsl::public_text(&policy),
-            Cow::Borrowed(_)
-        ));
+        assert_eq!(store.export_public_source("TEST", &mut output)?, (1, None));
+        assert_eq!(output, format!("{text}\n").as_bytes());
+        Ok(())
+    }
+
+    #[test]
+    fn query_materialization_budget_is_shared_across_sources_and_records() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = Store::open(&dir.path().join("aggregate.redb"))?;
+        for source in ["FIRST", "SECOND"] {
+            let text = format!(
+                "route: 192.0.2.0/24\norigin: AS64496\nmnt-by: TEST-MNT\nremarks: {}\nsource: {source}\n",
+                "x".repeat(MAX_QUERY_OBJECT_BYTES / 2)
+            );
+            store.replace_source(
+                source,
+                [crate::rpsl::parse_snapshot(&text).map_err(anyhow::Error::msg)],
+            )?;
+        }
+        let sources = [String::from("FIRST"), String::from("SECOND")];
+        assert_eq!(store.exact("192.0.2.0/24AS64496", &sources, 1)?.len(), 1);
+        assert_eq!(
+            store
+                .inverse("mnt-by", "TEST-MNT", &sources[..1], 129)?
+                .len(),
+            1
+        );
         assert!(
             store
-                .export_public_source("TEST", std::io::Cursor::new(&mut [0; 1][..]))
-                .is_err()
+                .first("route", "192.0.2.0/24AS64496", &sources)?
+                .is_some()
         );
-        let mut raw = Vec::new();
-        assert_eq!(store.export_source("TEST", &mut raw)?, 2);
-        assert!(String::from_utf8(raw)?.contains("private-fixture"));
+        for result in [
+            store.exact("192.0.2.0/24AS64496", &sources, 17),
+            store.inverse("mnt-by", "TEST-MNT", &sources, 129),
+            store.inverse("origin", "AS64496", &sources, 17),
+            store.routes_at_prefix("route", "192.0.2.0/24", &sources, 17),
+            store.routes_matching_prefix(
+                "route",
+                "192.0.2.0/25",
+                PrefixMatch::ClosestCovering,
+                &sources,
+                17,
+            ),
+        ] {
+            assert!(result.unwrap_err().is::<QueryMaterializationLimit>());
+        }
+        assert_eq!(store.verify()?, 2);
         Ok(())
     }
 
@@ -4407,6 +4666,43 @@ mod tests {
         output.clear();
         assert!(store.export_source("MISSING", &mut output).is_err());
         assert!(output.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn public_export_borrows_large_records_and_redacts_sensitive_attributes() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = Store::open(&dir.path().join("export.redb"))?;
+        let policy = format!(
+            "filter-set: FLTR-LARGE\r\nfilter: {}\r\nsource: TEST\r\n",
+            "AS64496 OR ".repeat(100_000) + "AS64497"
+        );
+        let sensitive = "mntner: TEST-MNT\nauth: BCRYPT-PW private-fixture\n+ folded-secret\nremarks: registro.br ownerid: private-owner\n+ continued-owner\nrpki-ov-state: valid\nremarks: public remark\n# private comment\nsource: TEST\n";
+        store.replace_source(
+            "TEST",
+            [&policy, sensitive]
+                .into_iter()
+                .map(|text| crate::rpsl::parse_snapshot(text).map_err(anyhow::Error::msg)),
+        )?;
+        store.replace_source("OTHER", [Ok(object("OTHER", "aut-num", "AS64498"))])?;
+        let mut output = Vec::new();
+        assert_eq!(store.export_public_source("TEST", &mut output)?, (2, None));
+        let expected =
+            format!("{policy}\nmntner: TEST-MNT\nremarks: public remark\nsource: TEST\n\n");
+        assert_eq!(output, expected.as_bytes());
+        // An ordinary policy remains borrowed, including original CRLF bytes.
+        assert!(matches!(
+            crate::rpsl::public_text(&policy),
+            Cow::Borrowed(_)
+        ));
+        assert!(
+            store
+                .export_public_source("TEST", std::io::Cursor::new(&mut [0; 1][..]))
+                .is_err()
+        );
+        let mut raw = Vec::new();
+        assert_eq!(store.export_source("TEST", &mut raw)?, 2);
+        assert!(String::from_utf8(raw)?.contains("private-fixture"));
         Ok(())
     }
 
