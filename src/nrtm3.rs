@@ -186,8 +186,12 @@ impl<R: BufRead> Reader<R> {
             text.push_str(&self.source);
             text.push('\n');
         }
-        let object = parse_snapshot(&text)
-            .map_err(|error| format!("NRTMv3 object at serial {actual_serial}: {error}"))?;
+        let object = (if self.allow_gaps {
+            crate::rpsl::parse_filtered_mirror(&text)
+        } else {
+            parse_snapshot(&text)
+        })
+        .map_err(|error| format!("NRTMv3 object at serial {actual_serial}: {error}"))?;
         if object.source != self.source {
             return Err(format!(
                 "NRTMv3 object source mismatch at serial {actual_serial}"
@@ -657,5 +661,84 @@ source: TEST
                 .unwrap_err()
                 .contains("decoded NRTMv3 line")
         );
+    }
+}
+
+#[cfg(test)]
+mod ripe_extensions_regression {
+    use super::*;
+    use std::io::Cursor;
+    #[test]
+    fn filtered_ripe_extensions_keep_framing_and_source_checks() {
+        for class in ["poem", "poetic-form"] {
+            let wire = format!(
+                "%START Version: 3 RIPE 10-11\n\nADD 10\n\n{class}: POEM-TEST\nsource: RIPE\n\nADD 11\n\naut-num: AS64496\nsource: RIPE\n\n%END RIPE\n"
+            );
+            assert!(
+                Reader::new(Cursor::new(&wire), "RIPE", 65536)
+                    .unwrap()
+                    .next()
+                    .unwrap()
+                    .is_err()
+            );
+            let rows = Reader::filtered(Cursor::new(&wire), "RIPE", 65536)
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            assert_eq!(rows.len(), 2);
+            assert_eq!(rows[0].object.class, class);
+            assert_eq!(rows[1].serial, 11);
+            let dir = tempfile::tempdir().unwrap();
+            let store = crate::storage::Store::open(&dir.path().join("registry.redb")).unwrap();
+            store
+                .replace_source(
+                    "RIPE",
+                    [Ok(crate::rpsl::parse_snapshot(
+                        "aut-num: AS64496\nsource: RIPE\n",
+                    )
+                    .unwrap())],
+                )
+                .unwrap();
+            let classes = std::collections::HashSet::from(["aut-num".to_string()]);
+            let transcript = Reader::filtered(Cursor::new(&wire), "RIPE", 65536).unwrap();
+            store
+                .apply_nrtm3_filtered_if(
+                    "RIPE",
+                    (10, 11),
+                    Some(9),
+                    transcript,
+                    Some(&classes),
+                    || true,
+                )
+                .unwrap();
+            assert_eq!(store.source_serial("RIPE").unwrap(), Some(11));
+            assert_eq!(store.verify().unwrap(), 1);
+
+            assert!(
+                Reader::filtered(
+                    Cursor::new(wire.replace("source: RIPE", "source: OTHER")),
+                    "RIPE",
+                    65536
+                )
+                .unwrap()
+                .next()
+                .unwrap()
+                .is_err()
+            );
+            assert!(
+                Reader::filtered(
+                    Cursor::new(wire.replace("%END RIPE", "%END OTHER")),
+                    "RIPE",
+                    65536
+                )
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .is_err()
+            );
+            assert!(
+                crate::rpsl::parse_snapshot(&format!("{class}: POEM-TEST\nsource: RIPE\n"))
+                    .is_err()
+            );
+        }
     }
 }
