@@ -23,6 +23,28 @@ source/framing errors, or permit poetry objects in authoritative submissions or
 strict snapshot import. Unfiltered readers continue to reject these classes.
 All nineteen standard classes remain supported for mirrored storage.
 
+For a full standard-class RIPE mirror, set an explicit retained-class filter:
+
+```toml
+[nrtm3_sync.RIPE]
+endpoint = "192.0.2.10:43"
+interval_seconds = 60
+object_class_filter = [
+  "as-block", "as-set", "aut-num", "domain", "filter-set", "inet-rtr",
+  "inet6num", "inetnum", "irt", "key-cert", "mntner", "organisation",
+  "peering-set", "person", "role", "route", "route-set", "route6", "rtr-set"
+]
+```
+
+Replace the documentation address with your actual peer's IP and port. The
+source must also appear in the top-level `sources` list and already contain a
+matching initial snapshot. Preserve an existing committed serial. On first
+bootstrap only, configure `base_serial` from that snapshot's verified serial;
+do not guess it. A narrower class filter must match the stored snapshot scope.
+Upgrading a deliberately unfiltered configuration alone does not enable this
+filtered behavior. Do not configure complete NRTMv3 journal serving from a
+filtered mirror, because its retained data omits upstream operations.
+
 ## Monitor data freshness
 
 Monitor each source separately: import timestamp, retained class counts, last
