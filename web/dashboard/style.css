@@ -67,6 +67,7 @@ p { margin: 10px 0; }
 .metrics span, .metrics small { display: block; color: var(--muted); font-size: 12px; line-height: 1.6; }
 .metrics span { font-weight: 550; }
 .metrics strong { display: block; font-size: clamp(23px, 2vw, 30px); font-weight: 650; letter-spacing: -.045em; font-variant-numeric: tabular-nums; line-height: 1.3; margin: 9px 0; overflow-wrap: anywhere; }
+#overview-metrics strong { white-space: nowrap; overflow-wrap: normal; }
 .metrics.stale { opacity: .55; }
 #resource-metrics { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .two-column { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 20px; }
@@ -165,7 +166,7 @@ details a { overflow-wrap: anywhere; font-size: 13px; }
 .resource-accounting dt { color: var(--muted); }
 .resource-accounting dd { margin: 0; text-align: right; overflow-wrap: anywhere; }
 footer { padding: 22px 36px; color: var(--muted); font-size: 11px; border-top: 1px solid var(--line); display: flex; flex-wrap: wrap; justify-content: space-between; gap: 10px; }
-@media (max-width: 1200px) {
+@media (max-width: 1360px) {
   .sidebar { width: 210px; padding-left: 13px; padding-right: 13px; }
   .workspace { margin-left: 210px; }
   main { padding-left: 25px; padding-right: 25px; }
@@ -180,6 +181,8 @@ footer { padding: 22px 36px; color: var(--muted); font-size: 11px; border-top: 1
   .panel-heading { flex-wrap: wrap; gap: 10px; }
 }
 @media (max-width: 1000px) {
+  .metrics article { grid-column: span 3; }
+  .metrics .metric-total { grid-column: 1 / -1; }
   .two-column { grid-template-columns: minmax(0, 1fr); gap: 0; }
   #resource-history { gap: 24px; }
   .form-grid { grid-template-columns: 1fr 1fr; }

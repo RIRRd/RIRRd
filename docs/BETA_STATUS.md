@@ -1,4 +1,4 @@
-# RIRRd 0.1.0-beta.4
+# RIRRd 0.1.0-beta.5
 
 RIRRd is beta software. It aims to reduce the resources needed for a self-hosted
 Internet Routing Registry. This beta
@@ -21,12 +21,19 @@ of full IRRd parity, security qualification or production readiness.
 
 The public UK node now retains all 19 standard IRRd classes across 21 datasets.
 Fifteen sources follow NRTMv3 every sixty seconds; six use daily snapshots.
-The full public catalog was activated on 2026-11-05 after verifying 13,984,313
-objects and their indexes. This expands the data available from beta.3; it does
-not add authoritative authentication/account parity. Development follows the
+The refreshed public catalog was activated on 2026-11-17 after verifying
+14,006,896 objects and their indexes. Subsequent totals change with live updates.
+This hosted dataset is separate from release packages and does not add
+authoritative authentication/account parity. Development follows the
 same source profile with independent storage and cursors, and tests unreleased
 engine changes separately. See live telemetry for current counts, serials and
 freshness. A source being loaded does not establish that its last check succeeded.
+
+Beta.5 fixes filtered RIPE NRTMv3 streams stopping at `poem`/`poetic-form`
+records. They are validated and excluded by the configured standard-class filter
+while the cursor advances. Other malformed records still fail atomically. See
+[source refresh and recovery](operations/SOURCE_RECOVERY.md) for package scope,
+operator safeguards and the distinction between a successful poll and fresh data.
 
 ## Known gaps
 

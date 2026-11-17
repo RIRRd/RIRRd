@@ -164,11 +164,34 @@ class Console(unittest.TestCase):
         missing=self.browser.js('Array.from(document.querySelectorAll("input,select,textarea")).filter(e=>e.type!=="hidden"&&!e.labels?.length&&!e.getAttribute("aria-label")&&!e.getAttribute("aria-labelledby")).map(e=>e.id)')
         self.assertEqual(missing,[])
     def test_all_views_fit_mobile_and_desktop(self):
-        for width in [320,390,1440]:
+        # The small registry fixture hid a real layout defect: a 14-million
+        # object total split its last digit at intermediate desktop widths.
+        # Feed realistic totals through the ordinary telemetry/render path.
+        self.browser.wait('document.getElementById("live-objects").textContent==="6,017" && !document.getElementById("refresh").disabled')
+        self.browser.js('''const metricFetch=window.fetch;window.fetch=async(...args)=>{
+          const response=await metricFetch(...args);
+          if(new URL(args[0],location.href).pathname!=="/ui/mirrors.json")return response;
+          const value=await response.json();value.total_objects=14000000;
+          value.class_counts={EXAMPLE:{route:3342010,route6:1342007,"as-set":77433,person:9238550}};
+          return new Response(JSON.stringify(value),{status:response.status,headers:response.headers});
+        };document.getElementById("refresh").click();''')
+        self.browser.wait('document.getElementById("live-objects").textContent==="14,000,000"')
+        for width in [320,390,720,721,900,1000,1200,1280,1360,1361,1440]:
             self.browser.call('Emulation.setDeviceMetricsOverride',{'width':width,'height':1100,'deviceScaleFactor':1,'mobile':width<650},True)
             for page in ['overview','query','sources','api','connect','system']:
                 self.browser.js('location.hash='+json.dumps(page));self.browser.wait('!document.getElementById("page-'+page+'").hidden')
                 self.assertTrue(self.browser.js('document.documentElement.scrollWidth<=innerWidth'),(width,page))
+                if page=='overview':
+                    metrics=self.browser.js('''Array.from(document.querySelectorAll("#overview-metrics strong")).map(node=>{
+                      const range=document.createRange();range.selectNodeContents(node);
+                      const value=range.getBoundingClientRect(),box=node.getBoundingClientRect();
+                      return {text:node.textContent,lines:range.getClientRects().length,
+                        fits:value.left>=box.left-.5&&value.right<=box.right+.5};
+                    })''')
+                    self.assertEqual(metrics[0]['text'],'14,000,000')
+                    for metric in metrics:
+                        self.assertEqual(metric['lines'],1,(width,metric))
+                        self.assertTrue(metric['fits'],(width,metric))
     def test_retired_and_unknown_sections_show_registry(self):
         for page in ['rpki','nonexistent']:
             self.browser.js('location.hash='+json.dumps(page));self.browser.wait('!document.getElementById("page-overview").hidden')

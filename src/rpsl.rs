@@ -127,19 +127,29 @@ struct Identity {
 
 /// Parse one UTF-8 object, keeping the input text and canonicalising its key.
 pub fn parse(text: &str) -> Result<Object, String> {
-    parse_with_limit(Cow::Borrowed(text), MAX_OBJECT_BYTES)
+    parse_with_limit(Cow::Borrowed(text), MAX_OBJECT_BYTES, false)
 }
 
 pub fn parse_snapshot(text: &str) -> Result<Object, String> {
-    parse_with_limit(Cow::Borrowed(text), MAX_SNAPSHOT_OBJECT_BYTES)
+    parse_with_limit(Cow::Borrowed(text), MAX_SNAPSHOT_OBJECT_BYTES, false)
 }
 
 /// Validate an imported record without copying its already-owned text buffer.
 pub fn parse_snapshot_owned(text: String) -> Result<Object, String> {
-    parse_with_limit(Cow::Owned(text), MAX_SNAPSHOT_OBJECT_BYTES)
+    parse_with_limit(Cow::Owned(text), MAX_SNAPSHOT_OBJECT_BYTES, false)
 }
 
-fn parse_with_limit(text: Cow<'_, str>, max_bytes: usize) -> Result<Object, String> {
+/// Recognise RIPE's non-routing extensions only while consuming a filtered
+/// mirror. They are validated structurally, then excluded by the storage filter.
+pub(crate) fn parse_filtered_mirror(text: &str) -> Result<Object, String> {
+    parse_with_limit(Cow::Borrowed(text), MAX_SNAPSHOT_OBJECT_BYTES, true)
+}
+
+fn parse_with_limit(
+    text: Cow<'_, str>,
+    max_bytes: usize,
+    filtered_mirror: bool,
+) -> Result<Object, String> {
     if text.len() > max_bytes {
         return Err(format!("RPSL object exceeds {max_bytes} bytes"));
     }
@@ -199,7 +209,9 @@ fn parse_with_limit(text: Cow<'_, str>, max_bytes: usize) -> Result<Object, Stri
         }
 
         if !has_attribute {
-            if !supported_class(&name) {
+            if !supported_class(&name)
+                && !(filtered_mirror && matches!(name.as_ref(), "poem" | "poetic-form"))
+            {
                 return Err(format!("line {line_no}: unsupported object class"));
             }
             identity.class = name.to_string();
@@ -236,6 +248,9 @@ fn parse_with_limit(text: Cow<'_, str>, max_bytes: usize) -> Result<Object, Stri
     if !generic_name(&source) {
         return Err("invalid source name".into());
     }
+    if matches!(identity.class.as_str(), "poem" | "poetic-form") && source != "RIPE" {
+        return Err("RIPE extension requires RIPE source".into());
+    }
     let key = match identity.class.as_str() {
         "route" | "route6" => {
             let prefix = canonical_prefix(&first, identity.class == "route6")?;
@@ -250,7 +265,9 @@ fn parse_with_limit(text: Cow<'_, str>, max_bytes: usize) -> Result<Object, Stri
         "domain" => first.to_uppercase(),
         "inet-rtr" if dns_name(&first) => first.to_ascii_uppercase(),
         "as-set" | "filter-set" | "peering-set" | "route-set" | "rtr-set" => set_name(&first)?,
-        "irt" | "key-cert" | "mntner" | "organisation" if generic_name(&first) => {
+        "irt" | "key-cert" | "mntner" | "organisation" | "poem" | "poetic-form"
+            if generic_name(&first) =>
+        {
             first.to_ascii_uppercase()
         }
         _ => return Err("invalid object key".into()),

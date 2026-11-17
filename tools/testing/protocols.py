@@ -39,6 +39,66 @@ class Protocols(unittest.TestCase):
         self.assertEqual(status, 200)
         return json.loads(raw)
 
+    def test_filtered_ripe_extensions_sync_cli_rollback_and_restart(self):
+        registry = Registry()
+        try:
+            registry.config.write_text(registry.config.read_text().replace(
+                'sources = ["EXAMPLE", "SECOND"]', 'sources = ["EXAMPLE", "SECOND", "RIPE"]'))
+            fixture = registry.root / 'ripe.rpsl'
+            fixture.write_text('aut-num: AS64496\nsource: RIPE\n')
+            registry.cli('import', 'snapshot', '--source', 'RIPE', '--file', str(fixture))
+            with socket.socket() as peer:
+                peer.bind(('127.0.0.1', 0))
+                peer.listen(1)
+                peer.settimeout(10)
+                endpoint = '127.0.0.1:' + str(peer.getsockname()[1])
+                registry.config.write_text(registry.config.read_text() +
+                    '\n[nrtm3_sync.RIPE]\nendpoint = "' + endpoint +
+                    '"\ninterval_seconds = 3600\nobject_class_filter = ["aut-num", "route"]\n')
+
+                def reply(wire, start):
+                    with peer.accept()[0] as connection:
+                        connection.settimeout(5)
+                        request = b''
+                        while not request.endswith(b'\n') and len(request) < 256:
+                            part = connection.recv(256)
+                            if not part:
+                                break
+                            request += part
+                        self.assertEqual(request, f'-g RIPE:3:{start}-{start + 2}\n'.encode())
+                        connection.sendall(wire.encode())
+
+                template = ('%START Version: 3 RIPE {start}-{end}\n\n'
+                    'ADD {start}\n\npoem: POEM-TEST\nsource: RIPE\n\n'
+                    'ADD {middle}\n\npoetic-form: FORM-TEST\nsource: RIPE\n\n'
+                    'ADD {end}\n\nroute: {prefix}\norigin: AS64496\nsource: RIPE\n\n%END {trailer}\n')
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                    for start, prefix, trailer in [(10, '192.0.2.0/25', 'RIPE'), (13, '198.51.100.0/24', 'OTHER')]:
+                        pending = pool.submit(reply, template.format(start=start, middle=start + 1,
+                            end=start + 2, prefix=prefix, trailer=trailer), start)
+                        args = ['source', 'sync-nrtm3', '--source', 'RIPE', '--endpoint', endpoint,
+                            '--end-serial', str(start + 2)]
+                        if start == 10:
+                            args += ['--base-serial', '9']
+                        result = registry.cli(*args, success=start == 10)
+                        pending.result(timeout=10)
+                        self.assertEqual(result.returncode == 0, start == 10)
+                        self.assertEqual(json.loads(registry.cli('source', 'status', '--source', 'RIPE').stdout)['serial'], 12)
+            counts = json.loads(registry.cli('database', 'count', '--by-class').stdout)
+            self.assertEqual(counts['class_counts']['RIPE'], {'aut-num': 1, 'route': 1})
+            registry.cli('database', 'verify')
+            for _ in range(2):
+                registry.start()
+                status, answer, _ = registry.request('/v1/whois/?sources=RIPE&q=%21gAS64496')
+                self.assertEqual(status, 200)
+                self.assertEqual(answer.strip(), b'192.0.2.0/25')
+                wire = registry.wire(b'!!\n!sRIPE\n!gAS64496\n!q\n')
+                self.assertTrue(wire.startswith(b'C\n'))
+                self.assertEqual(payload(wire[2:]).strip(), b'192.0.2.0/25')
+                registry.stop()
+        finally:
+            registry.close()
+
     @unittest.skipIf(os.name == "nt", "This check exercises POSIX SIGTERM; Windows terminate force-stops a process")
     def test_shutdown_during_online_repack_keeps_the_original_verifiable(self):
         registry = Registry()
