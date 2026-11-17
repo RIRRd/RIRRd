@@ -1,6 +1,6 @@
 # RIRRd
 
-**Beta 0.1.0-beta.4** · [MIT license](LICENSE) · [Project website](https://rirrd.net/)
+**Beta 0.1.0-beta.5** · [MIT license](LICENSE) · [Project website](https://rirrd.net/)
 · [Community tools](https://irrd.tools/) · [Beta status](docs/BETA_STATUS.md)
 
 A Rust Internet Routing Registry daemon with embedded storage, bounded WHOIS,
@@ -367,12 +367,12 @@ The [100,000-object Linux synthetic comparison](docs/benchmarks/LINUX_SYNTHETIC_
 
 The live dashboard is https://irrd.tools/dashboard/ and read-only TCP WHOIS/bgpq4
 uses `irrd.tools:43`. Inspect the dashboard's loaded sources, missing feeds and
-snapshot times before testing. Seven sources follow NRTMv3 every sixty seconds; the remaining sources use daily snapshots.
+snapshot times before testing. Fifteen sources follow NRTMv3 every sixty seconds; six use daily snapshots.
 Submissions and administration are not public; full parity and production
 qualification remain incomplete. See the [router guide](docs/operations/ROUTER_INTEGRATION.md)
 and [live deployment guide](docs/STATUS.md). Public IPv4/IPv6 and AS-set commands are in the [public query guide](docs/operations/PUBLIC_ROUTER_QUERIES.md).
 
 `http_sources` optionally restricts HTTP WHOIS/GraphQL to a nonempty subset of
 `sources`. TCP uses the full source list. This supports per-source distribution
-requirements. The current public deployment exposes all nineteen loaded routing
+requirements. The current public deployment exposes all twenty-one loaded
 sources, including ARIN, through TCP WHOIS, HTTP WHOIS and GraphQL.

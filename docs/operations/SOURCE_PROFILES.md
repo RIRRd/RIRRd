@@ -49,7 +49,13 @@ for a redacted export with its source serial.
 A source inventory should retain import times, current per-class counts,
 excluded class counts, malformed-record counts, transport details and file
 checksums. A full standard-IRRd profile can still encounter publisher-specific
-classes such as RIPE poems; record those unsupported classes explicitly.
+classes such as RIPE poems. In beta.5 and later, filtered NRTMv3 recognizes
+RIPE `poem` and `poetic-form` records, validates their source, identity and
+structure, and excludes them through the standard-class filter while advancing
+the cursor. These classes are not stored or accepted for authoritative updates
+or strict snapshot import. Unknown classes and malformed records still stop
+the transaction; they are not silently skipped. Record excluded classes in
+operator import receipts. See [source recovery](SOURCE_RECOVERY.md).
 NRTMv3 transport is unauthenticated. Full object coverage and a green test run
 are not a production-readiness claim.
 

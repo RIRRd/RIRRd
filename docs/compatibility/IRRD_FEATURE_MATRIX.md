@@ -35,6 +35,13 @@ open until the stated behaviour and safety checks are demonstrated.
 
 ## Current development
 
+Beta.5 adds a filtered RIPE NRTMv3 regression for `poem`/`poetic-form`: validate
+framing, source and object structure, exclude the records through the configured
+standard-class filter, and commit later routing updates and the final serial
+atomically. Strict parsing continues to reject those nonstandard classes. This
+fix does not broaden authoritative class support. See
+[source recovery and test evidence](../operations/SOURCE_RECOVERY.md).
+
 The [beta.4 qualification](BETA4_QUALIFICATION.md) records the exact candidate, passing CI,
 full-data checks, deployed HTTPS regression and measured performance trade-offs.
 

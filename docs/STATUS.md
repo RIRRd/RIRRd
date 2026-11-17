@@ -88,8 +88,11 @@ removes data. The prior full-catalog repack remains the measured disk reduction.
 The [beta.4 qualification](compatibility/BETA4_QUALIFICATION.md) records the exact candidate, passing CI,
 full-data checks, deployed HTTPS regression and measured performance trade-offs.
 
-The [beta.4 release notes](releases/v0.1.0-beta.4.md) describe the current
-candidate and required publication gates. The [query qualification](compatibility/QUERY_SOURCE_PARITY.md)
+The [beta.5 release notes](releases/v0.1.0-beta.5.md) describe the source-recovery
+patch and required publication gates. Beta.5 includes the filtered RIPE
+NRTMv3 poetry-extension fix and improved large-count console formatting.
+[Source recovery](operations/SOURCE_RECOVERY.md) separates public daemon fixes
+from the separately maintained hosted snapshot scheduler. The [query qualification](compatibility/QUERY_SOURCE_PARITY.md)
 records the prior MVCC and large-query checks with exact commits and CI evidence. Tests on dev add rate/refill boundaries, IPv6 grouping, bounded client
 state, saturated-worker rejection, response-size/deadline handling and normal
 CLI/HTTP query checks. Read actual per-commit CI results rather than treating a

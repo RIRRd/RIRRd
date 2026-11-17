@@ -4,7 +4,7 @@ RIRRd is a Rust Internet Routing Registry daemon with embedded storage, a bundle
 console. It runs independently of the
 community service at [irrd.tools](https://irrd.tools/).
 
-Version **0.1.0-beta.4** is for evaluation. Full IRRd parity and production
+Version **0.1.0-beta.5** is for evaluation. Full IRRd parity and production
 qualification are incomplete. Read [beta status](/docs/beta/) before deployment.
 The project is MIT licensed. The canonical repository is RIRRd/RIRRd on GitHub.
 Use a tagged beta release for a reproducible evaluation.
@@ -17,7 +17,7 @@ workflow builds on Debian 12, tests native packages and publishes `SHA256SUMS`.
 Packages preserve the operator configuration and require explicit service startup.
 
 Download **install.sh** and **SHA256SUMS** from the
-[beta.4 release assets](https://github.com/RIRRd/RIRRd/releases/tag/v0.1.0-beta.4)
+[beta.5 release assets](https://github.com/RIRRd/RIRRd/releases/tag/v0.1.0-beta.5)
 into a new directory. Use the installer attached to the selected release.
 It selects the architecture and checks the package before installation.
 
@@ -25,9 +25,9 @@ It selects the architecture and checks the package before installation.
 # Verify the downloaded installer; missing package files are ignored here.
 sha256sum --ignore-missing --check SHA256SUMS
 # Continue after checksum verification succeeds.
-bash install.sh --version 0.1.0-beta.4 --download-only /tmp/rirrd-package
+bash install.sh --version 0.1.0-beta.5 --download-only /tmp/rirrd-package
 # Or install with your distribution package manager.
-sudo bash install.sh --version 0.1.0-beta.4
+sudo bash install.sh --version 0.1.0-beta.5
 ```
 
 Configure `/etc/rust-irrd/irrd.toml`, import a source snapshot while the daemon is
@@ -73,7 +73,11 @@ Measure import peaks, steady queries and mirror updates separately.
 Stop the serving process before offline imports, exports, verification or
 compaction: the database has exclusive process ownership. The in-process NRTMv3
 scheduler can apply verified source updates without stopping query listeners.
-Keep database files, mirror snapshots, and credentials outside Git.
+Keep database files, mirror snapshots, and credentials outside Git. The package
+does not download or schedule initial/daily snapshots automatically. Configure
+its in-process NRTMv3 scheduler after importing a matching snapshot and serial;
+monitor freshness and errors. For snapshot-only sources, provide your own
+refresh automation as described in [source recovery](SOURCE_RECOVERY.md).
 
 ## Connect routing tools
 
